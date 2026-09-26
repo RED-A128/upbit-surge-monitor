@@ -1,0 +1,683 @@
+# ============================================================
+# Upbit Surge Monitor
+# Clean V001
+#
+# File:
+#   .github/workflows/collect.yml
+#
+# Purpose:
+#   Run collector.py automatically on the Windows
+#   self-hosted runner.
+#
+# Important project rules:
+#   - Windows PC self-hosted runner
+#   - Use "py" only
+#   - Raw OHLCV data stays on the PC
+#   - data/ohlcv is NOT committed to Git
+#   - No trading
+#   - No prediction
+#   - No pattern analysis in this workflow
+# ============================================================
+
+name: Upbit Data Collector V001
+
+
+# ============================================================
+# TRIGGERS
+# ============================================================
+#
+# GitHub cron uses UTC.
+#
+# "5 * * * *"
+# means:
+#
+#   every hour at minute 05 UTC
+#
+# In Korea (KST, UTC+9), this is also minute 05
+# of each local hour.
+#
+# Examples:
+#
+#   00:05 UTC -> 09:05 KST
+#   01:05 UTC -> 10:05 KST
+#   15:05 UTC -> 00:05 KST
+#
+# workflow_dispatch allows manual execution from:
+#
+#   GitHub
+#   -> Actions
+#   -> Upbit Data Collector V001
+#   -> Run workflow
+#
+# ============================================================
+
+on:
+  schedule:
+    - cron: "5 * * * *"
+
+  workflow_dispatch:
+
+
+# ============================================================
+# PERMISSIONS
+# ============================================================
+#
+# Collector does not need to modify the repository.
+#
+# Read-only permission is therefore sufficient.
+#
+# ============================================================
+
+permissions:
+  contents: read
+
+
+# ============================================================
+# CONCURRENCY
+# ============================================================
+#
+# Prevent multiple Collector jobs from running at the same time.
+#
+# If one collection is still running when another scheduled
+# event arrives, the existing run is NOT cancelled.
+#
+# ============================================================
+
+concurrency:
+  group: upbit-data-collector-v001
+  cancel-in-progress: false
+
+
+# ============================================================
+# JOBS
+# ============================================================
+
+jobs:
+
+  collect:
+
+    # ========================================================
+    # SELF-HOSTED WINDOWS PC
+    # ========================================================
+    #
+    # The Collector runs on the user's Windows PC.
+    #
+    # This is intentional.
+    #
+    # Raw OHLCV history is stored locally under:
+    #
+    #   data/ohlcv/h1
+    #   data/ohlcv/h4
+    #   data/ohlcv/d1
+    #
+    # GitHub-hosted runners are temporary machines and are not
+    # suitable for our local cumulative OHLCV storage model.
+    #
+    # ========================================================
+
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+
+    timeout-minutes: 60
+
+
+    # ========================================================
+    # ENVIRONMENT
+    # ========================================================
+
+    env:
+
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+
+
+    # ========================================================
+    # STEPS
+    # ========================================================
+
+    steps:
+
+
+      # ======================================================
+      # STEP 1
+      # Checkout repository
+      # ======================================================
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+
+          # Always work from the current repository revision.
+
+          fetch-depth: 1
+
+          # Do not keep GitHub credentials unnecessarily.
+
+          persist-credentials: false
+
+          # IMPORTANT:
+          #
+          # Do NOT clean the workspace.
+          #
+          # data/ohlcv is ignored by Git and contains our
+          # cumulative local OHLCV history.
+          #
+          # If clean were enabled, ignored/untracked local
+          # files could be removed from the runner workspace.
+          #
+          # Therefore this MUST remain false.
+
+          clean: false
+
+
+      # ======================================================
+      # STEP 2
+      # Show execution information
+      # ======================================================
+
+      - name: Show execution information
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "UPBIT SURGE MONITOR - CLEAN V001"
+          Write-Host "EXECUTION INFORMATION"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          Write-Host "Computer:"
+          Write-Host "  $env:COMPUTERNAME"
+          Write-Host ""
+
+          Write-Host "Runner:"
+          Write-Host "  $env:RUNNER_NAME"
+          Write-Host ""
+
+          Write-Host "Runner OS:"
+          Write-Host "  $env:RUNNER_OS"
+          Write-Host ""
+
+          Write-Host "Workspace:"
+          Write-Host "  $env:GITHUB_WORKSPACE"
+          Write-Host ""
+
+          Write-Host "Repository:"
+          Write-Host "  $env:GITHUB_REPOSITORY"
+          Write-Host ""
+
+          Write-Host "Ref:"
+          Write-Host "  $env:GITHUB_REF"
+          Write-Host ""
+
+          Write-Host "SHA:"
+          Write-Host "  $env:GITHUB_SHA"
+          Write-Host ""
+
+          Write-Host "Event:"
+          Write-Host "  $env:GITHUB_EVENT_NAME"
+          Write-Host ""
+
+          Write-Host "Current directory:"
+          Get-Location
+
+          Write-Host ""
+          Write-Host "============================================================"
+
+
+      # ======================================================
+      # STEP 3
+      # Verify Python launcher
+      # ======================================================
+      #
+      # PROJECT RULE:
+      #
+      #   python  -> DO NOT USE
+      #   python3 -> DO NOT USE
+      #   py      -> USE
+      #
+      # ======================================================
+
+      - name: Verify Python launcher
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY PYTHON LAUNCHER"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $PyCommand = Get-Command py -ErrorAction SilentlyContinue
+
+          if ($null -eq $PyCommand) {
+
+              Write-Host "[ERROR] Windows Python launcher 'py' was not found."
+              Write-Host ""
+              Write-Host "This project requires:"
+              Write-Host ""
+              Write-Host "  py"
+              Write-Host ""
+              Write-Host "The workflow will stop."
+              exit 1
+          }
+
+          Write-Host "[PASS] py launcher found."
+          Write-Host ""
+
+          Write-Host "Command:"
+          Write-Host "  $($PyCommand.Source)"
+          Write-Host ""
+
+          Write-Host "Python version:"
+          py --version
+
+          Write-Host ""
+          Write-Host "Python executable:"
+          py -c "import sys; print(sys.executable)"
+
+          Write-Host ""
+          Write-Host "============================================================"
+
+
+      # ======================================================
+      # STEP 4
+      # Verify required project files
+      # ======================================================
+
+      - name: Verify project files
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY PROJECT FILES"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $RequiredFiles = @(
+              "collector.py",
+              "requirements.txt",
+              "PROJECT_STATE.md",
+              "README.md"
+          )
+
+          $Failed = $false
+
+          foreach ($File in $RequiredFiles) {
+
+              if (Test-Path $File -PathType Leaf) {
+
+                  Write-Host "[PASS] $File"
+
+              }
+              else {
+
+                  Write-Host "[FAIL] $File"
+                  $Failed = $true
+              }
+          }
+
+          Write-Host ""
+
+          if ($Failed) {
+
+              Write-Host "[ERROR] One or more required project files are missing."
+              exit 1
+          }
+
+          Write-Host "[PASS] Required project files verified."
+
+          Write-Host ""
+          Write-Host "============================================================"
+
+
+      # ======================================================
+      # STEP 5
+      # Install / verify dependencies
+      # ======================================================
+      #
+      # We intentionally use:
+      #
+      #   py -m pip
+      #
+      # and NOT:
+      #
+      #   pip
+      #   python -m pip
+      #   python3 -m pip
+      #
+      # ======================================================
+
+      - name: Install dependencies
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "INSTALL / VERIFY DEPENDENCIES"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          py -m pip install -r requirements.txt
+
+          if ($LASTEXITCODE -ne 0) {
+
+              Write-Host ""
+              Write-Host "[ERROR] Dependency installation failed."
+              exit $LASTEXITCODE
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Dependencies ready."
+
+          Write-Host ""
+          Write-Host "============================================================"
+
+
+      # ======================================================
+      # STEP 6
+      # Inspect existing local OHLCV data
+      # ======================================================
+      #
+      # This confirms whether the PC's cumulative dataset
+      # survived between workflow runs.
+      #
+      # ======================================================
+
+      - name: Inspect existing OHLCV data
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "EXISTING LOCAL OHLCV DATA"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $Timeframes = @(
+              "h1",
+              "h4",
+              "d1"
+          )
+
+          foreach ($Tf in $Timeframes) {
+
+              $Directory = Join-Path "data\ohlcv" $Tf
+
+              if (Test-Path $Directory -PathType Container) {
+
+                  $Count = @(
+                      Get-ChildItem `
+                          -Path $Directory `
+                          -Filter "*.csv" `
+                          -File `
+                          -ErrorAction SilentlyContinue
+                  ).Count
+
+                  Write-Host "[$Tf] CSV files: $Count"
+
+              }
+              else {
+
+                  Write-Host "[$Tf] Directory does not exist yet."
+              }
+          }
+
+          Write-Host ""
+
+          $StatusFile = "data\collector_status.csv"
+
+          if (Test-Path $StatusFile -PathType Leaf) {
+
+              Write-Host "[INFO] collector_status.csv exists."
+
+          }
+          else {
+
+              Write-Host "[INFO] collector_status.csv does not exist yet."
+          }
+
+          Write-Host ""
+          Write-Host "============================================================"
+
+
+      # ======================================================
+      # STEP 7
+      # Validate collector.py syntax
+      # ======================================================
+
+      - name: Validate collector syntax
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VALIDATE COLLECTOR SYNTAX"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          py -m py_compile collector.py
+
+          if ($LASTEXITCODE -ne 0) {
+
+              Write-Host ""
+              Write-Host "[ERROR] collector.py syntax validation failed."
+              exit $LASTEXITCODE
+          }
+
+          Write-Host "[PASS] collector.py syntax is valid."
+
+          Write-Host ""
+          Write-Host "============================================================"
+
+
+      # ======================================================
+      # STEP 8
+      # Run Collector
+      # ======================================================
+
+      - name: Run Collector V001
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "RUN UPBIT DATA COLLECTOR - CLEAN V001"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $StartTime = Get-Date
+
+          Write-Host "Started:"
+          Write-Host "  $($StartTime.ToString('yyyy-MM-dd HH:mm:ss'))"
+          Write-Host ""
+
+          py collector.py
+
+          $CollectorExitCode = $LASTEXITCODE
+
+          $EndTime = Get-Date
+          $Elapsed = $EndTime - $StartTime
+
+          Write-Host ""
+          Write-Host "------------------------------------------------------------"
+          Write-Host "COLLECTOR EXECUTION RESULT"
+          Write-Host "------------------------------------------------------------"
+          Write-Host ""
+
+          Write-Host "Started:"
+          Write-Host "  $($StartTime.ToString('yyyy-MM-dd HH:mm:ss'))"
+
+          Write-Host ""
+
+          Write-Host "Finished:"
+          Write-Host "  $($EndTime.ToString('yyyy-MM-dd HH:mm:ss'))"
+
+          Write-Host ""
+
+          Write-Host "Elapsed:"
+          Write-Host ("  {0:hh\:mm\:ss}" -f $Elapsed)
+
+          Write-Host ""
+
+          Write-Host "Exit code:"
+          Write-Host "  $CollectorExitCode"
+
+          Write-Host ""
+
+          if ($CollectorExitCode -ne 0) {
+
+              Write-Host "[ERROR] Collector failed."
+              exit $CollectorExitCode
+          }
+
+          Write-Host "[PASS] Collector completed successfully."
+
+          Write-Host ""
+          Write-Host "============================================================"
+
+
+      # ======================================================
+      # STEP 9
+      # Verify Collector output
+      # ======================================================
+
+      - name: Verify Collector output
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY COLLECTOR OUTPUT"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $Timeframes = @(
+              "h1",
+              "h4",
+              "d1"
+          )
+
+          $Failed = $false
+
+          foreach ($Tf in $Timeframes) {
+
+              $Directory = Join-Path "data\ohlcv" $Tf
+
+              if (-not (Test-Path $Directory -PathType Container)) {
+
+                  Write-Host "[FAIL] Missing directory: $Directory"
+                  $Failed = $true
+                  continue
+              }
+
+              $Files = @(
+                  Get-ChildItem `
+                      -Path $Directory `
+                      -Filter "*.csv" `
+                      -File `
+                      -ErrorAction SilentlyContinue
+              )
+
+              $Count = $Files.Count
+
+              Write-Host "[$Tf] CSV files: $Count"
+
+              if ($Count -eq 0) {
+
+                  Write-Host "[FAIL] No CSV files found in $Directory"
+                  $Failed = $true
+              }
+          }
+
+          Write-Host ""
+
+          if (-not (Test-Path "data\collector_status.csv" -PathType Leaf)) {
+
+              Write-Host "[FAIL] data\collector_status.csv not found."
+              $Failed = $true
+
+          }
+          else {
+
+              Write-Host "[PASS] data\collector_status.csv found."
+          }
+
+          Write-Host ""
+
+          if ($Failed) {
+
+              Write-Host "[ERROR] Collector output validation failed."
+              exit 1
+          }
+
+          Write-Host "[PASS] Collector output exists."
+
+          Write-Host ""
+          Write-Host "============================================================"
+
+
+      # ======================================================
+      # STEP 10
+      # Show final local dataset status
+      # ======================================================
+
+      - name: Show final dataset status
+        if: always()
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "FINAL LOCAL DATASET STATUS"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $Timeframes = @(
+              "h1",
+              "h4",
+              "d1"
+          )
+
+          foreach ($Tf in $Timeframes) {
+
+              $Directory = Join-Path "data\ohlcv" $Tf
+
+              if (Test-Path $Directory -PathType Container) {
+
+                  $Files = @(
+                      Get-ChildItem `
+                          -Path $Directory `
+                          -Filter "*.csv" `
+                          -File `
+                          -ErrorAction SilentlyContinue
+                  )
+
+                  Write-Host "[$Tf]"
+                  Write-Host "  Directory : $Directory"
+                  Write-Host "  CSV files : $($Files.Count)"
+                  Write-Host ""
+
+              }
+              else {
+
+                  Write-Host "[$Tf]"
+                  Write-Host "  Directory : NOT FOUND"
+                  Write-Host ""
+              }
+          }
+
+          Write-Host "============================================================"
+          Write-Host "UPBIT SURGE MONITOR - CLEAN V001"
+          Write-Host "COLLECTOR WORKFLOW FINISHED"
+          Write-Host "============================================================"
