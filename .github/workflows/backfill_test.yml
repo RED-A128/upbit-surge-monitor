@@ -1,4 +1,4 @@
-name: Upbit Backfill Environment Check V001
+name: Upbit Local Repository Sync Check V001
 
 on:
   workflow_dispatch:
@@ -7,12 +7,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: upbit-surge-monitor-backfill-environment-check
+  group: upbit-surge-monitor-local-sync
   cancel-in-progress: false
 
 jobs:
-  environment-check:
-    name: Local Project Environment Check
+  sync-check:
+    name: Local Repository Sync Check
 
     runs-on:
       - self-hosted
@@ -25,158 +25,456 @@ jobs:
       run:
         shell: cmd
 
+    env:
+      LOCAL_PROJECT: C:\Users\USER\Documents\upbit-surge-monitor
+
     steps:
 
       # ======================================================
-      # 1. CHECKOUT GITHUB REPOSITORY
+      # 1. CHECKOUT CURRENT GITHUB COMMIT
       # ======================================================
 
-      - name: Checkout repository
+      - name: Checkout GitHub repository
         uses: actions/checkout@v4
 
       # ======================================================
-      # 2. BASIC RUNNER INFORMATION
+      # 2. SHOW EXECUTION INFORMATION
       # ======================================================
 
-      - name: Show runner environment
+      - name: Show execution information
         run: |
           echo ============================================================
           echo UPBIT SURGE MONITOR
-          echo BACKFILL ENVIRONMENT CHECK V001
+          echo LOCAL REPOSITORY SYNC CHECK V001
           echo ============================================================
           echo.
-          echo Runner Name:
+          echo Runner:
           echo %RUNNER_NAME%
           echo.
           echo Runner OS:
           echo %RUNNER_OS%
           echo.
-          echo Repository:
+          echo GitHub repository:
           echo %GITHUB_REPOSITORY%
           echo.
-          echo GitHub Workspace:
-          echo %GITHUB_WORKSPACE%
-          echo.
-          echo GitHub Commit:
+          echo GitHub Actions commit:
           echo %GITHUB_SHA%
           echo.
+          echo GitHub workspace:
+          echo %GITHUB_WORKSPACE%
+          echo.
+          echo Local project:
+          echo %LOCAL_PROJECT%
+          echo.
           echo ============================================================
 
       # ======================================================
-      # 3. DEFINE LOCAL PROJECT PATH
+      # 3. VERIFY LOCAL PROJECT
       # ======================================================
 
-      - name: Show local project path
+      - name: Verify local project
         run: |
           echo ============================================================
-          echo LOCAL PROJECT PATH
+          echo VERIFY LOCAL PROJECT
           echo ============================================================
           echo.
-          echo C:\Users\USER\Documents\upbit-surge-monitor
-          echo.
-          echo IMPORTANT:
-          echo This workflow is READ ONLY.
-          echo.
-          echo No git pull.
-          echo No git reset.
-          echo No git checkout.
-          echo No file deletion.
-          echo No OHLCV modification.
-          echo No backfill execution.
-          echo.
-          echo ============================================================
 
-      # ======================================================
-      # 4. VERIFY LOCAL PROJECT DIRECTORY
-      # ======================================================
+          if not exist "%LOCAL_PROJECT%" (
+            echo [FAIL] Local project directory does not exist.
+            exit /b 1
+          )
 
-      - name: Verify local project directory
-        run: |
-          echo ============================================================
-          echo LOCAL PROJECT DIRECTORY CHECK
-          echo ============================================================
+          if not exist "%LOCAL_PROJECT%\.git" (
+            echo [FAIL] Local project is not a Git repository.
+            exit /b 1
+          )
 
-          if not exist "C:\Users\USER\Documents\upbit-surge-monitor" (
-            echo [FAIL] Local project directory not found.
+          if not exist "%LOCAL_PROJECT%\data" (
+            echo [FAIL] Local data directory does not exist.
             exit /b 1
           )
 
           echo [PASS] Local project directory exists.
+          echo [PASS] Local Git repository exists.
+          echo [PASS] Local data directory exists.
           echo.
-          echo Path:
-          echo C:\Users\USER\Documents\upbit-surge-monitor
+          echo ============================================================
 
       # ======================================================
-      # 5. SHOW LOCAL DIRECTORY CONTENTS
+      # 4. VERIFY WORKING TREE IS CLEAN
       # ======================================================
 
-      - name: Show local project files
+      - name: Verify local working tree is clean
         run: |
           echo ============================================================
-          echo LOCAL PROJECT FILE LIST
+          echo VERIFY LOCAL WORKING TREE
           echo ============================================================
           echo.
 
-          dir /b "C:\Users\USER\Documents\upbit-surge-monitor"
+          cd /d "%LOCAL_PROJECT%"
 
-          echo.
-          echo ============================================================
-
-      # ======================================================
-      # 6. VERIFY LOCAL GIT REPOSITORY
-      # ======================================================
-
-      - name: Verify local Git repository
-        run: |
-          echo ============================================================
-          echo LOCAL GIT REPOSITORY CHECK
-          echo ============================================================
-
-          if not exist "C:\Users\USER\Documents\upbit-surge-monitor\.git" (
-            echo [FAIL] .git directory not found.
-            exit /b 1
-          )
-
-          echo [PASS] .git directory exists.
-
-          cd /d "C:\Users\USER\Documents\upbit-surge-monitor"
-
-          echo.
-          echo Git repository root:
-          git rev-parse --show-toplevel
-
-          echo.
           echo Current branch:
           git branch --show-current
 
           echo.
-          echo Current local commit:
+          echo Current commit:
           git rev-parse HEAD
 
           echo.
-          echo Current remote:
-          git remote -v
-
-      # ======================================================
-      # 7. SHOW LOCAL GIT STATUS
-      # ======================================================
-
-      - name: Show local Git status
-        run: |
-          echo ============================================================
-          echo LOCAL GIT STATUS - READ ONLY
-          echo ============================================================
-
-          cd /d "C:\Users\USER\Documents\upbit-surge-monitor"
-
-          echo.
+          echo Git status:
           git status --short
 
           echo.
-          echo ------------------------------------------------------------
-          echo FULL STATUS
-          echo ------------------------------------------------------------
+
+          for /f "delims=" %%i in ('git status --porcelain') do (
+            echo [FAIL] Local working tree contains changes.
+            echo.
+            echo Automatic synchronization has been stopped.
+            echo No git pull will be performed.
+            exit /b 1
+          )
+
+          echo [PASS] Local working tree is clean.
           echo.
+          echo ============================================================
+
+      # ======================================================
+      # 5. VERIFY MAIN BRANCH
+      # ======================================================
+
+      - name: Verify local branch is main
+        run: |
+          echo ============================================================
+          echo VERIFY LOCAL BRANCH
+          echo ============================================================
+          echo.
+
+          cd /d "%LOCAL_PROJECT%"
+
+          for /f "delims=" %%i in ('git branch --show-current') do set CURRENT_BRANCH=%%i
+
+          echo Current branch:
+          echo %CURRENT_BRANCH%
+          echo.
+
+          if /I not "%CURRENT_BRANCH%"=="main" (
+            echo [FAIL] Local repository is not on main branch.
+            echo Synchronization stopped.
+            exit /b 1
+          )
+
+          echo [PASS] Local repository is on main branch.
+          echo.
+          echo ============================================================
+
+      # ======================================================
+      # 6. SHOW CONFIGURED REMOTE
+      # ======================================================
+
+      - name: Show local Git remote
+        run: |
+          echo ============================================================
+          echo LOCAL GIT REMOTE
+          echo ============================================================
+          echo.
+
+          cd /d "%LOCAL_PROJECT%"
+
+          git remote -v
+
+          echo.
+          echo ============================================================
+
+      # ======================================================
+      # 7. FETCH CURRENT GITHUB STATE
+      # ======================================================
+
+      - name: Fetch origin
+        run: |
+          echo ============================================================
+          echo FETCH ORIGIN
+          echo ============================================================
+          echo.
+
+          cd /d "%LOCAL_PROJECT%"
+
+          git fetch origin
+
+          if errorlevel 1 (
+            echo.
+            echo [FAIL] git fetch origin failed.
+            exit /b 1
+          )
+
+          echo.
+          echo [PASS] origin fetched successfully.
+          echo.
+          echo ============================================================
+
+      # ======================================================
+      # 8. COMPARE LOCAL AND ORIGIN MAIN
+      # ======================================================
+
+      - name: Compare local and origin main
+        run: |
+          echo ============================================================
+          echo LOCAL VS ORIGIN MAIN
+          echo ============================================================
+          echo.
+
+          cd /d "%LOCAL_PROJECT%"
+
+          echo Local HEAD:
+          git rev-parse HEAD
+
+          echo.
+          echo origin/main:
+          git rev-parse origin/main
+
+          echo.
+          echo GitHub Actions commit:
+          echo %GITHUB_SHA%
+
+          echo.
+          echo Ahead / Behind:
+          git rev-list --left-right --count HEAD...origin/main
+
+          echo.
+          echo ============================================================
+
+      # ======================================================
+      # 9. FAST-FORWARD ONLY SYNCHRONIZATION
+      # ======================================================
+
+      - name: Fast-forward local repository
+        run: |
+          echo ============================================================
+          echo FAST-FORWARD LOCAL REPOSITORY
+          echo ============================================================
+          echo.
+
+          cd /d "%LOCAL_PROJECT%"
+
+          echo Synchronization method:
+          echo git pull --ff-only origin main
+          echo.
+
+          echo IMPORTANT:
+          echo - No git reset
+          echo - No force checkout
+          echo - No clean
+          echo - No data deletion
+          echo - Fast-forward only
+          echo.
+
+          git pull --ff-only origin main
+
+          if errorlevel 1 (
+            echo.
+            echo [FAIL] Fast-forward synchronization failed.
+            echo.
+            echo Local repository was NOT force-reset.
+            echo Existing data was NOT intentionally deleted.
+            exit /b 1
+          )
+
+          echo.
+          echo [PASS] Local repository synchronized successfully.
+          echo.
+          echo ============================================================
+
+      # ======================================================
+      # 10. VERIFY SYNCHRONIZED COMMIT
+      # ======================================================
+
+      - name: Verify synchronized commit
+        run: |
+          echo ============================================================
+          echo VERIFY SYNCHRONIZED COMMIT
+          echo ============================================================
+          echo.
+
+          cd /d "%LOCAL_PROJECT%"
+
+          echo Local HEAD after synchronization:
+          git rev-parse HEAD
+
+          echo.
+          echo origin/main:
+          git rev-parse origin/main
+
+          echo.
+          echo GitHub Actions commit:
+          echo %GITHUB_SHA%
+
+          echo.
+
+          for /f "delims=" %%i in ('git rev-parse HEAD') do set LOCAL_HEAD=%%i
+          for /f "delims=" %%i in ('git rev-parse origin/main') do set ORIGIN_HEAD=%%i
+
+          if /I not "%LOCAL_HEAD%"=="%ORIGIN_HEAD%" (
+            echo [FAIL] Local HEAD and origin/main are different.
+            exit /b 1
+          )
+
+          echo [PASS] Local HEAD matches origin/main.
+          echo.
+          echo ============================================================
+
+      # ======================================================
+      # 11. VERIFY REQUIRED PROJECT FILES
+      # ======================================================
+
+      - name: Verify synchronized project files
+        run: |
+          echo ============================================================
+          echo VERIFY SYNCHRONIZED PROJECT FILES
+          echo ============================================================
+          echo.
+
+          set FILE_ERROR=0
+
+          if exist "%LOCAL_PROJECT%\collector.py" (
+            echo [FOUND] collector.py
+          ) else (
+            echo [MISSING] collector.py
+            set FILE_ERROR=1
+          )
+
+          if exist "%LOCAL_PROJECT%\validate_collector.py" (
+            echo [FOUND] validate_collector.py
+          ) else (
+            echo [MISSING] validate_collector.py
+            set FILE_ERROR=1
+          )
+
+          if exist "%LOCAL_PROJECT%\data_history_audit.py" (
+            echo [FOUND] data_history_audit.py
+          ) else (
+            echo [MISSING] data_history_audit.py
+            set FILE_ERROR=1
+          )
+
+          if exist "%LOCAL_PROJECT%\backfill_history.py" (
+            echo [FOUND] backfill_history.py
+          ) else (
+            echo [MISSING] backfill_history.py
+            set FILE_ERROR=1
+          )
+
+          echo.
+
+          if "%FILE_ERROR%"=="1" (
+            echo [FAIL] One or more required project files are missing.
+            exit /b 1
+          )
+
+          echo [PASS] All required project files exist.
+          echo.
+          echo ============================================================
+
+      # ======================================================
+      # 12. VERIFY EXISTING OHLCV DIRECTORIES
+      # ======================================================
+
+      - name: Verify existing OHLCV directories
+        run: |
+          echo ============================================================
+          echo VERIFY EXISTING OHLCV DIRECTORIES
+          echo ============================================================
+          echo.
+
+          set DATA_ERROR=0
+
+          if exist "%LOCAL_PROJECT%\data\ohlcv\h1" (
+            echo [FOUND] data\ohlcv\h1
+          ) else (
+            echo [MISSING] data\ohlcv\h1
+            set DATA_ERROR=1
+          )
+
+          if exist "%LOCAL_PROJECT%\data\ohlcv\h4" (
+            echo [FOUND] data\ohlcv\h4
+          ) else (
+            echo [MISSING] data\ohlcv\h4
+            set DATA_ERROR=1
+          )
+
+          if exist "%LOCAL_PROJECT%\data\ohlcv\d1" (
+            echo [FOUND] data\ohlcv\d1
+          ) else (
+            echo [MISSING] data\ohlcv\d1
+            set DATA_ERROR=1
+          )
+
+          echo.
+
+          if "%DATA_ERROR%"=="1" (
+            echo [FAIL] One or more OHLCV directories are missing.
+            exit /b 1
+          )
+
+          echo [PASS] All OHLCV directories still exist.
+          echo.
+          echo ============================================================
+
+      # ======================================================
+      # 13. VERIFY KRW-BTC DATA SURVIVED SYNCHRONIZATION
+      # ======================================================
+
+      - name: Verify KRW-BTC OHLCV files
+        run: |
+          echo ============================================================
+          echo VERIFY KRW-BTC OHLCV FILES
+          echo ============================================================
+          echo.
+
+          set BTC_ERROR=0
+
+          if exist "%LOCAL_PROJECT%\data\ohlcv\h1\KRW-BTC.csv" (
+            echo [FOUND] H1 KRW-BTC.csv
+          ) else (
+            echo [MISSING] H1 KRW-BTC.csv
+            set BTC_ERROR=1
+          )
+
+          if exist "%LOCAL_PROJECT%\data\ohlcv\h4\KRW-BTC.csv" (
+            echo [FOUND] H4 KRW-BTC.csv
+          ) else (
+            echo [MISSING] H4 KRW-BTC.csv
+            set BTC_ERROR=1
+          )
+
+          if exist "%LOCAL_PROJECT%\data\ohlcv\d1\KRW-BTC.csv" (
+            echo [FOUND] D1 KRW-BTC.csv
+          ) else (
+            echo [MISSING] D1 KRW-BTC.csv
+            set BTC_ERROR=1
+          )
+
+          echo.
+
+          if "%BTC_ERROR%"=="1" (
+            echo [FAIL] One or more KRW-BTC OHLCV files are missing.
+            exit /b 1
+          )
+
+          echo [PASS] Existing KRW-BTC data is present.
+          echo.
+          echo ============================================================
+
+      # ======================================================
+      # 14. FINAL GIT STATUS
+      # ======================================================
+
+      - name: Show final local Git status
+        run: |
+          echo ============================================================
+          echo FINAL LOCAL GIT STATUS
+          echo ============================================================
+          echo.
+
+          cd /d "%LOCAL_PROJECT%"
 
           git status
 
@@ -184,235 +482,30 @@ jobs:
           echo ============================================================
 
       # ======================================================
-      # 8. COMPARE LOCAL AND GITHUB COMMITS
+      # 15. FINAL RESULT
       # ======================================================
 
-      - name: Compare local and GitHub commits
+      - name: Synchronization check completed
         run: |
           echo ============================================================
-          echo COMMIT COMPARISON
-          echo ============================================================
-
-          cd /d "C:\Users\USER\Documents\upbit-surge-monitor"
-
-          echo.
-          echo Local Documents repository commit:
-          git rev-parse HEAD
-
-          echo.
-          echo GitHub Actions checked-out commit:
-          echo %GITHUB_SHA%
-
-          echo.
-          echo NOTE:
-          echo Different commit IDs do NOT modify anything.
-          echo This step only displays the current state.
-          echo.
-          echo ============================================================
-
-      # ======================================================
-      # 9. CHECK REQUIRED PYTHON FILES IN LOCAL PROJECT
-      # ======================================================
-
-      - name: Check local Python files
-        run: |
-          echo ============================================================
-          echo LOCAL PYTHON FILE CHECK
+          echo LOCAL REPOSITORY SYNC CHECK COMPLETED
           echo ============================================================
           echo.
-
-          if exist "C:\Users\USER\Documents\upbit-surge-monitor\collector.py" (
-            echo [FOUND] collector.py
-          ) else (
-            echo [MISSING] collector.py
-          )
-
-          if exist "C:\Users\USER\Documents\upbit-surge-monitor\validate_collector.py" (
-            echo [FOUND] validate_collector.py
-          ) else (
-            echo [MISSING] validate_collector.py
-          )
-
-          if exist "C:\Users\USER\Documents\upbit-surge-monitor\data_history_audit.py" (
-            echo [FOUND] data_history_audit.py
-          ) else (
-            echo [MISSING] data_history_audit.py
-          )
-
-          if exist "C:\Users\USER\Documents\upbit-surge-monitor\backfill_history.py" (
-            echo [FOUND] backfill_history.py
-          ) else (
-            echo [MISSING] backfill_history.py
-          )
-
+          echo [PASS] Local Git repository synchronized with origin/main.
+          echo [PASS] Required Python files verified.
+          echo [PASS] Existing OHLCV directories verified.
+          echo [PASS] Existing KRW-BTC files verified.
           echo.
-          echo ============================================================
-
-      # ======================================================
-      # 10. CHECK DATA DIRECTORY
-      # ======================================================
-
-      - name: Check local OHLCV directories
-        run: |
-          echo ============================================================
-          echo LOCAL OHLCV DIRECTORY CHECK
-          echo ============================================================
-          echo.
-
-          if exist "C:\Users\USER\Documents\upbit-surge-monitor\data" (
-            echo [FOUND] data
-          ) else (
-            echo [MISSING] data
-          )
-
-          if exist "C:\Users\USER\Documents\upbit-surge-monitor\data\ohlcv" (
-            echo [FOUND] data\ohlcv
-          ) else (
-            echo [MISSING] data\ohlcv
-          )
-
-          if exist "C:\Users\USER\Documents\upbit-surge-monitor\data\ohlcv\h1" (
-            echo [FOUND] data\ohlcv\h1
-          ) else (
-            echo [MISSING] data\ohlcv\h1
-          )
-
-          if exist "C:\Users\USER\Documents\upbit-surge-monitor\data\ohlcv\h4" (
-            echo [FOUND] data\ohlcv\h4
-          ) else (
-            echo [MISSING] data\ohlcv\h4
-          )
-
-          if exist "C:\Users\USER\Documents\upbit-surge-monitor\data\ohlcv\d1" (
-            echo [FOUND] data\ohlcv\d1
-          ) else (
-            echo [MISSING] data\ohlcv\d1
-          )
-
-          echo.
-          echo ============================================================
-
-      # ======================================================
-      # 11. CHECK KRW-BTC SOURCE FILES
-      # ======================================================
-
-      - name: Check local KRW-BTC OHLCV files
-        run: |
-          echo ============================================================
-          echo KRW-BTC LOCAL SOURCE DATA CHECK
-          echo ============================================================
-          echo.
-
-          if exist "C:\Users\USER\Documents\upbit-surge-monitor\data\ohlcv\h1\KRW-BTC.csv" (
-            echo [FOUND] H1 KRW-BTC.csv
-          ) else (
-            echo [MISSING] H1 KRW-BTC.csv
-          )
-
-          if exist "C:\Users\USER\Documents\upbit-surge-monitor\data\ohlcv\h4\KRW-BTC.csv" (
-            echo [FOUND] H4 KRW-BTC.csv
-          ) else (
-            echo [MISSING] H4 KRW-BTC.csv
-          )
-
-          if exist "C:\Users\USER\Documents\upbit-surge-monitor\data\ohlcv\d1\KRW-BTC.csv" (
-            echo [FOUND] D1 KRW-BTC.csv
-          ) else (
-            echo [MISSING] D1 KRW-BTC.csv
-          )
-
-          echo.
-          echo ============================================================
-
-      # ======================================================
-      # 12. SHOW KRW-BTC FILE INFORMATION
-      # ======================================================
-
-      - name: Show KRW-BTC file information
-        run: |
-          echo ============================================================
-          echo KRW-BTC FILE INFORMATION
-          echo ============================================================
-          echo.
-
-          if exist "C:\Users\USER\Documents\upbit-surge-monitor\data\ohlcv\h1\KRW-BTC.csv" (
-            dir "C:\Users\USER\Documents\upbit-surge-monitor\data\ohlcv\h1\KRW-BTC.csv"
-          )
-
-          echo.
-
-          if exist "C:\Users\USER\Documents\upbit-surge-monitor\data\ohlcv\h4\KRW-BTC.csv" (
-            dir "C:\Users\USER\Documents\upbit-surge-monitor\data\ohlcv\h4\KRW-BTC.csv"
-          )
-
-          echo.
-
-          if exist "C:\Users\USER\Documents\upbit-surge-monitor\data\ohlcv\d1\KRW-BTC.csv" (
-            dir "C:\Users\USER\Documents\upbit-surge-monitor\data\ohlcv\d1\KRW-BTC.csv"
-          )
-
-          echo.
-          echo ============================================================
-
-      # ======================================================
-      # 13. CHECK GITHUB CHECKOUT FILES
-      # ======================================================
-
-      - name: Check files available in GitHub checkout
-        run: |
-          echo ============================================================
-          echo GITHUB CHECKOUT FILE CHECK
-          echo ============================================================
-          echo.
-
-          cd /d "%GITHUB_WORKSPACE%"
-
-          if exist "backfill_history.py" (
-            echo [FOUND] GitHub checkout: backfill_history.py
-          ) else (
-            echo [MISSING] GitHub checkout: backfill_history.py
-          )
-
-          if exist "data_history_audit.py" (
-            echo [FOUND] GitHub checkout: data_history_audit.py
-          ) else (
-            echo [MISSING] GitHub checkout: data_history_audit.py
-          )
-
-          if exist "validate_collector.py" (
-            echo [FOUND] GitHub checkout: validate_collector.py
-          ) else (
-            echo [MISSING] GitHub checkout: validate_collector.py
-          )
-
-          echo.
-          echo ============================================================
-
-      # ======================================================
-      # 14. FINAL READ-ONLY RESULT
-      # ======================================================
-
-      - name: Environment check completed
-        run: |
-          echo ============================================================
-          echo ENVIRONMENT CHECK COMPLETED
-          echo ============================================================
-          echo.
-          echo [PASS] Read-only environment inspection completed.
+          echo IMPORTANT:
           echo.
           echo NO backfill was executed.
-          echo NO OHLCV file was modified.
-          echo NO git pull was executed.
+          echo NO validator was executed.
+          echo NO history audit was executed.
           echo NO git reset was executed.
-          echo NO git checkout was executed.
-          echo NO local project file was changed.
+          echo NO git clean was executed.
+          echo NO force checkout was executed.
           echo.
-          echo Review these sections:
-          echo.
-          echo 1. LOCAL GIT STATUS
-          echo 2. COMMIT COMPARISON
-          echo 3. LOCAL PYTHON FILE CHECK
-          echo 4. KRW-BTC LOCAL SOURCE DATA CHECK
-          echo 5. GITHUB CHECKOUT FILE CHECK
+          echo Next step:
+          echo KRW-BTC BACKFILL EXECUTION TEST
           echo.
           echo ============================================================
