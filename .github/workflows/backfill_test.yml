@@ -1,0 +1,201 @@
+name: Upbit Backfill Test V001
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upbit-surge-monitor-backfill-test
+  cancel-in-progress: false
+
+jobs:
+  backfill-test:
+    name: KRW-BTC Backfill Test
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+
+    timeout-minutes: 120
+
+    defaults:
+      run:
+        shell: cmd
+
+    steps:
+      # ======================================================
+      # 1. CHECKOUT
+      # ======================================================
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ======================================================
+      # 2. ENVIRONMENT INFORMATION
+      # ======================================================
+
+      - name: Show execution environment
+        run: |
+          echo ============================================================
+          echo UPBIT SURGE MONITOR - BACKFILL TEST
+          echo ============================================================
+          echo.
+          echo Runner Name:
+          echo %RUNNER_NAME%
+          echo.
+          echo Runner OS:
+          echo %RUNNER_OS%
+          echo.
+          echo Repository:
+          echo %GITHUB_REPOSITORY%
+          echo.
+          echo Workspace:
+          echo %GITHUB_WORKSPACE%
+          echo.
+          echo Commit:
+          echo %GITHUB_SHA%
+          echo.
+          echo Test Market:
+          echo KRW-BTC
+          echo.
+          echo ============================================================
+
+      # ======================================================
+      # 3. PYTHON CHECK
+      # ======================================================
+
+      - name: Check Python
+        run: |
+          echo ============================================================
+          echo PYTHON CHECK
+          echo ============================================================
+          py --version
+          py -m pip --version
+
+      # ======================================================
+      # 4. INSTALL REQUIREMENTS
+      # ======================================================
+
+      - name: Install requirements
+        run: |
+          echo ============================================================
+          echo INSTALL REQUIREMENTS
+          echo ============================================================
+          py -m pip install -r requirements.txt
+
+      # ======================================================
+      # 5. VERIFY REQUIRED PROJECT FILES
+      # ======================================================
+
+      - name: Verify required project files
+        run: |
+          echo ============================================================
+          echo REQUIRED FILE CHECK
+          echo ============================================================
+
+          if not exist "backfill_history.py" (
+            echo [FAIL] backfill_history.py not found.
+            exit /b 1
+          )
+
+          if not exist "validate_collector.py" (
+            echo [FAIL] validate_collector.py not found.
+            exit /b 1
+          )
+
+          if not exist "data_history_audit.py" (
+            echo [FAIL] data_history_audit.py not found.
+            exit /b 1
+          )
+
+          echo [PASS] backfill_history.py
+          echo [PASS] validate_collector.py
+          echo [PASS] data_history_audit.py
+
+      # ======================================================
+      # 6. VERIFY EXISTING KRW-BTC DATA
+      # ======================================================
+
+      - name: Verify existing KRW-BTC OHLCV files
+        run: |
+          echo ============================================================
+          echo KRW-BTC SOURCE DATA CHECK
+          echo ============================================================
+
+          if not exist "data\ohlcv\h1\KRW-BTC.csv" (
+            echo [FAIL] data\ohlcv\h1\KRW-BTC.csv not found.
+            exit /b 1
+          )
+
+          if not exist "data\ohlcv\h4\KRW-BTC.csv" (
+            echo [FAIL] data\ohlcv\h4\KRW-BTC.csv not found.
+            exit /b 1
+          )
+
+          if not exist "data\ohlcv\d1\KRW-BTC.csv" (
+            echo [FAIL] data\ohlcv\d1\KRW-BTC.csv not found.
+            exit /b 1
+          )
+
+          echo [PASS] H1 KRW-BTC.csv exists.
+          echo [PASS] H4 KRW-BTC.csv exists.
+          echo [PASS] D1 KRW-BTC.csv exists.
+
+      # ======================================================
+      # 7. RUN SINGLE-MARKET BACKFILL TEST
+      # ======================================================
+
+      - name: Run KRW-BTC History Backfill
+        run: |
+          echo ============================================================
+          echo KRW-BTC HISTORY BACKFILL START
+          echo ============================================================
+          echo.
+          echo This test MUST process KRW-BTC only.
+          echo.
+          py backfill_history.py --market KRW-BTC
+
+      # ======================================================
+      # 8. VALIDATE ALL STORED OHLCV
+      # ======================================================
+
+      - name: Run Collector Validation
+        run: |
+          echo ============================================================
+          echo COLLECTOR VALIDATION START
+          echo ============================================================
+          py validate_collector.py
+
+      # ======================================================
+      # 9. RUN HISTORY AUDIT
+      # ======================================================
+
+      - name: Run OHLCV Data History Audit
+        run: |
+          echo ============================================================
+          echo DATA HISTORY AUDIT START
+          echo ============================================================
+          py data_history_audit.py
+
+      # ======================================================
+      # 10. FINAL RESULT
+      # ======================================================
+
+      - name: Backfill Test Completed
+        run: |
+          echo ============================================================
+          echo BACKFILL TEST COMPLETED
+          echo ============================================================
+          echo.
+          echo Market:
+          echo KRW-BTC
+          echo.
+          echo Completed stages:
+          echo 1. KRW-BTC historical backfill
+          echo 2. Collector validation
+          echo 3. OHLCV history audit
+          echo.
+          echo [PASS] GitHub Actions backfill test completed successfully.
+          echo ============================================================
