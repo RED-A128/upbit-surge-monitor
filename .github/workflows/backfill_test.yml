@@ -1,4 +1,4 @@
-name: Upbit Backfill Test V001
+name: Upbit Backfill Environment Check V001
 
 on:
   workflow_dispatch:
@@ -7,39 +7,42 @@ permissions:
   contents: read
 
 concurrency:
-  group: upbit-surge-monitor-backfill-test
+  group: upbit-surge-monitor-backfill-environment-check
   cancel-in-progress: false
 
 jobs:
-  backfill-test:
-    name: KRW-BTC Backfill Test
+  environment-check:
+    name: Local Project Environment Check
+
     runs-on:
       - self-hosted
       - Windows
       - X64
 
-    timeout-minutes: 120
+    timeout-minutes: 10
 
     defaults:
       run:
         shell: cmd
 
     steps:
+
       # ======================================================
-      # 1. CHECKOUT
+      # 1. CHECKOUT GITHUB REPOSITORY
       # ======================================================
 
       - name: Checkout repository
         uses: actions/checkout@v4
 
       # ======================================================
-      # 2. ENVIRONMENT INFORMATION
+      # 2. BASIC RUNNER INFORMATION
       # ======================================================
 
-      - name: Show execution environment
+      - name: Show runner environment
         run: |
           echo ============================================================
-          echo UPBIT SURGE MONITOR - BACKFILL TEST
+          echo UPBIT SURGE MONITOR
+          echo BACKFILL ENVIRONMENT CHECK V001
           echo ============================================================
           echo.
           echo Runner Name:
@@ -51,151 +54,365 @@ jobs:
           echo Repository:
           echo %GITHUB_REPOSITORY%
           echo.
-          echo Workspace:
+          echo GitHub Workspace:
           echo %GITHUB_WORKSPACE%
           echo.
-          echo Commit:
+          echo GitHub Commit:
           echo %GITHUB_SHA%
           echo.
-          echo Test Market:
-          echo KRW-BTC
+          echo ============================================================
+
+      # ======================================================
+      # 3. DEFINE LOCAL PROJECT PATH
+      # ======================================================
+
+      - name: Show local project path
+        run: |
+          echo ============================================================
+          echo LOCAL PROJECT PATH
+          echo ============================================================
+          echo.
+          echo C:\Users\USER\Documents\upbit-surge-monitor
+          echo.
+          echo IMPORTANT:
+          echo This workflow is READ ONLY.
+          echo.
+          echo No git pull.
+          echo No git reset.
+          echo No git checkout.
+          echo No file deletion.
+          echo No OHLCV modification.
+          echo No backfill execution.
           echo.
           echo ============================================================
 
       # ======================================================
-      # 3. PYTHON CHECK
+      # 4. VERIFY LOCAL PROJECT DIRECTORY
       # ======================================================
 
-      - name: Check Python
+      - name: Verify local project directory
         run: |
           echo ============================================================
-          echo PYTHON CHECK
+          echo LOCAL PROJECT DIRECTORY CHECK
           echo ============================================================
-          py --version
-          py -m pip --version
+
+          if not exist "C:\Users\USER\Documents\upbit-surge-monitor" (
+            echo [FAIL] Local project directory not found.
+            exit /b 1
+          )
+
+          echo [PASS] Local project directory exists.
+          echo.
+          echo Path:
+          echo C:\Users\USER\Documents\upbit-surge-monitor
 
       # ======================================================
-      # 4. INSTALL REQUIREMENTS
+      # 5. SHOW LOCAL DIRECTORY CONTENTS
       # ======================================================
 
-      - name: Install requirements
+      - name: Show local project files
         run: |
           echo ============================================================
-          echo INSTALL REQUIREMENTS
-          echo ============================================================
-          py -m pip install -r requirements.txt
-
-      # ======================================================
-      # 5. VERIFY REQUIRED PROJECT FILES
-      # ======================================================
-
-      - name: Verify required project files
-        run: |
-          echo ============================================================
-          echo REQUIRED FILE CHECK
-          echo ============================================================
-
-          if not exist "backfill_history.py" (
-            echo [FAIL] backfill_history.py not found.
-            exit /b 1
-          )
-
-          if not exist "validate_collector.py" (
-            echo [FAIL] validate_collector.py not found.
-            exit /b 1
-          )
-
-          if not exist "data_history_audit.py" (
-            echo [FAIL] data_history_audit.py not found.
-            exit /b 1
-          )
-
-          echo [PASS] backfill_history.py
-          echo [PASS] validate_collector.py
-          echo [PASS] data_history_audit.py
-
-      # ======================================================
-      # 6. VERIFY EXISTING KRW-BTC DATA
-      # ======================================================
-
-      - name: Verify existing KRW-BTC OHLCV files
-        run: |
-          echo ============================================================
-          echo KRW-BTC SOURCE DATA CHECK
-          echo ============================================================
-
-          if not exist "data\ohlcv\h1\KRW-BTC.csv" (
-            echo [FAIL] data\ohlcv\h1\KRW-BTC.csv not found.
-            exit /b 1
-          )
-
-          if not exist "data\ohlcv\h4\KRW-BTC.csv" (
-            echo [FAIL] data\ohlcv\h4\KRW-BTC.csv not found.
-            exit /b 1
-          )
-
-          if not exist "data\ohlcv\d1\KRW-BTC.csv" (
-            echo [FAIL] data\ohlcv\d1\KRW-BTC.csv not found.
-            exit /b 1
-          )
-
-          echo [PASS] H1 KRW-BTC.csv exists.
-          echo [PASS] H4 KRW-BTC.csv exists.
-          echo [PASS] D1 KRW-BTC.csv exists.
-
-      # ======================================================
-      # 7. RUN SINGLE-MARKET BACKFILL TEST
-      # ======================================================
-
-      - name: Run KRW-BTC History Backfill
-        run: |
-          echo ============================================================
-          echo KRW-BTC HISTORY BACKFILL START
+          echo LOCAL PROJECT FILE LIST
           echo ============================================================
           echo.
-          echo This test MUST process KRW-BTC only.
+
+          dir /b "C:\Users\USER\Documents\upbit-surge-monitor"
+
           echo.
-          py backfill_history.py --market KRW-BTC
+          echo ============================================================
 
       # ======================================================
-      # 8. VALIDATE ALL STORED OHLCV
+      # 6. VERIFY LOCAL GIT REPOSITORY
       # ======================================================
 
-      - name: Run Collector Validation
+      - name: Verify local Git repository
         run: |
           echo ============================================================
-          echo COLLECTOR VALIDATION START
+          echo LOCAL GIT REPOSITORY CHECK
           echo ============================================================
-          py validate_collector.py
+
+          if not exist "C:\Users\USER\Documents\upbit-surge-monitor\.git" (
+            echo [FAIL] .git directory not found.
+            exit /b 1
+          )
+
+          echo [PASS] .git directory exists.
+
+          cd /d "C:\Users\USER\Documents\upbit-surge-monitor"
+
+          echo.
+          echo Git repository root:
+          git rev-parse --show-toplevel
+
+          echo.
+          echo Current branch:
+          git branch --show-current
+
+          echo.
+          echo Current local commit:
+          git rev-parse HEAD
+
+          echo.
+          echo Current remote:
+          git remote -v
 
       # ======================================================
-      # 9. RUN HISTORY AUDIT
+      # 7. SHOW LOCAL GIT STATUS
       # ======================================================
 
-      - name: Run OHLCV Data History Audit
+      - name: Show local Git status
         run: |
           echo ============================================================
-          echo DATA HISTORY AUDIT START
+          echo LOCAL GIT STATUS - READ ONLY
           echo ============================================================
-          py data_history_audit.py
+
+          cd /d "C:\Users\USER\Documents\upbit-surge-monitor"
+
+          echo.
+          git status --short
+
+          echo.
+          echo ------------------------------------------------------------
+          echo FULL STATUS
+          echo ------------------------------------------------------------
+          echo.
+
+          git status
+
+          echo.
+          echo ============================================================
 
       # ======================================================
-      # 10. FINAL RESULT
+      # 8. COMPARE LOCAL AND GITHUB COMMITS
       # ======================================================
 
-      - name: Backfill Test Completed
+      - name: Compare local and GitHub commits
         run: |
           echo ============================================================
-          echo BACKFILL TEST COMPLETED
+          echo COMMIT COMPARISON
+          echo ============================================================
+
+          cd /d "C:\Users\USER\Documents\upbit-surge-monitor"
+
+          echo.
+          echo Local Documents repository commit:
+          git rev-parse HEAD
+
+          echo.
+          echo GitHub Actions checked-out commit:
+          echo %GITHUB_SHA%
+
+          echo.
+          echo NOTE:
+          echo Different commit IDs do NOT modify anything.
+          echo This step only displays the current state.
+          echo.
+          echo ============================================================
+
+      # ======================================================
+      # 9. CHECK REQUIRED PYTHON FILES IN LOCAL PROJECT
+      # ======================================================
+
+      - name: Check local Python files
+        run: |
+          echo ============================================================
+          echo LOCAL PYTHON FILE CHECK
           echo ============================================================
           echo.
-          echo Market:
-          echo KRW-BTC
+
+          if exist "C:\Users\USER\Documents\upbit-surge-monitor\collector.py" (
+            echo [FOUND] collector.py
+          ) else (
+            echo [MISSING] collector.py
+          )
+
+          if exist "C:\Users\USER\Documents\upbit-surge-monitor\validate_collector.py" (
+            echo [FOUND] validate_collector.py
+          ) else (
+            echo [MISSING] validate_collector.py
+          )
+
+          if exist "C:\Users\USER\Documents\upbit-surge-monitor\data_history_audit.py" (
+            echo [FOUND] data_history_audit.py
+          ) else (
+            echo [MISSING] data_history_audit.py
+          )
+
+          if exist "C:\Users\USER\Documents\upbit-surge-monitor\backfill_history.py" (
+            echo [FOUND] backfill_history.py
+          ) else (
+            echo [MISSING] backfill_history.py
+          )
+
           echo.
-          echo Completed stages:
-          echo 1. KRW-BTC historical backfill
-          echo 2. Collector validation
-          echo 3. OHLCV history audit
+          echo ============================================================
+
+      # ======================================================
+      # 10. CHECK DATA DIRECTORY
+      # ======================================================
+
+      - name: Check local OHLCV directories
+        run: |
+          echo ============================================================
+          echo LOCAL OHLCV DIRECTORY CHECK
+          echo ============================================================
           echo.
-          echo [PASS] GitHub Actions backfill test completed successfully.
+
+          if exist "C:\Users\USER\Documents\upbit-surge-monitor\data" (
+            echo [FOUND] data
+          ) else (
+            echo [MISSING] data
+          )
+
+          if exist "C:\Users\USER\Documents\upbit-surge-monitor\data\ohlcv" (
+            echo [FOUND] data\ohlcv
+          ) else (
+            echo [MISSING] data\ohlcv
+          )
+
+          if exist "C:\Users\USER\Documents\upbit-surge-monitor\data\ohlcv\h1" (
+            echo [FOUND] data\ohlcv\h1
+          ) else (
+            echo [MISSING] data\ohlcv\h1
+          )
+
+          if exist "C:\Users\USER\Documents\upbit-surge-monitor\data\ohlcv\h4" (
+            echo [FOUND] data\ohlcv\h4
+          ) else (
+            echo [MISSING] data\ohlcv\h4
+          )
+
+          if exist "C:\Users\USER\Documents\upbit-surge-monitor\data\ohlcv\d1" (
+            echo [FOUND] data\ohlcv\d1
+          ) else (
+            echo [MISSING] data\ohlcv\d1
+          )
+
+          echo.
+          echo ============================================================
+
+      # ======================================================
+      # 11. CHECK KRW-BTC SOURCE FILES
+      # ======================================================
+
+      - name: Check local KRW-BTC OHLCV files
+        run: |
+          echo ============================================================
+          echo KRW-BTC LOCAL SOURCE DATA CHECK
+          echo ============================================================
+          echo.
+
+          if exist "C:\Users\USER\Documents\upbit-surge-monitor\data\ohlcv\h1\KRW-BTC.csv" (
+            echo [FOUND] H1 KRW-BTC.csv
+          ) else (
+            echo [MISSING] H1 KRW-BTC.csv
+          )
+
+          if exist "C:\Users\USER\Documents\upbit-surge-monitor\data\ohlcv\h4\KRW-BTC.csv" (
+            echo [FOUND] H4 KRW-BTC.csv
+          ) else (
+            echo [MISSING] H4 KRW-BTC.csv
+          )
+
+          if exist "C:\Users\USER\Documents\upbit-surge-monitor\data\ohlcv\d1\KRW-BTC.csv" (
+            echo [FOUND] D1 KRW-BTC.csv
+          ) else (
+            echo [MISSING] D1 KRW-BTC.csv
+          )
+
+          echo.
+          echo ============================================================
+
+      # ======================================================
+      # 12. SHOW KRW-BTC FILE INFORMATION
+      # ======================================================
+
+      - name: Show KRW-BTC file information
+        run: |
+          echo ============================================================
+          echo KRW-BTC FILE INFORMATION
+          echo ============================================================
+          echo.
+
+          if exist "C:\Users\USER\Documents\upbit-surge-monitor\data\ohlcv\h1\KRW-BTC.csv" (
+            dir "C:\Users\USER\Documents\upbit-surge-monitor\data\ohlcv\h1\KRW-BTC.csv"
+          )
+
+          echo.
+
+          if exist "C:\Users\USER\Documents\upbit-surge-monitor\data\ohlcv\h4\KRW-BTC.csv" (
+            dir "C:\Users\USER\Documents\upbit-surge-monitor\data\ohlcv\h4\KRW-BTC.csv"
+          )
+
+          echo.
+
+          if exist "C:\Users\USER\Documents\upbit-surge-monitor\data\ohlcv\d1\KRW-BTC.csv" (
+            dir "C:\Users\USER\Documents\upbit-surge-monitor\data\ohlcv\d1\KRW-BTC.csv"
+          )
+
+          echo.
+          echo ============================================================
+
+      # ======================================================
+      # 13. CHECK GITHUB CHECKOUT FILES
+      # ======================================================
+
+      - name: Check files available in GitHub checkout
+        run: |
+          echo ============================================================
+          echo GITHUB CHECKOUT FILE CHECK
+          echo ============================================================
+          echo.
+
+          cd /d "%GITHUB_WORKSPACE%"
+
+          if exist "backfill_history.py" (
+            echo [FOUND] GitHub checkout: backfill_history.py
+          ) else (
+            echo [MISSING] GitHub checkout: backfill_history.py
+          )
+
+          if exist "data_history_audit.py" (
+            echo [FOUND] GitHub checkout: data_history_audit.py
+          ) else (
+            echo [MISSING] GitHub checkout: data_history_audit.py
+          )
+
+          if exist "validate_collector.py" (
+            echo [FOUND] GitHub checkout: validate_collector.py
+          ) else (
+            echo [MISSING] GitHub checkout: validate_collector.py
+          )
+
+          echo.
+          echo ============================================================
+
+      # ======================================================
+      # 14. FINAL READ-ONLY RESULT
+      # ======================================================
+
+      - name: Environment check completed
+        run: |
+          echo ============================================================
+          echo ENVIRONMENT CHECK COMPLETED
+          echo ============================================================
+          echo.
+          echo [PASS] Read-only environment inspection completed.
+          echo.
+          echo NO backfill was executed.
+          echo NO OHLCV file was modified.
+          echo NO git pull was executed.
+          echo NO git reset was executed.
+          echo NO git checkout was executed.
+          echo NO local project file was changed.
+          echo.
+          echo Review these sections:
+          echo.
+          echo 1. LOCAL GIT STATUS
+          echo 2. COMMIT COMPARISON
+          echo 3. LOCAL PYTHON FILE CHECK
+          echo 4. KRW-BTC LOCAL SOURCE DATA CHECK
+          echo 5. GITHUB CHECKOUT FILE CHECK
+          echo.
           echo ============================================================
