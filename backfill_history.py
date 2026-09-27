@@ -35,7 +35,11 @@ Important:
     - No automatic orders.
 
 Windows:
-    py backfill_history.py
+    Single market test:
+        py backfill_history.py --market KRW-BTC
+
+    All current KRW markets:
+        py backfill_history.py
 
 Expected existing directories:
     data/ohlcv/h1/
@@ -45,6 +49,7 @@ Expected existing directories:
 
 from __future__ import annotations
 
+import argparse
 import sys
 import time
 from datetime import datetime, timezone
@@ -71,9 +76,7 @@ H1_DIR = OHLCV_DIR / "h1"
 H4_DIR = OHLCV_DIR / "h4"
 D1_DIR = OHLCV_DIR / "d1"
 
-BACKFILL_STATUS_FILE = (
-    DATA_DIR / "backfill_status.csv"
-)
+BACKFILL_STATUS_FILE = DATA_DIR / "backfill_status.csv"
 
 UPBIT_API_BASE = "https://api.upbit.com/v1"
 
@@ -87,7 +90,7 @@ API_MAX_COUNT = 200
 # This intentionally stays conservative.
 REQUEST_SLEEP_SECONDS = 0.15
 
-# Delay between market/timeframe jobs.
+# Delay between market jobs.
 MARKET_SLEEP_SECONDS = 0.05
 
 # HTTP retry count.
@@ -174,11 +177,46 @@ SESSION = requests.Session()
 SESSION.headers.update(
     {
         "Accept": "application/json",
-        "User-Agent": (
-            "upbit-surge-monitor-clean-v001-backfill"
-        ),
+        "User-Agent": "upbit-surge-monitor-clean-v001-backfill",
     }
 )
+
+
+# ============================================================
+# COMMAND LINE ARGUMENTS
+# ============================================================
+
+def parse_arguments() -> argparse.Namespace:
+    """
+    Parse command-line arguments.
+
+    Examples:
+
+        py backfill_history.py
+
+        py backfill_history.py --market KRW-BTC
+    """
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "Extend existing Upbit OHLCV CSV files "
+            "backward in time."
+        )
+    )
+
+    parser.add_argument(
+        "--market",
+        type=str,
+        default=None,
+        help=(
+            "Run backfill for one KRW market only. "
+            "Example: --market KRW-BTC. "
+            "If omitted, all current Upbit KRW markets "
+            "are processed."
+        ),
+    )
+
+    return parser.parse_args()
 
 
 # ============================================================
@@ -232,6 +270,19 @@ def format_timestamp(
     return value.isoformat()
 
 
+def normalize_market_argument(
+    market: str,
+) -> str:
+    """
+    Normalize a user supplied market name.
+
+    Example:
+        krw-btc -> KRW-BTC
+    """
+
+    return market.strip().upper()
+
+
 # ============================================================
 # HTTP
 # ============================================================
@@ -281,11 +332,7 @@ def request_json(
 
                 continue
 
-            if (
-                500
-                <= response.status_code
-                <= 599
-            ):
+            if 500 <= response.status_code <= 599:
 
                 wait_seconds = min(
                     1.0 * attempt,
@@ -357,9 +404,7 @@ def get_krw_markets() -> list[str]:
     Load the current Upbit KRW market list.
     """
 
-    url = (
-        f"{UPBIT_API_BASE}/market/all"
-    )
+    url = f"{UPBIT_API_BASE}/market/all"
 
     data = request_json(
         url,
@@ -414,6 +459,49 @@ def get_krw_markets() -> list[str]:
     return markets
 
 
+def select_markets(
+    available_markets: list[str],
+    requested_market: str | None,
+) -> list[str]:
+    """
+    Select either:
+        - all current KRW markets
+        - one explicitly requested KRW market
+
+    The requested market must exist in the current Upbit
+    KRW market list.
+    """
+
+    if requested_market is None:
+
+        return available_markets
+
+    market = normalize_market_argument(
+        requested_market
+    )
+
+    if not market.startswith(
+        "KRW-"
+    ):
+
+        raise RuntimeError(
+            "The --market option must use "
+            "an Upbit KRW market code. "
+            "Example: KRW-BTC"
+        )
+
+    if market not in available_markets:
+
+        raise RuntimeError(
+            f"Requested market is not in the current "
+            f"Upbit KRW market list: {market}"
+        )
+
+    return [
+        market
+    ]
+
+
 # ============================================================
 # CANDLE CONVERSION
 # ============================================================
@@ -423,7 +511,7 @@ def candle_records_to_dataframe(
     records: list[dict[str, Any]],
 ) -> pd.DataFrame:
     """
-    Convert Upbit candle records into the exact OHLCV format
+    Convert Upbit candle records into the OHLCV format
     used by Clean V001 collector.py.
     """
 
@@ -434,50 +522,32 @@ def candle_records_to_dataframe(
         rows.append(
             {
                 "market": market,
-                "candle_date_time_utc": (
-                    item.get(
-                        "candle_date_time_utc"
-                    )
+                "candle_date_time_utc": item.get(
+                    "candle_date_time_utc"
                 ),
-                "candle_date_time_kst": (
-                    item.get(
-                        "candle_date_time_kst"
-                    )
+                "candle_date_time_kst": item.get(
+                    "candle_date_time_kst"
                 ),
-                "timestamp": (
-                    item.get(
-                        "timestamp"
-                    )
+                "timestamp": item.get(
+                    "timestamp"
                 ),
-                "open": (
-                    item.get(
-                        "opening_price"
-                    )
+                "open": item.get(
+                    "opening_price"
                 ),
-                "high": (
-                    item.get(
-                        "high_price"
-                    )
+                "high": item.get(
+                    "high_price"
                 ),
-                "low": (
-                    item.get(
-                        "low_price"
-                    )
+                "low": item.get(
+                    "low_price"
                 ),
-                "close": (
-                    item.get(
-                        "trade_price"
-                    )
+                "close": item.get(
+                    "trade_price"
                 ),
-                "volume": (
-                    item.get(
-                        "candle_acc_trade_volume"
-                    )
+                "volume": item.get(
+                    "candle_acc_trade_volume"
                 ),
-                "trade_value": (
-                    item.get(
-                        "candle_acc_trade_price"
-                    )
+                "trade_value": item.get(
+                    "candle_acc_trade_price"
                 ),
             }
         )
@@ -924,6 +994,7 @@ def save_dataframe_safely(
 
             try:
                 temp_path.unlink()
+
             except OSError:
                 pass
 
@@ -977,9 +1048,7 @@ def append_backfill_status(
                 "message": message,
             }
         ],
-        columns=(
-            BACKFILL_STATUS_COLUMNS
-        ),
+        columns=BACKFILL_STATUS_COLUMNS,
     )
 
     BACKFILL_STATUS_FILE.parent.mkdir(
@@ -1150,10 +1219,6 @@ def backfill_market_timeframe(
         existing_df.copy()
     )
 
-    previous_oldest = (
-        oldest_before_job
-    )
-
     try:
 
         while True:
@@ -1319,11 +1384,8 @@ def backfill_market_timeframe(
             # Upbit may have reached the beginning of available
             # candle history.
             #
-            # We do not immediately assume completion solely
-            # from this condition.
-            #
-            # One additional request will naturally test
-            # whether older candles exist.
+            # We intentionally allow the next request to verify
+            # whether additional older candles exist.
             # ------------------------------------------------
 
             if response_rows < API_MAX_COUNT:
@@ -1361,10 +1423,6 @@ def backfill_market_timeframe(
                 )
 
                 break
-
-            previous_oldest = (
-                new_oldest
-            )
 
             time.sleep(
                 REQUEST_SLEEP_SECONDS
@@ -1577,6 +1635,8 @@ def backfill_market_timeframe(
 # ============================================================
 
 def show_final_summary(
+    execution_mode: str,
+    selected_market: str | None,
     market_count: int,
     total_jobs: int,
     success_jobs: int,
@@ -1604,7 +1664,19 @@ def show_final_summary(
     )
 
     print(
-        f"KRW markets             : "
+        f"Execution mode          : "
+        f"{execution_mode}"
+    )
+
+    if selected_market is not None:
+
+        print(
+            f"Selected market         : "
+            f"{selected_market}"
+        )
+
+    print(
+        f"Markets processed       : "
         f"{market_count:,}"
     )
 
@@ -1699,14 +1771,31 @@ def main() -> int:
 
     start_time = time.time()
 
+    args = parse_arguments()
+
+    requested_market: str | None = (
+        args.market
+    )
+
+    if requested_market is not None:
+
+        requested_market = (
+            normalize_market_argument(
+                requested_market
+            )
+        )
+
     print_line()
+
     print(
         f"{PROJECT_NAME} - "
         f"{VERSION}"
     )
+
     print(
         "STEP 2 OHLCV HISTORY BACKFILL"
     )
+
     print_line()
 
     print(
@@ -1755,6 +1844,37 @@ def main() -> int:
 
     print()
 
+    if requested_market is None:
+
+        execution_mode = (
+            "ALL KRW MARKETS"
+        )
+
+        print(
+            "Requested execution:"
+        )
+
+        print(
+            "  ALL CURRENT KRW MARKETS"
+        )
+
+    else:
+
+        execution_mode = (
+            "SINGLE MARKET"
+        )
+
+        print(
+            "Requested execution:"
+        )
+
+        print(
+            f"  SINGLE MARKET: "
+            f"{requested_market}"
+        )
+
+    print()
+
     ensure_required_directories()
 
     # --------------------------------------------------------
@@ -1768,7 +1888,7 @@ def main() -> int:
 
     try:
 
-        markets = (
+        available_markets = (
             get_krw_markets()
         )
 
@@ -1784,9 +1904,47 @@ def main() -> int:
         return 1
 
     print(
-        f"      KRW markets found: "
+        f"      Current KRW markets found: "
+        f"{len(available_markets):,}"
+    )
+
+    # --------------------------------------------------------
+    # SELECT EXECUTION MARKET(S)
+    # --------------------------------------------------------
+
+    try:
+
+        markets = select_markets(
+            available_markets=(
+                available_markets
+            ),
+            requested_market=(
+                requested_market
+            ),
+        )
+
+    except Exception as exc:
+
+        print()
+
+        print(
+            f"[FATAL] Market selection "
+            f"failed: {exc}"
+        )
+
+        return 1
+
+    print(
+        f"      Markets selected: "
         f"{len(markets):,}"
     )
+
+    if len(markets) == 1:
+
+        print(
+            f"      Selected market: "
+            f"{markets[0]}"
+        )
 
     print()
 
@@ -1882,6 +2040,12 @@ def main() -> int:
     )
 
     show_final_summary(
+        execution_mode=execution_mode,
+        selected_market=(
+            markets[0]
+            if len(markets) == 1
+            else None
+        ),
         market_count=total_markets,
         total_jobs=total_jobs,
         success_jobs=success_jobs,
@@ -1922,9 +2086,9 @@ def main() -> int:
     ):
 
         print(
-            "[PASS] All market/timeframe jobs "
-            "reached their available "
-            "historical boundary."
+            "[PASS] All selected "
+            "market/timeframe jobs reached "
+            "their available historical boundary."
         )
 
     else:
