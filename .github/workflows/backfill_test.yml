@@ -1,4 +1,4 @@
-name: Upbit Local Repository Sync Check V001
+name: KRW-BTC Backfill Test
 
 on:
   workflow_dispatch:
@@ -6,506 +6,718 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: upbit-surge-monitor-local-sync
-  cancel-in-progress: false
-
 jobs:
-  sync-check:
-    name: Local Repository Sync Check
+  backfill-test:
+    name: KRW-BTC Backfill Test
 
     runs-on:
       - self-hosted
       - Windows
       - X64
 
-    timeout-minutes: 10
-
     defaults:
       run:
-        shell: cmd
-
-    env:
-      LOCAL_PROJECT: C:\Users\USER\Documents\upbit-surge-monitor
+        shell: powershell
 
     steps:
 
-      # ======================================================
-      # 1. CHECKOUT CURRENT GITHUB COMMIT
-      # ======================================================
+      # ============================================================
+      # 1. SHOW EXECUTION ENVIRONMENT
+      # ============================================================
 
-      - name: Checkout GitHub repository
-        uses: actions/checkout@v4
-
-      # ======================================================
-      # 2. SHOW EXECUTION INFORMATION
-      # ======================================================
-
-      - name: Show execution information
+      - name: Show execution environment
         run: |
-          echo ============================================================
-          echo UPBIT SURGE MONITOR
-          echo LOCAL REPOSITORY SYNC CHECK V001
-          echo ============================================================
-          echo.
-          echo Runner:
-          echo %RUNNER_NAME%
-          echo.
-          echo Runner OS:
-          echo %RUNNER_OS%
-          echo.
-          echo GitHub repository:
-          echo %GITHUB_REPOSITORY%
-          echo.
-          echo GitHub Actions commit:
-          echo %GITHUB_SHA%
-          echo.
-          echo GitHub workspace:
-          echo %GITHUB_WORKSPACE%
-          echo.
-          echo Local project:
-          echo %LOCAL_PROJECT%
-          echo.
-          echo ============================================================
+          Write-Host "============================================================"
+          Write-Host "UPBIT SURGE MONITOR - KRW-BTC BACKFILL TEST"
+          Write-Host "============================================================"
+          Write-Host ""
 
-      # ======================================================
-      # 3. VERIFY LOCAL PROJECT
-      # ======================================================
+          Write-Host "Runner Name:"
+          Write-Host "${{ runner.name }}"
+          Write-Host ""
 
-      - name: Verify local project
+          Write-Host "Runner OS:"
+          Write-Host "${{ runner.os }}"
+          Write-Host ""
+
+          Write-Host "GitHub Repository:"
+          Write-Host "${{ github.repository }}"
+          Write-Host ""
+
+          Write-Host "GitHub Commit:"
+          Write-Host "${{ github.sha }}"
+          Write-Host ""
+
+          Write-Host "Test Market:"
+          Write-Host "KRW-BTC"
+          Write-Host ""
+
+          Write-Host "Execution Mode:"
+          Write-Host "LOCAL DOCUMENTS REPOSITORY"
+          Write-Host ""
+
+          Write-Host "============================================================"
+
+
+      # ============================================================
+      # 2. DEFINE LOCAL PROJECT
+      # ============================================================
+
+      - name: Define local project path
         run: |
-          echo ============================================================
-          echo VERIFY LOCAL PROJECT
-          echo ============================================================
-          echo.
+          $project = "C:\Users\USER\Documents\upbit-surge-monitor"
 
-          if not exist "%LOCAL_PROJECT%" (
-            echo [FAIL] Local project directory does not exist.
-            exit /b 1
-          )
+          Write-Host "============================================================"
+          Write-Host "LOCAL PROJECT PATH"
+          Write-Host "============================================================"
+          Write-Host ""
 
-          if not exist "%LOCAL_PROJECT%\.git" (
-            echo [FAIL] Local project is not a Git repository.
-            exit /b 1
-          )
+          Write-Host "Project:"
+          Write-Host $project
+          Write-Host ""
 
-          if not exist "%LOCAL_PROJECT%\data" (
-            echo [FAIL] Local data directory does not exist.
-            exit /b 1
-          )
+          if (-not (Test-Path $project)) {
+              Write-Host "[FAIL] Local project directory not found."
+              Write-Host $project
+              exit 1
+          }
 
-          echo [PASS] Local project directory exists.
-          echo [PASS] Local Git repository exists.
-          echo [PASS] Local data directory exists.
-          echo.
-          echo ============================================================
+          if (-not (Test-Path "$project\.git")) {
+              Write-Host "[FAIL] Local project is not a Git repository."
+              exit 1
+          }
 
-      # ======================================================
-      # 4. VERIFY WORKING TREE IS CLEAN
-      # ======================================================
+          Write-Host "[PASS] Local project directory found."
+          Write-Host "[PASS] Local Git repository found."
 
-      - name: Verify local working tree is clean
+          Write-Host ""
+          Write-Host "============================================================"
+
+
+      # ============================================================
+      # 3. SYNCHRONIZE LOCAL REPOSITORY
+      # ============================================================
+
+      - name: Synchronize local repository
         run: |
-          echo ============================================================
-          echo VERIFY LOCAL WORKING TREE
-          echo ============================================================
-          echo.
+          $project = "C:\Users\USER\Documents\upbit-surge-monitor"
 
-          cd /d "%LOCAL_PROJECT%"
+          Set-Location $project
 
-          echo Current branch:
+          Write-Host "============================================================"
+          Write-Host "LOCAL REPOSITORY SYNCHRONIZATION"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          Write-Host "Current branch:"
           git branch --show-current
 
-          echo.
-          echo Current commit:
-          git rev-parse HEAD
+          $branch = git branch --show-current
 
-          echo.
-          echo Git status:
-          git status --short
+          if ($branch -ne "main") {
+              Write-Host ""
+              Write-Host "[FAIL] Local repository is not on main."
+              Write-Host "Current branch: $branch"
+              exit 1
+          }
 
-          echo.
-
-          for /f "delims=" %%i in ('git status --porcelain') do (
-            echo [FAIL] Local working tree contains changes.
-            echo.
-            echo Automatic synchronization has been stopped.
-            echo No git pull will be performed.
-            exit /b 1
-          )
-
-          echo [PASS] Local working tree is clean.
-          echo.
-          echo ============================================================
-
-      # ======================================================
-      # 5. VERIFY MAIN BRANCH
-      # ======================================================
-
-      - name: Verify local branch is main
-        run: |
-          echo ============================================================
-          echo VERIFY LOCAL BRANCH
-          echo ============================================================
-          echo.
-
-          cd /d "%LOCAL_PROJECT%"
-
-          for /f "delims=" %%i in ('git branch --show-current') do set CURRENT_BRANCH=%%i
-
-          echo Current branch:
-          echo %CURRENT_BRANCH%
-          echo.
-
-          if /I not "%CURRENT_BRANCH%"=="main" (
-            echo [FAIL] Local repository is not on main branch.
-            echo Synchronization stopped.
-            exit /b 1
-          )
-
-          echo [PASS] Local repository is on main branch.
-          echo.
-          echo ============================================================
-
-      # ======================================================
-      # 6. SHOW CONFIGURED REMOTE
-      # ======================================================
-
-      - name: Show local Git remote
-        run: |
-          echo ============================================================
-          echo LOCAL GIT REMOTE
-          echo ============================================================
-          echo.
-
-          cd /d "%LOCAL_PROJECT%"
-
-          git remote -v
-
-          echo.
-          echo ============================================================
-
-      # ======================================================
-      # 7. FETCH CURRENT GITHUB STATE
-      # ======================================================
-
-      - name: Fetch origin
-        run: |
-          echo ============================================================
-          echo FETCH ORIGIN
-          echo ============================================================
-          echo.
-
-          cd /d "%LOCAL_PROJECT%"
-
+          Write-Host ""
+          Write-Host "Fetching origin..."
           git fetch origin
 
-          if errorlevel 1 (
-            echo.
-            echo [FAIL] git fetch origin failed.
-            exit /b 1
-          )
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host "[FAIL] git fetch origin failed."
+              exit 1
+          }
 
-          echo.
-          echo [PASS] origin fetched successfully.
-          echo.
-          echo ============================================================
-
-      # ======================================================
-      # 8. COMPARE LOCAL AND ORIGIN MAIN
-      # ======================================================
-
-      - name: Compare local and origin main
-        run: |
-          echo ============================================================
-          echo LOCAL VS ORIGIN MAIN
-          echo ============================================================
-          echo.
-
-          cd /d "%LOCAL_PROJECT%"
-
-          echo Local HEAD:
+          Write-Host ""
+          Write-Host "Local commit before synchronization:"
           git rev-parse HEAD
 
-          echo.
-          echo origin/main:
+          Write-Host ""
+          Write-Host "Origin/main commit:"
           git rev-parse origin/main
 
-          echo.
-          echo GitHub Actions commit:
-          echo %GITHUB_SHA%
+          Write-Host ""
+          Write-Host "Checking working tree..."
 
-          echo.
-          echo Ahead / Behind:
-          git rev-list --left-right --count HEAD...origin/main
+          $status = git status --porcelain
 
-          echo.
-          echo ============================================================
+          if ($status) {
+              Write-Host ""
+              Write-Host "[FAIL] Local working tree contains changes."
+              Write-Host ""
+              git status
+              Write-Host ""
+              Write-Host "Backfill test stopped to protect local files."
+              exit 1
+          }
 
-      # ======================================================
-      # 9. FAST-FORWARD ONLY SYNCHRONIZATION
-      # ======================================================
+          Write-Host "[PASS] Working tree is clean."
 
-      - name: Fast-forward local repository
-        run: |
-          echo ============================================================
-          echo FAST-FORWARD LOCAL REPOSITORY
-          echo ============================================================
-          echo.
+          Write-Host ""
+          Write-Host "Fast-forwarding local main..."
+          git merge --ff-only origin/main
 
-          cd /d "%LOCAL_PROJECT%"
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host "[FAIL] Fast-forward synchronization failed."
+              exit 1
+          }
 
-          echo Synchronization method:
-          echo git pull --ff-only origin main
-          echo.
-
-          echo IMPORTANT:
-          echo - No git reset
-          echo - No force checkout
-          echo - No clean
-          echo - No data deletion
-          echo - Fast-forward only
-          echo.
-
-          git pull --ff-only origin main
-
-          if errorlevel 1 (
-            echo.
-            echo [FAIL] Fast-forward synchronization failed.
-            echo.
-            echo Local repository was NOT force-reset.
-            echo Existing data was NOT intentionally deleted.
-            exit /b 1
-          )
-
-          echo.
-          echo [PASS] Local repository synchronized successfully.
-          echo.
-          echo ============================================================
-
-      # ======================================================
-      # 10. VERIFY SYNCHRONIZED COMMIT
-      # ======================================================
-
-      - name: Verify synchronized commit
-        run: |
-          echo ============================================================
-          echo VERIFY SYNCHRONIZED COMMIT
-          echo ============================================================
-          echo.
-
-          cd /d "%LOCAL_PROJECT%"
-
-          echo Local HEAD after synchronization:
+          Write-Host ""
+          Write-Host "Local commit after synchronization:"
           git rev-parse HEAD
 
-          echo.
-          echo origin/main:
-          git rev-parse origin/main
+          $localCommit = git rev-parse HEAD
+          $remoteCommit = git rev-parse origin/main
 
-          echo.
-          echo GitHub Actions commit:
-          echo %GITHUB_SHA%
+          if ($localCommit -ne $remoteCommit) {
+              Write-Host ""
+              Write-Host "[FAIL] Local main and origin/main are different."
+              Write-Host "Local : $localCommit"
+              Write-Host "Remote: $remoteCommit"
+              exit 1
+          }
 
-          echo.
+          Write-Host ""
+          Write-Host "[PASS] Local repository synchronized with origin/main."
 
-          for /f "delims=" %%i in ('git rev-parse HEAD') do set LOCAL_HEAD=%%i
-          for /f "delims=" %%i in ('git rev-parse origin/main') do set ORIGIN_HEAD=%%i
+          Write-Host ""
+          Write-Host "============================================================"
 
-          if /I not "%LOCAL_HEAD%"=="%ORIGIN_HEAD%" (
-            echo [FAIL] Local HEAD and origin/main are different.
-            exit /b 1
-          )
 
-          echo [PASS] Local HEAD matches origin/main.
-          echo.
-          echo ============================================================
+      # ============================================================
+      # 4. CHECK PYTHON
+      # ============================================================
 
-      # ======================================================
-      # 11. VERIFY REQUIRED PROJECT FILES
-      # ======================================================
-
-      - name: Verify synchronized project files
+      - name: Check Python
         run: |
-          echo ============================================================
-          echo VERIFY SYNCHRONIZED PROJECT FILES
-          echo ============================================================
-          echo.
+          Write-Host "============================================================"
+          Write-Host "PYTHON CHECK"
+          Write-Host "============================================================"
+          Write-Host ""
 
-          set FILE_ERROR=0
+          py --version
 
-          if exist "%LOCAL_PROJECT%\collector.py" (
-            echo [FOUND] collector.py
-          ) else (
-            echo [MISSING] collector.py
-            set FILE_ERROR=1
-          )
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host "[FAIL] Python launcher 'py' is unavailable."
+              exit 1
+          }
 
-          if exist "%LOCAL_PROJECT%\validate_collector.py" (
-            echo [FOUND] validate_collector.py
-          ) else (
-            echo [MISSING] validate_collector.py
-            set FILE_ERROR=1
-          )
+          Write-Host ""
+          Write-Host "[PASS] Python is available."
 
-          if exist "%LOCAL_PROJECT%\data_history_audit.py" (
-            echo [FOUND] data_history_audit.py
-          ) else (
-            echo [MISSING] data_history_audit.py
-            set FILE_ERROR=1
-          )
+          Write-Host ""
+          Write-Host "============================================================"
 
-          if exist "%LOCAL_PROJECT%\backfill_history.py" (
-            echo [FOUND] backfill_history.py
-          ) else (
-            echo [MISSING] backfill_history.py
-            set FILE_ERROR=1
-          )
 
-          echo.
+      # ============================================================
+      # 5. VERIFY REQUIRED PROJECT FILES
+      # ============================================================
 
-          if "%FILE_ERROR%"=="1" (
-            echo [FAIL] One or more required project files are missing.
-            exit /b 1
-          )
-
-          echo [PASS] All required project files exist.
-          echo.
-          echo ============================================================
-
-      # ======================================================
-      # 12. VERIFY EXISTING OHLCV DIRECTORIES
-      # ======================================================
-
-      - name: Verify existing OHLCV directories
+      - name: Verify required project files
         run: |
-          echo ============================================================
-          echo VERIFY EXISTING OHLCV DIRECTORIES
-          echo ============================================================
-          echo.
+          $project = "C:\Users\USER\Documents\upbit-surge-monitor"
 
-          set DATA_ERROR=0
+          Set-Location $project
 
-          if exist "%LOCAL_PROJECT%\data\ohlcv\h1" (
-            echo [FOUND] data\ohlcv\h1
-          ) else (
-            echo [MISSING] data\ohlcv\h1
-            set DATA_ERROR=1
+          Write-Host "============================================================"
+          Write-Host "REQUIRED PROJECT FILE CHECK"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $files = @(
+              "collector.py",
+              "validate_collector.py",
+              "data_history_audit.py",
+              "backfill_history.py",
+              "requirements.txt"
           )
 
-          if exist "%LOCAL_PROJECT%\data\ohlcv\h4" (
-            echo [FOUND] data\ohlcv\h4
-          ) else (
-            echo [MISSING] data\ohlcv\h4
-            set DATA_ERROR=1
-          )
+          $failed = $false
 
-          if exist "%LOCAL_PROJECT%\data\ohlcv\d1" (
-            echo [FOUND] data\ohlcv\d1
-          ) else (
-            echo [MISSING] data\ohlcv\d1
-            set DATA_ERROR=1
-          )
+          foreach ($file in $files) {
 
-          echo.
+              if (Test-Path $file) {
+                  Write-Host "[FOUND] $file"
+              }
+              else {
+                  Write-Host "[MISSING] $file"
+                  $failed = $true
+              }
+          }
 
-          if "%DATA_ERROR%"=="1" (
-            echo [FAIL] One or more OHLCV directories are missing.
-            exit /b 1
-          )
+          Write-Host ""
 
-          echo [PASS] All OHLCV directories still exist.
-          echo.
-          echo ============================================================
+          if ($failed) {
+              Write-Host "[FAIL] One or more required project files are missing."
+              exit 1
+          }
 
-      # ======================================================
-      # 13. VERIFY KRW-BTC DATA SURVIVED SYNCHRONIZATION
-      # ======================================================
+          Write-Host "[PASS] All required project files are present."
 
-      - name: Verify KRW-BTC OHLCV files
+          Write-Host ""
+          Write-Host "============================================================"
+
+
+      # ============================================================
+      # 6. INSTALL REQUIREMENTS
+      # ============================================================
+
+      - name: Install requirements
         run: |
-          echo ============================================================
-          echo VERIFY KRW-BTC OHLCV FILES
-          echo ============================================================
-          echo.
+          $project = "C:\Users\USER\Documents\upbit-surge-monitor"
 
-          set BTC_ERROR=0
+          Set-Location $project
 
-          if exist "%LOCAL_PROJECT%\data\ohlcv\h1\KRW-BTC.csv" (
-            echo [FOUND] H1 KRW-BTC.csv
-          ) else (
-            echo [MISSING] H1 KRW-BTC.csv
-            set BTC_ERROR=1
+          Write-Host "============================================================"
+          Write-Host "INSTALL REQUIREMENTS"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          py -m pip install --disable-pip-version-check -r requirements.txt
+
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host ""
+              Write-Host "[FAIL] Requirement installation failed."
+              exit 1
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Requirements installed."
+
+          Write-Host ""
+          Write-Host "============================================================"
+
+
+      # ============================================================
+      # 7. VERIFY KRW-BTC SOURCE FILES
+      # ============================================================
+
+      - name: Verify KRW-BTC source files
+        run: |
+          $project = "C:\Users\USER\Documents\upbit-surge-monitor"
+
+          Set-Location $project
+
+          Write-Host "============================================================"
+          Write-Host "KRW-BTC SOURCE DATA CHECK"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $files = @(
+              "data\ohlcv\h1\KRW-BTC.csv",
+              "data\ohlcv\h4\KRW-BTC.csv",
+              "data\ohlcv\d1\KRW-BTC.csv"
           )
 
-          if exist "%LOCAL_PROJECT%\data\ohlcv\h4\KRW-BTC.csv" (
-            echo [FOUND] H4 KRW-BTC.csv
-          ) else (
-            echo [MISSING] H4 KRW-BTC.csv
-            set BTC_ERROR=1
+          $failed = $false
+
+          foreach ($file in $files) {
+
+              if (Test-Path $file) {
+
+                  $item = Get-Item $file
+
+                  Write-Host "[FOUND] $file"
+                  Write-Host "        Size: $($item.Length) bytes"
+              }
+              else {
+                  Write-Host "[MISSING] $file"
+                  $failed = $true
+              }
+          }
+
+          Write-Host ""
+
+          if ($failed) {
+              Write-Host "[FAIL] One or more KRW-BTC OHLCV files are missing."
+              Write-Host ""
+              Write-Host "Backfill requires existing OHLCV files."
+              exit 1
+          }
+
+          Write-Host "[PASS] H1/H4/D1 KRW-BTC source files are present."
+
+          Write-Host ""
+          Write-Host "============================================================"
+
+
+      # ============================================================
+      # 8. RECORD BEFORE-BACKFILL STATE
+      # ============================================================
+
+      - name: Record KRW-BTC state before backfill
+        run: |
+          $project = "C:\Users\USER\Documents\upbit-surge-monitor"
+
+          Set-Location $project
+
+          Write-Host "============================================================"
+          Write-Host "KRW-BTC STATE BEFORE BACKFILL"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          @'
+          import csv
+          from pathlib import Path
+
+          files = {
+              "H1": Path("data/ohlcv/h1/KRW-BTC.csv"),
+              "H4": Path("data/ohlcv/h4/KRW-BTC.csv"),
+              "D1": Path("data/ohlcv/d1/KRW-BTC.csv"),
+          }
+
+          for timeframe, path in files.items():
+
+              with path.open(
+                  "r",
+                  encoding="utf-8-sig",
+                  newline=""
+              ) as f:
+
+                  reader = csv.DictReader(f)
+                  rows = list(reader)
+
+              if not rows:
+                  raise SystemExit(
+                      f"[FAIL] {timeframe} contains zero rows."
+                  )
+
+              oldest = rows[0].get(
+                  "candle_date_time_utc",
+                  ""
+              )
+
+              newest = rows[-1].get(
+                  "candle_date_time_utc",
+                  ""
+              )
+
+              print(
+                  f"{timeframe}: "
+                  f"rows={len(rows):,} | "
+                  f"oldest={oldest} | "
+                  f"newest={newest}"
+              )
+
+          print()
+          print("[PASS] Before-backfill state recorded.")
+          '@ | py -
+
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host ""
+              Write-Host "[FAIL] Could not inspect KRW-BTC source files."
+              exit 1
+          }
+
+          Write-Host ""
+          Write-Host "============================================================"
+
+
+      # ============================================================
+      # 9. RUN KRW-BTC BACKFILL
+      # ============================================================
+
+      - name: Run KRW-BTC history backfill
+        run: |
+          $project = "C:\Users\USER\Documents\upbit-surge-monitor"
+
+          Set-Location $project
+
+          Write-Host "============================================================"
+          Write-Host "KRW-BTC HISTORY BACKFILL"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          Write-Host "Command:"
+          Write-Host "py backfill_history.py --market KRW-BTC"
+          Write-Host ""
+
+          py backfill_history.py --market KRW-BTC
+
+          $exitCode = $LASTEXITCODE
+
+          Write-Host ""
+          Write-Host "Backfill exit code: $exitCode"
+
+          if ($exitCode -ne 0) {
+              Write-Host ""
+              Write-Host "[FAIL] KRW-BTC backfill failed."
+              exit $exitCode
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] KRW-BTC backfill completed successfully."
+
+          Write-Host ""
+          Write-Host "============================================================"
+
+
+      # ============================================================
+      # 10. RECORD AFTER-BACKFILL STATE
+      # ============================================================
+
+      - name: Record KRW-BTC state after backfill
+        run: |
+          $project = "C:\Users\USER\Documents\upbit-surge-monitor"
+
+          Set-Location $project
+
+          Write-Host "============================================================"
+          Write-Host "KRW-BTC STATE AFTER BACKFILL"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          @'
+          import csv
+          from pathlib import Path
+
+          files = {
+              "H1": Path("data/ohlcv/h1/KRW-BTC.csv"),
+              "H4": Path("data/ohlcv/h4/KRW-BTC.csv"),
+              "D1": Path("data/ohlcv/d1/KRW-BTC.csv"),
+          }
+
+          for timeframe, path in files.items():
+
+              with path.open(
+                  "r",
+                  encoding="utf-8-sig",
+                  newline=""
+              ) as f:
+
+                  reader = csv.DictReader(f)
+                  rows = list(reader)
+
+              if not rows:
+                  raise SystemExit(
+                      f"[FAIL] {timeframe} contains zero rows."
+                  )
+
+              oldest = rows[0].get(
+                  "candle_date_time_utc",
+                  ""
+              )
+
+              newest = rows[-1].get(
+                  "candle_date_time_utc",
+                  ""
+              )
+
+              print(
+                  f"{timeframe}: "
+                  f"rows={len(rows):,} | "
+                  f"oldest={oldest} | "
+                  f"newest={newest}"
+              )
+
+          print()
+          print("[PASS] After-backfill state recorded.")
+          '@ | py -
+
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host ""
+              Write-Host "[FAIL] Could not inspect backfilled KRW-BTC files."
+              exit 1
+          }
+
+          Write-Host ""
+          Write-Host "============================================================"
+
+
+      # ============================================================
+      # 11. SHOW BACKFILL STATUS
+      # ============================================================
+
+      - name: Show KRW-BTC backfill status
+        run: |
+          $project = "C:\Users\USER\Documents\upbit-surge-monitor"
+
+          Set-Location $project
+
+          Write-Host "============================================================"
+          Write-Host "BACKFILL STATUS"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          if (-not (Test-Path "data\backfill_status.csv")) {
+              Write-Host "[FAIL] data\backfill_status.csv was not created."
+              exit 1
+          }
+
+          @'
+          import pandas as pd
+          from pathlib import Path
+
+          path = Path("data/backfill_status.csv")
+
+          df = pd.read_csv(
+              path,
+              encoding="utf-8-sig"
           )
 
-          if exist "%LOCAL_PROJECT%\data\ohlcv\d1\KRW-BTC.csv" (
-            echo [FOUND] D1 KRW-BTC.csv
-          ) else (
-            echo [MISSING] D1 KRW-BTC.csv
-            set BTC_ERROR=1
+          btc = df[
+              df["market"].astype(str).eq("KRW-BTC")
+          ].copy()
+
+          if btc.empty:
+              raise SystemExit(
+                  "[FAIL] No KRW-BTC records found "
+                  "in backfill_status.csv."
+              )
+
+          print(
+              btc.tail(3).to_string(
+                  index=False
+              )
           )
 
-          echo.
-
-          if "%BTC_ERROR%"=="1" (
-            echo [FAIL] One or more KRW-BTC OHLCV files are missing.
-            exit /b 1
+          print()
+          print(
+              f"[PASS] KRW-BTC status records found: "
+              f"{len(btc):,}"
           )
+          '@ | py -
 
-          echo [PASS] Existing KRW-BTC data is present.
-          echo.
-          echo ============================================================
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host ""
+              Write-Host "[FAIL] Backfill status verification failed."
+              exit 1
+          }
 
-      # ======================================================
-      # 14. FINAL GIT STATUS
-      # ======================================================
+          Write-Host ""
+          Write-Host "============================================================"
+
+
+      # ============================================================
+      # 12. RUN COLLECTOR VALIDATION
+      # ============================================================
+
+      - name: Run Collector Validation
+        run: |
+          $project = "C:\Users\USER\Documents\upbit-surge-monitor"
+
+          Set-Location $project
+
+          Write-Host "============================================================"
+          Write-Host "COLLECTOR VALIDATION AFTER BACKFILL"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          py validate_collector.py
+
+          $exitCode = $LASTEXITCODE
+
+          Write-Host ""
+          Write-Host "Validator exit code: $exitCode"
+
+          if ($exitCode -ne 0) {
+              Write-Host ""
+              Write-Host "[FAIL] Collector validation failed."
+              exit $exitCode
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Collector validation passed."
+
+          Write-Host ""
+          Write-Host "============================================================"
+
+
+      # ============================================================
+      # 13. RUN DATA HISTORY AUDIT
+      # ============================================================
+
+      - name: Run OHLCV Data History Audit
+        run: |
+          $project = "C:\Users\USER\Documents\upbit-surge-monitor"
+
+          Set-Location $project
+
+          Write-Host "============================================================"
+          Write-Host "DATA HISTORY AUDIT AFTER BACKFILL"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          py data_history_audit.py
+
+          $exitCode = $LASTEXITCODE
+
+          Write-Host ""
+          Write-Host "Audit exit code: $exitCode"
+
+          if ($exitCode -ne 0) {
+              Write-Host ""
+              Write-Host "[FAIL] Data history audit failed."
+              exit $exitCode
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Data history audit passed."
+
+          Write-Host ""
+          Write-Host "============================================================"
+
+
+      # ============================================================
+      # 14. SHOW FINAL LOCAL GIT STATUS
+      # ============================================================
 
       - name: Show final local Git status
+        if: always()
         run: |
-          echo ============================================================
-          echo FINAL LOCAL GIT STATUS
-          echo ============================================================
-          echo.
+          $project = "C:\Users\USER\Documents\upbit-surge-monitor"
 
-          cd /d "%LOCAL_PROJECT%"
+          Set-Location $project
 
-          git status
+          Write-Host "============================================================"
+          Write-Host "FINAL LOCAL GIT STATUS"
+          Write-Host "============================================================"
+          Write-Host ""
 
-          echo.
-          echo ============================================================
+          git status --short
 
-      # ======================================================
-      # 15. FINAL RESULT
-      # ======================================================
+          Write-Host ""
 
-      - name: Synchronization check completed
+          Write-Host "NOTE:"
+          Write-Host "Backfill modifies local OHLCV data files."
+          Write-Host "This step is READ ONLY."
+          Write-Host "No commit or push is performed automatically."
+
+          Write-Host ""
+          Write-Host "============================================================"
+
+
+      # ============================================================
+      # 15. TEST COMPLETED
+      # ============================================================
+
+      - name: Backfill Test Completed
         run: |
-          echo ============================================================
-          echo LOCAL REPOSITORY SYNC CHECK COMPLETED
-          echo ============================================================
-          echo.
-          echo [PASS] Local Git repository synchronized with origin/main.
-          echo [PASS] Required Python files verified.
-          echo [PASS] Existing OHLCV directories verified.
-          echo [PASS] Existing KRW-BTC files verified.
-          echo.
-          echo IMPORTANT:
-          echo.
-          echo NO backfill was executed.
-          echo NO validator was executed.
-          echo NO history audit was executed.
-          echo NO git reset was executed.
-          echo NO git clean was executed.
-          echo NO force checkout was executed.
-          echo.
-          echo Next step:
-          echo KRW-BTC BACKFILL EXECUTION TEST
-          echo.
-          echo ============================================================
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "KRW-BTC BACKFILL TEST COMPLETED"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          Write-Host "[PASS] Local repository synchronization completed."
+          Write-Host "[PASS] KRW-BTC H1/H4/D1 source data confirmed."
+          Write-Host "[PASS] KRW-BTC historical backfill completed."
+          Write-Host "[PASS] Backfill status confirmed."
+          Write-Host "[PASS] Collector validation completed."
+          Write-Host "[PASS] Data history audit completed."
+          Write-Host ""
+
+          Write-Host "IMPORTANT:"
+          Write-Host "Backfilled OHLCV data remains in:"
+          Write-Host "C:\Users\USER\Documents\upbit-surge-monitor\data\ohlcv"
+          Write-Host ""
+
+          Write-Host "No automatic Git commit."
+          Write-Host "No automatic Git push."
+          Write-Host "No trading."
+          Write-Host "No orders."
+
+          Write-Host ""
+          Write-Host "============================================================"
