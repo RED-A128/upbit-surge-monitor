@@ -7,7 +7,8 @@
 #
 # Purpose:
 #   Run collector.py automatically on the Windows
-#   self-hosted runner and validate the collected OHLCV data.
+#   self-hosted runner, validate the collected OHLCV data,
+#   and audit accumulated OHLCV history.
 #
 # Important project rules:
 #   - Windows PC self-hosted runner
@@ -16,6 +17,7 @@
 #   - data/ohlcv is NOT committed to Git
 #   - Collector runs before Validator
 #   - Validator is READ ONLY
+#   - Data History Audit is READ ONLY
 #   - No trading
 #   - No prediction
 #   - No pattern analysis in this workflow
@@ -64,7 +66,8 @@ on:
 # PERMISSIONS
 # ============================================================
 #
-# Collector and Validator do not need to modify the repository.
+# Collector, Validator, and Data History Audit do not need
+# to modify the repository.
 #
 # Read-only permission is therefore sufficient.
 #
@@ -302,6 +305,7 @@ jobs:
           $RequiredFiles = @(
               "collector.py",
               "validate_collector.py",
+              "data_history_audit.py",
               "requirements.txt",
               "PROJECT_STATE.md",
               "README.md"
@@ -489,6 +493,19 @@ jobs:
           }
 
           Write-Host "[PASS] validate_collector.py syntax is valid."
+          Write-Host ""
+
+          Write-Host "Checking data_history_audit.py..."
+          py -m py_compile data_history_audit.py
+
+          if ($LASTEXITCODE -ne 0) {
+
+              Write-Host ""
+              Write-Host "[ERROR] data_history_audit.py syntax validation failed."
+              exit $LASTEXITCODE
+          }
+
+          Write-Host "[PASS] data_history_audit.py syntax is valid."
 
           Write-Host ""
           Write-Host "============================================================"
@@ -740,13 +757,107 @@ jobs:
 
       # ======================================================
       # STEP 11
+      # Run OHLCV Data History Audit
+      # ======================================================
+      #
+      # data_history_audit.py is READ ONLY.
+      #
+      # It measures:
+      #
+      #   - Row count per market
+      #   - First candle timestamp
+      #   - Last candle timestamp
+      #   - Actual accumulated history span
+      #   - Latest-candle age
+      #   - Shortest / median / average / longest history
+      #   - Relatively short-history markets
+      #   - Stale-data flags
+      #   - Cross-timeframe stored market coverage
+      #
+      # IMPORTANT:
+      #
+      # Short history is NOT automatically an error.
+      #
+      # Newly listed markets may naturally have shorter
+      # historical datasets.
+      #
+      # This step is used to measure the real data distribution
+      # before defining a research-ready minimum history.
+      #
+      # ======================================================
+
+      - name: Run OHLCV Data History Audit
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "RUN OHLCV DATA HISTORY AUDIT - CLEAN V001"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $StartTime = Get-Date
+
+          Write-Host "Started:"
+          Write-Host "  $($StartTime.ToString('yyyy-MM-dd HH:mm:ss'))"
+          Write-Host ""
+
+          py data_history_audit.py
+
+          $AuditExitCode = $LASTEXITCODE
+
+          $EndTime = Get-Date
+          $Elapsed = $EndTime - $StartTime
+
+          Write-Host ""
+          Write-Host "------------------------------------------------------------"
+          Write-Host "DATA HISTORY AUDIT EXECUTION RESULT"
+          Write-Host "------------------------------------------------------------"
+          Write-Host ""
+
+          Write-Host "Started:"
+          Write-Host "  $($StartTime.ToString('yyyy-MM-dd HH:mm:ss'))"
+
+          Write-Host ""
+
+          Write-Host "Finished:"
+          Write-Host "  $($EndTime.ToString('yyyy-MM-dd HH:mm:ss'))"
+
+          Write-Host ""
+
+          Write-Host "Elapsed:"
+          Write-Host ("  {0:hh\:mm\:ss}" -f $Elapsed)
+
+          Write-Host ""
+
+          Write-Host "Exit code:"
+          Write-Host "  $AuditExitCode"
+
+          Write-Host ""
+
+          if ($AuditExitCode -ne 0) {
+
+              Write-Host "[ERROR] OHLCV data history audit failed."
+              exit $AuditExitCode
+          }
+
+          Write-Host "[PASS] OHLCV data history audit completed successfully."
+
+          Write-Host ""
+          Write-Host "============================================================"
+
+
+      # ======================================================
+      # STEP 12
       # Show final local dataset status
       # ======================================================
       #
       # This step uses "if: always()" intentionally.
       #
-      # Even if Collector or Validator fails, GitHub Actions
-      # should still show the final local dataset file counts.
+      # Even if Collector, Validator, or Data History Audit
+      # fails, GitHub Actions should still show the final local
+      # dataset file counts.
       #
       # ======================================================
 
