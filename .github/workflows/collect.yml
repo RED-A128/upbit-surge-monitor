@@ -7,13 +7,15 @@
 #
 # Purpose:
 #   Run collector.py automatically on the Windows
-#   self-hosted runner.
+#   self-hosted runner and validate the collected OHLCV data.
 #
 # Important project rules:
 #   - Windows PC self-hosted runner
 #   - Use "py" only
 #   - Raw OHLCV data stays on the PC
 #   - data/ohlcv is NOT committed to Git
+#   - Collector runs before Validator
+#   - Validator is READ ONLY
 #   - No trading
 #   - No prediction
 #   - No pattern analysis in this workflow
@@ -62,7 +64,7 @@ on:
 # PERMISSIONS
 # ============================================================
 #
-# Collector does not need to modify the repository.
+# Collector and Validator do not need to modify the repository.
 #
 # Read-only permission is therefore sufficient.
 #
@@ -102,8 +104,6 @@ jobs:
     #
     # The Collector runs on the user's Windows PC.
     #
-    # This is intentional.
-    #
     # Raw OHLCV history is stored locally under:
     #
     #   data/ohlcv/h1
@@ -128,7 +128,6 @@ jobs:
     # ========================================================
 
     env:
-
       PYTHONUTF8: "1"
       PYTHONIOENCODING: "utf-8"
 
@@ -302,6 +301,7 @@ jobs:
 
           $RequiredFiles = @(
               "collector.py",
+              "validate_collector.py",
               "requirements.txt",
               "PROJECT_STATE.md",
               "README.md"
@@ -451,20 +451,21 @@ jobs:
 
       # ======================================================
       # STEP 7
-      # Validate collector.py syntax
+      # Validate Python source syntax
       # ======================================================
 
-      - name: Validate collector syntax
+      - name: Validate Python source syntax
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
           Write-Host ""
           Write-Host "============================================================"
-          Write-Host "VALIDATE COLLECTOR SYNTAX"
+          Write-Host "VALIDATE PYTHON SOURCE SYNTAX"
           Write-Host "============================================================"
           Write-Host ""
 
+          Write-Host "Checking collector.py..."
           py -m py_compile collector.py
 
           if ($LASTEXITCODE -ne 0) {
@@ -475,6 +476,19 @@ jobs:
           }
 
           Write-Host "[PASS] collector.py syntax is valid."
+          Write-Host ""
+
+          Write-Host "Checking validate_collector.py..."
+          py -m py_compile validate_collector.py
+
+          if ($LASTEXITCODE -ne 0) {
+
+              Write-Host ""
+              Write-Host "[ERROR] validate_collector.py syntax validation failed."
+              exit $LASTEXITCODE
+          }
+
+          Write-Host "[PASS] validate_collector.py syntax is valid."
 
           Write-Host ""
           Write-Host "============================================================"
@@ -550,6 +564,13 @@ jobs:
       # ======================================================
       # STEP 9
       # Verify Collector output
+      # ======================================================
+      #
+      # This is a lightweight structural check.
+      #
+      # The full OHLCV integrity validation is performed
+      # separately in STEP 10.
+      #
       # ======================================================
 
       - name: Verify Collector output
@@ -630,7 +651,103 @@ jobs:
 
       # ======================================================
       # STEP 10
+      # Run Collector Data Validator
+      # ======================================================
+      #
+      # validate_collector.py is READ ONLY.
+      #
+      # It validates:
+      #
+      #   - Current Upbit KRW market coverage
+      #   - h1 / h4 / d1 market consistency
+      #   - Timestamp validity
+      #   - Duplicate timestamps
+      #   - Timestamp ordering
+      #   - Required OHLCV columns
+      #   - NaN / non-numeric values
+      #   - Negative OHLCV values
+      #   - Infinite values
+      #   - OHLC relationships
+      #
+      # Historical/non-current market CSV files are preserved.
+      #
+      # If Validator returns a non-zero exit code,
+      # this GitHub Actions job MUST fail.
+      #
+      # ======================================================
+
+      - name: Run Collector Data Validator
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "RUN COLLECTOR DATA VALIDATOR - CLEAN V001"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $StartTime = Get-Date
+
+          Write-Host "Started:"
+          Write-Host "  $($StartTime.ToString('yyyy-MM-dd HH:mm:ss'))"
+          Write-Host ""
+
+          py validate_collector.py
+
+          $ValidatorExitCode = $LASTEXITCODE
+
+          $EndTime = Get-Date
+          $Elapsed = $EndTime - $StartTime
+
+          Write-Host ""
+          Write-Host "------------------------------------------------------------"
+          Write-Host "VALIDATOR EXECUTION RESULT"
+          Write-Host "------------------------------------------------------------"
+          Write-Host ""
+
+          Write-Host "Started:"
+          Write-Host "  $($StartTime.ToString('yyyy-MM-dd HH:mm:ss'))"
+
+          Write-Host ""
+
+          Write-Host "Finished:"
+          Write-Host "  $($EndTime.ToString('yyyy-MM-dd HH:mm:ss'))"
+
+          Write-Host ""
+
+          Write-Host "Elapsed:"
+          Write-Host ("  {0:hh\:mm\:ss}" -f $Elapsed)
+
+          Write-Host ""
+
+          Write-Host "Exit code:"
+          Write-Host "  $ValidatorExitCode"
+
+          Write-Host ""
+
+          if ($ValidatorExitCode -ne 0) {
+
+              Write-Host "[ERROR] Collector data validation failed."
+              exit $ValidatorExitCode
+          }
+
+          Write-Host "[PASS] Collector data validation completed successfully."
+
+          Write-Host ""
+          Write-Host "============================================================"
+
+
+      # ======================================================
+      # STEP 11
       # Show final local dataset status
+      # ======================================================
+      #
+      # This step uses "if: always()" intentionally.
+      #
+      # Even if Collector or Validator fails, GitHub Actions
+      # should still show the final local dataset file counts.
+      #
       # ======================================================
 
       - name: Show final dataset status
