@@ -3,7 +3,7 @@ Upbit Surge Monitor
 Collector Data Validator
 
 Version:
-    Clean V001
+    Clean V002
 
 File:
     validate_collector.py
@@ -28,7 +28,13 @@ Important:
       market list are treated as historical data, not as errors.
     - Designed for Windows PC execution with:
 
-          py validate_collector.py
+          py validate_collector.py --mode pre
+          py validate_collector.py --mode post
+
+    PRE  : allow a market that is completely absent from h1/h4/d1
+           (treated as a newly listed market waiting for backfill).
+           Partial timeframe absence still fails.
+    POST : require every current KRW market in h1/h4/d1.
 
 Expected structure:
 
@@ -42,6 +48,7 @@ Expected structure:
 
 from __future__ import annotations
 
+import argparse
 import sys
 import time
 from dataclasses import dataclass, field
@@ -58,7 +65,7 @@ import requests
 # ============================================================
 
 PROJECT_NAME = "Upbit Surge Monitor"
-VERSION = "Clean V001"
+VERSION = "Clean V002"
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -81,7 +88,7 @@ SESSION = requests.Session()
 SESSION.headers.update(
     {
         "Accept": "application/json",
-        "User-Agent": "upbit-surge-monitor-validator-clean-v001",
+        "User-Agent": "upbit-surge-monitor-validator-clean-v002",
     }
 )
 
@@ -1002,6 +1009,7 @@ def validate_timeframe(
     timeframe: str,
     directory: Path,
     current_markets: set[str],
+    enforce_current_coverage: bool,
 ) -> TimeframeValidationResult:
 
     result = TimeframeValidationResult(
@@ -1096,21 +1104,28 @@ def validate_timeframe(
 
     if result.missing_current_markets:
 
-        result.errors.append(
-            "Missing current KRW market CSV files: "
-            f"{len(result.missing_current_markets):,}"
-        )
-
-        print(
-            "[FAIL] Missing current KRW market files: "
-            f"{len(result.missing_current_markets):,}"
-        )
+        if enforce_current_coverage:
+            result.errors.append(
+                "Missing current KRW market CSV files: "
+                f"{len(result.missing_current_markets):,}"
+            )
+            print(
+                "[FAIL] Missing current KRW market files: "
+                f"{len(result.missing_current_markets):,}"
+            )
+        else:
+            result.warnings.append(
+                "Current KRW market CSV files not yet present: "
+                f"{len(result.missing_current_markets):,}"
+            )
+            print(
+                "[INFO] PRE mode - current KRW market files "
+                "not yet present: "
+                f"{len(result.missing_current_markets):,}"
+            )
 
         for market in result.missing_current_markets:
-
-            print(
-                f"    [MISSING] {market}"
-            )
+            print(f"    [MISSING] {market}")
 
     else:
 
@@ -1313,44 +1328,63 @@ def compare_market_sets(
 def validate_current_market_coverage(
     results: dict[str, TimeframeValidationResult],
     current_markets: set[str],
-) -> list[str]:
+    mode: str,
+) -> tuple[list[str], list[str]]:
+    """
+    Validate current-market coverage.
+
+    PRE mode:
+        - A current market missing from ALL h1/h4/d1 is treated as a
+          newly listed market and is allowed to proceed to backfill.
+        - A market present in only some timeframes is an error because
+          that indicates partial/inconsistent stored data.
+
+    POST mode:
+        - Every current market must exist in all h1/h4/d1.
+
+    Returns:
+        (errors, allowed_new_markets)
+    """
 
     errors: list[str] = []
+    allowed_new_markets: list[str] = []
 
-    for timeframe in (
-        "h1",
-        "h4",
-        "d1",
-    ):
+    required_timeframes = ("h1", "h4", "d1")
 
-        result = results.get(
-            timeframe
-        )
+    stored_by_timeframe: dict[str, set[str]] = {}
 
+    for timeframe in required_timeframes:
+        result = results.get(timeframe)
         if result is None:
+            errors.append(f"{timeframe}: validation result missing")
+            stored_by_timeframe[timeframe] = set()
+            continue
+        stored_by_timeframe[timeframe] = get_market_names(result)
 
-            errors.append(
-                f"{timeframe}: validation result missing"
-            )
+    for market in sorted(current_markets):
+        present_in = [
+            timeframe
+            for timeframe in required_timeframes
+            if market in stored_by_timeframe[timeframe]
+        ]
+        missing_from = [
+            timeframe
+            for timeframe in required_timeframes
+            if market not in stored_by_timeframe[timeframe]
+        ]
 
+        if not missing_from:
             continue
 
-        stored_markets = get_market_names(
-            result
+        if mode == "pre" and not present_in:
+            allowed_new_markets.append(market)
+            continue
+
+        errors.append(
+            f"{market}: missing from {', '.join(missing_from)}"
         )
 
-        missing = sorted(
-            current_markets - stored_markets
-        )
-
-        for market in missing:
-
-            errors.append(
-                f"{timeframe}: current market "
-                f"{market} is missing"
-            )
-
-    return errors
+    return errors, allowed_new_markets
 
 
 # ============================================================
@@ -1570,10 +1604,33 @@ def print_historical_market_summary(
 
 
 # ============================================================
+# COMMAND-LINE MODE
+# ============================================================
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Validate collector OHLCV data before or after backfill."
+    )
+    parser.add_argument(
+        "--mode",
+        choices=("pre", "post"),
+        default="post",
+        help=(
+            "pre: allow markets missing from all h1/h4/d1 so backfill can create them; "
+            "post: require complete current-market coverage"
+        ),
+    )
+    return parser.parse_args()
+
+
+# ============================================================
 # MAIN VALIDATION
 # ============================================================
 
 def main() -> int:
+
+    args = parse_args()
+    validation_mode = args.mode.lower()
 
     print_header(
         "UPBIT SURGE MONITOR - "
@@ -1597,6 +1654,10 @@ def main() -> int:
     )
 
     print()
+    print(
+        f"Validation mode    : {validation_mode.upper()}"
+    )
+
     print(
         "Mode               : READ ONLY"
     )
@@ -1701,6 +1762,7 @@ def main() -> int:
                     timeframe
                 ],
                 current_markets=current_markets,
+                enforce_current_coverage=(validation_mode == "post"),
             )
         )
 
@@ -1716,8 +1778,10 @@ def main() -> int:
                 f"{timeframe}: directory missing"
             )
 
-        if result.missing_current_markets:
-
+        if (
+            validation_mode == "post"
+            and result.missing_current_markets
+        ):
             overall_errors.append(
                 f"{timeframe}: "
                 f"{len(result.missing_current_markets):,} "
@@ -1741,10 +1805,11 @@ def main() -> int:
     print("CURRENT MARKET COVERAGE CHECK")
     print_separator("-")
 
-    coverage_errors = (
+    coverage_errors, allowed_new_markets = (
         validate_current_market_coverage(
             results=results,
             current_markets=current_markets,
+            mode=validation_mode,
         )
     )
 
@@ -1768,10 +1833,18 @@ def main() -> int:
 
     else:
 
-        print(
-            "[PASS] Every current Upbit KRW "
-            "market exists in h1 / h4 / d1."
-        )
+        if validation_mode == "pre" and allowed_new_markets:
+            print(
+                "[PASS] PRE mode accepted completely missing "
+                "new current markets for backfill."
+            )
+            for market in allowed_new_markets:
+                print(f"  [NEW MARKET] {market} -> h1/h4/d1 will be created by backfill")
+        else:
+            print(
+                "[PASS] Every current Upbit KRW "
+                "market exists in h1 / h4 / d1."
+            )
 
     # --------------------------------------------------------
     # CROSS-TIMEFRAME MARKET SET
@@ -1873,6 +1946,11 @@ def main() -> int:
     )
 
     print(
+        f"Validation mode      : "
+        f"{validation_mode.upper()}"
+    )
+
+    print(
         f"Current KRW markets  : "
         f"{len(current_markets):,}"
     )
@@ -1918,6 +1996,11 @@ def main() -> int:
     )
 
     print(
+        f"PRE allowed new mkts : "
+        f"{len(allowed_new_markets):,}"
+    )
+
+    print(
         f"Overall errors       : "
         f"{len(overall_errors):,}"
     )
@@ -1956,10 +2039,19 @@ def main() -> int:
         "[RESULT] COLLECTOR VALIDATION PASSED"
     )
 
-    print(
-        "[PASS] All current Upbit KRW markets "
-        "exist in h1 / h4 / d1."
-    )
+    if validation_mode == "pre" and allowed_new_markets:
+        print(
+            "[PASS] Existing OHLCV data is valid enough to start backfill."
+        )
+        print(
+            f"[INFO] {len(allowed_new_markets):,} completely missing current "
+            "market(s) will be created by backfill."
+        )
+    else:
+        print(
+            "[PASS] All current Upbit KRW markets "
+            "exist in h1 / h4 / d1."
+        )
 
     print(
         "[PASS] All stored OHLCV CSV files "
