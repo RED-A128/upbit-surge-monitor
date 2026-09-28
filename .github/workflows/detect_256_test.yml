@@ -1,0 +1,1886 @@
+name: 256 Detector Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  detect-256-test:
+    name: KRW-BTC 256 Detector Test
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 15
+
+    steps:
+      # ======================================================
+      # 1. CHECKOUT
+      # ======================================================
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+
+      # ======================================================
+      # 2. PYTHON
+      # ======================================================
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+
+      # ======================================================
+      # 3. INSTALL DEPENDENCIES
+      # ======================================================
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python -m pip install --upgrade pip
+
+          if [ -f requirements.txt ]; then
+            python -m pip install -r requirements.txt
+          fi
+
+          python - <<'PY'
+          import numpy
+          import pandas
+
+          print("numpy :", numpy.__version__)
+          print("pandas:", pandas.__version__)
+          PY
+
+
+      # ======================================================
+      # 4. VERIFY REQUIRED PROJECT FILES
+      # ======================================================
+
+      - name: Verify required project files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Checking required project files..."
+
+          test -f build_features.py || {
+            echo "[FAIL] build_features.py not found."
+            exit 1
+          }
+
+          test -f detect_256.py || {
+            echo "[FAIL] detect_256.py not found."
+            exit 1
+          }
+
+          echo "[PASS] build_features.py found."
+          echo "[PASS] detect_256.py found."
+
+
+      # ======================================================
+      # 5. VERIFY KRW-BTC OHLCV INPUT FILES
+      # ======================================================
+
+      - name: Verify KRW-BTC OHLCV input files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          from pathlib import Path
+          import sys
+
+          required_files = [
+              Path("data/ohlcv/h1/KRW-BTC.csv"),
+              Path("data/ohlcv/h4/KRW-BTC.csv"),
+              Path("data/ohlcv/d1/KRW-BTC.csv"),
+          ]
+
+          failed = False
+
+          for path in required_files:
+              if not path.exists():
+                  print(f"[FAIL] Missing OHLCV file: {path}")
+                  failed = True
+                  continue
+
+              size = path.stat().st_size
+
+              if size <= 0:
+                  print(f"[FAIL] Empty OHLCV file: {path}")
+                  failed = True
+                  continue
+
+              print(
+                  f"[PASS] {path} "
+                  f"size={size:,} bytes"
+              )
+
+          if failed:
+              sys.exit(1)
+
+          print(
+              "[PASS] All required KRW-BTC "
+              "OHLCV files are present."
+          )
+          PY
+
+
+      # ======================================================
+      # 6. BUILD KRW-BTC FEATURES
+      # ======================================================
+
+      - name: Build KRW-BTC Clean V002 features
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Running build_features.py..."
+
+          python build_features.py
+
+          echo "[PASS] build_features.py completed."
+
+
+      # ======================================================
+      # 7. VERIFY FEATURE INPUT FILES
+      # ======================================================
+
+      - name: Verify detector feature input files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+          import sys
+
+          feature_files = {
+              "H1": Path("data/features/h1/KRW-BTC.csv"),
+              "H4": Path("data/features/h4/KRW-BTC.csv"),
+              "D1": Path("data/features/d1/KRW-BTC.csv"),
+          }
+
+          failed = False
+
+          for timeframe, path in feature_files.items():
+
+              if not path.exists():
+                  print(
+                      f"[FAIL] {timeframe} feature file "
+                      f"not found: {path}"
+                  )
+                  failed = True
+                  continue
+
+              try:
+                  df = pd.read_csv(
+                      path,
+                      encoding="utf-8-sig",
+                  )
+
+              except Exception as exc:
+                  print(
+                      f"[FAIL] {timeframe} cannot read "
+                      f"feature CSV: {exc}"
+                  )
+                  failed = True
+                  continue
+
+              if df.empty:
+                  print(
+                      f"[FAIL] {timeframe} feature CSV "
+                      "contains no rows."
+                  )
+                  failed = True
+                  continue
+
+              print(
+                  f"[PASS] {timeframe}: "
+                  f"{len(df):,} rows / "
+                  f"{len(df.columns):,} columns"
+              )
+
+          if failed:
+              sys.exit(1)
+
+          print(
+              "[PASS] All detector feature inputs "
+              "are available."
+          )
+          PY
+
+
+      # ======================================================
+      # 8. SAVE FEATURE SHA256 BEFORE DETECTOR
+      # ======================================================
+
+      - name: Save feature SHA256 before detector
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import json
+
+          feature_files = {
+              "h1": Path("data/features/h1/KRW-BTC.csv"),
+              "h4": Path("data/features/h4/KRW-BTC.csv"),
+              "d1": Path("data/features/d1/KRW-BTC.csv"),
+          }
+
+          hashes = {}
+
+          for timeframe, path in feature_files.items():
+
+              sha256 = hashlib.sha256()
+
+              with path.open("rb") as file:
+                  while True:
+                      chunk = file.read(1024 * 1024)
+
+                      if not chunk:
+                          break
+
+                      sha256.update(chunk)
+
+              digest = sha256.hexdigest()
+
+              hashes[timeframe] = digest
+
+              print(
+                  f"{timeframe.upper()} "
+                  f"{digest}"
+              )
+
+          output = Path(
+              "/tmp/detect_256_feature_hashes_before.json"
+          )
+
+          output.write_text(
+              json.dumps(
+                  hashes,
+                  indent=2,
+              ),
+              encoding="utf-8",
+          )
+
+          print(
+              "[PASS] Feature SHA256 baseline saved."
+          )
+          PY
+
+
+      # ======================================================
+      # 9. RUN 256 DETECTOR
+      # ======================================================
+
+      - name: Run 256 Detector Clean V001
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Running detect_256.py..."
+
+          python detect_256.py
+
+          echo "[PASS] detect_256.py completed."
+
+
+      # ======================================================
+      # 10. VERIFY SIGNAL FILES EXIST
+      # ======================================================
+
+      - name: Verify 256 signal output files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          from pathlib import Path
+          import sys
+
+          signal_files = {
+              "H1": Path(
+                  "data/signals/256/h1/KRW-BTC.csv"
+              ),
+              "H4": Path(
+                  "data/signals/256/h4/KRW-BTC.csv"
+              ),
+              "D1": Path(
+                  "data/signals/256/d1/KRW-BTC.csv"
+              ),
+          }
+
+          failed = False
+
+          for timeframe, path in signal_files.items():
+
+              if not path.exists():
+
+                  print(
+                      f"[FAIL] {timeframe} signal file "
+                      f"not found: {path}"
+                  )
+
+                  failed = True
+
+                  continue
+
+              size = path.stat().st_size
+
+              if size <= 0:
+
+                  print(
+                      f"[FAIL] {timeframe} signal file "
+                      f"is empty: {path}"
+                  )
+
+                  failed = True
+
+                  continue
+
+              print(
+                  f"[PASS] {timeframe}: "
+                  f"{path} "
+                  f"size={size:,} bytes"
+              )
+
+          if failed:
+              sys.exit(1)
+
+          print(
+              "[PASS] All 256 signal files exist."
+          )
+          PY
+
+
+      # ======================================================
+      # 11. VERIFY FEATURE SHA256 UNCHANGED
+      # ======================================================
+
+      - name: Verify feature CSV files were not modified
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import json
+          import sys
+
+          baseline_file = Path(
+              "/tmp/detect_256_feature_hashes_before.json"
+          )
+
+          if not baseline_file.exists():
+              print(
+                  "[FAIL] SHA256 baseline file missing."
+              )
+              sys.exit(1)
+
+          before = json.loads(
+              baseline_file.read_text(
+                  encoding="utf-8"
+              )
+          )
+
+          feature_files = {
+              "h1": Path("data/features/h1/KRW-BTC.csv"),
+              "h4": Path("data/features/h4/KRW-BTC.csv"),
+              "d1": Path("data/features/d1/KRW-BTC.csv"),
+          }
+
+          failed = False
+
+          for timeframe, path in feature_files.items():
+
+              sha256 = hashlib.sha256()
+
+              with path.open("rb") as file:
+
+                  while True:
+
+                      chunk = file.read(
+                          1024 * 1024
+                      )
+
+                      if not chunk:
+                          break
+
+                      sha256.update(chunk)
+
+              after = sha256.hexdigest()
+
+              expected = before.get(
+                  timeframe
+              )
+
+              print(
+                  f"{timeframe.upper()} BEFORE: "
+                  f"{expected}"
+              )
+
+              print(
+                  f"{timeframe.upper()} AFTER : "
+                  f"{after}"
+              )
+
+              if expected != after:
+
+                  print(
+                      f"[FAIL] {timeframe.upper()} "
+                      "feature CSV was modified."
+                  )
+
+                  failed = True
+
+              else:
+
+                  print(
+                      f"[PASS] {timeframe.upper()} "
+                      "feature SHA256 unchanged."
+                  )
+
+          if failed:
+              sys.exit(1)
+
+          print(
+              "[PASS] Detector did not modify "
+              "Feature CSV files."
+          )
+          PY
+
+
+      # ======================================================
+      # 12. VERIFY FEATURE / SIGNAL ROW COUNTS
+      # ======================================================
+
+      - name: Verify feature and signal row counts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+          import sys
+
+          files = {
+              "H1": (
+                  Path("data/features/h1/KRW-BTC.csv"),
+                  Path("data/signals/256/h1/KRW-BTC.csv"),
+              ),
+              "H4": (
+                  Path("data/features/h4/KRW-BTC.csv"),
+                  Path("data/signals/256/h4/KRW-BTC.csv"),
+              ),
+              "D1": (
+                  Path("data/features/d1/KRW-BTC.csv"),
+                  Path("data/signals/256/d1/KRW-BTC.csv"),
+              ),
+          }
+
+          failed = False
+
+          for timeframe, paths in files.items():
+
+              feature_path, signal_path = paths
+
+              feature_df = pd.read_csv(
+                  feature_path,
+                  encoding="utf-8-sig",
+              )
+
+              signal_df = pd.read_csv(
+                  signal_path,
+                  encoding="utf-8-sig",
+              )
+
+              feature_rows = len(
+                  feature_df
+              )
+
+              signal_rows = len(
+                  signal_df
+              )
+
+              print(
+                  f"{timeframe}: "
+                  f"feature={feature_rows:,}, "
+                  f"signal={signal_rows:,}"
+              )
+
+              if feature_rows != signal_rows:
+
+                  print(
+                      f"[FAIL] {timeframe} row count "
+                      "mismatch."
+                  )
+
+                  failed = True
+
+              else:
+
+                  print(
+                      f"[PASS] {timeframe} row count "
+                      "matches."
+                  )
+
+          if failed:
+              sys.exit(1)
+
+          print(
+              "[PASS] All feature/signal row counts match."
+          )
+          PY
+
+
+      # ======================================================
+      # 13. VERIFY REQUIRED DETECTOR COLUMNS
+      # ======================================================
+
+      - name: Verify required 256 detector columns
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+          import sys
+
+          required_columns = [
+
+              "cond_ma_compression",
+              "cond_long_ma_compression",
+
+              "cond_short_ma_turn",
+              "cond_mid_ma_turn",
+              "cond_long_ma_stable",
+
+              "cond_price_above_sma5",
+              "cond_price_above_sma20",
+
+              "cond_momentum_positive",
+              "cond_macd_positive",
+
+              "cond_volume_expansion",
+              "cond_trade_value_expansion",
+
+              "cond_candle_strength",
+
+              "cond_not_overextended",
+
+              "setup_score",
+              "ready_score",
+              "trigger_score",
+
+              "signal_setup",
+              "signal_ready",
+              "signal_trigger",
+
+              "signal_stage",
+          ]
+
+          files = {
+              "H1": Path(
+                  "data/signals/256/h1/KRW-BTC.csv"
+              ),
+              "H4": Path(
+                  "data/signals/256/h4/KRW-BTC.csv"
+              ),
+              "D1": Path(
+                  "data/signals/256/d1/KRW-BTC.csv"
+              ),
+          }
+
+          failed = False
+
+          for timeframe, path in files.items():
+
+              df = pd.read_csv(
+                  path,
+                  encoding="utf-8-sig",
+                  nrows=5,
+              )
+
+              missing = [
+                  column
+                  for column in required_columns
+                  if column not in df.columns
+              ]
+
+              print(
+                  f"{timeframe}: "
+                  f"{len(df.columns):,} columns"
+              )
+
+              if missing:
+
+                  print(
+                      f"[FAIL] {timeframe} missing "
+                      "detector columns:"
+                  )
+
+                  for column in missing:
+                      print(
+                          f"  {column}"
+                      )
+
+                  failed = True
+
+              else:
+
+                  print(
+                      f"[PASS] {timeframe} all "
+                      f"{len(required_columns)} "
+                      "detector columns present."
+                  )
+
+          if failed:
+              sys.exit(1)
+
+          print(
+              "[PASS] Required 256 detector "
+              "columns verified."
+          )
+          PY
+
+
+      # ======================================================
+      # 14. VERIFY FLAG VALUES
+      # ======================================================
+
+      - name: Verify detector flag values
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+          import sys
+
+          flag_columns = [
+
+              "cond_ma_compression",
+              "cond_long_ma_compression",
+
+              "cond_short_ma_turn",
+              "cond_mid_ma_turn",
+              "cond_long_ma_stable",
+
+              "cond_price_above_sma5",
+              "cond_price_above_sma20",
+
+              "cond_momentum_positive",
+              "cond_macd_positive",
+
+              "cond_volume_expansion",
+              "cond_trade_value_expansion",
+
+              "cond_candle_strength",
+
+              "cond_not_overextended",
+
+              "signal_setup",
+              "signal_ready",
+              "signal_trigger",
+          ]
+
+          files = {
+              "H1": Path(
+                  "data/signals/256/h1/KRW-BTC.csv"
+              ),
+              "H4": Path(
+                  "data/signals/256/h4/KRW-BTC.csv"
+              ),
+              "D1": Path(
+                  "data/signals/256/d1/KRW-BTC.csv"
+              ),
+          }
+
+          failed = False
+
+          for timeframe, path in files.items():
+
+              df = pd.read_csv(
+                  path,
+                  encoding="utf-8-sig",
+              )
+
+              for column in flag_columns:
+
+                  if column not in df.columns:
+
+                      print(
+                          f"[FAIL] {timeframe} missing "
+                          f"flag column: {column}"
+                      )
+
+                      failed = True
+
+                      continue
+
+                  values = set(
+                      pd.to_numeric(
+                          df[column],
+                          errors="coerce",
+                      )
+                      .dropna()
+                      .unique()
+                      .tolist()
+                  )
+
+                  invalid_values = (
+                      values
+                      - {
+                          0,
+                          1,
+                      }
+                  )
+
+                  if invalid_values:
+
+                      print(
+                          f"[FAIL] {timeframe} "
+                          f"{column} invalid values: "
+                          f"{invalid_values}"
+                      )
+
+                      failed = True
+
+              if not failed:
+
+                  print(
+                      f"[PASS] {timeframe} "
+                      "flag values are 0/1."
+                  )
+
+          if failed:
+              sys.exit(1)
+
+          print(
+              "[PASS] All detector flag values verified."
+          )
+          PY
+
+
+      # ======================================================
+      # 15. VERIFY SIGNAL STAGES
+      # ======================================================
+
+      - name: Verify detector signal stages
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+          import sys
+
+          allowed_stages = {
+              "NONE",
+              "SETUP",
+              "READY",
+              "TRIGGER",
+          }
+
+          files = {
+              "H1": Path(
+                  "data/signals/256/h1/KRW-BTC.csv"
+              ),
+              "H4": Path(
+                  "data/signals/256/h4/KRW-BTC.csv"
+              ),
+              "D1": Path(
+                  "data/signals/256/d1/KRW-BTC.csv"
+              ),
+          }
+
+          failed = False
+
+          for timeframe, path in files.items():
+
+              df = pd.read_csv(
+                  path,
+                  encoding="utf-8-sig",
+              )
+
+              stages = set(
+                  df[
+                      "signal_stage"
+                  ]
+                  .dropna()
+                  .astype(str)
+                  .unique()
+                  .tolist()
+              )
+
+              invalid = (
+                  stages
+                  - allowed_stages
+              )
+
+              print(
+                  f"{timeframe} stages: "
+                  f"{sorted(stages)}"
+              )
+
+              if invalid:
+
+                  print(
+                      f"[FAIL] {timeframe} invalid "
+                      f"signal stages: {invalid}"
+                  )
+
+                  failed = True
+
+              else:
+
+                  print(
+                      f"[PASS] {timeframe} "
+                      "signal stages valid."
+                  )
+
+          if failed:
+              sys.exit(1)
+
+          print(
+              "[PASS] All signal stages verified."
+          )
+          PY
+
+
+      # ======================================================
+      # 16. VERIFY SIGNAL LOGIC CONSISTENCY
+      # ======================================================
+
+      - name: Verify detector state consistency
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+          import sys
+
+          files = {
+              "H1": Path(
+                  "data/signals/256/h1/KRW-BTC.csv"
+              ),
+              "H4": Path(
+                  "data/signals/256/h4/KRW-BTC.csv"
+              ),
+              "D1": Path(
+                  "data/signals/256/d1/KRW-BTC.csv"
+              ),
+          }
+
+          failed = False
+
+          for timeframe, path in files.items():
+
+              df = pd.read_csv(
+                  path,
+                  encoding="utf-8-sig",
+              )
+
+              trigger_without_ready = df[
+                  (
+                      df["signal_trigger"] == 1
+                  )
+                  & (
+                      df["signal_ready"] != 1
+                  )
+              ]
+
+              wrong_trigger_stage = df[
+                  (
+                      df["signal_trigger"] == 1
+                  )
+                  & (
+                      df["signal_stage"] != "TRIGGER"
+                  )
+              ]
+
+              wrong_ready_stage = df[
+                  (
+                      df["signal_trigger"] != 1
+                  )
+                  & (
+                      df["signal_ready"] == 1
+                  )
+                  & (
+                      df["signal_stage"] != "READY"
+                  )
+              ]
+
+              wrong_setup_stage = df[
+                  (
+                      df["signal_trigger"] != 1
+                  )
+                  & (
+                      df["signal_ready"] != 1
+                  )
+                  & (
+                      df["signal_setup"] == 1
+                  )
+                  & (
+                      df["signal_stage"] != "SETUP"
+                  )
+              ]
+
+              if not trigger_without_ready.empty:
+
+                  print(
+                      f"[FAIL] {timeframe}: "
+                      f"{len(trigger_without_ready):,} "
+                      "TRIGGER rows without READY."
+                  )
+
+                  failed = True
+
+              if not wrong_trigger_stage.empty:
+
+                  print(
+                      f"[FAIL] {timeframe}: "
+                      f"{len(wrong_trigger_stage):,} "
+                      "TRIGGER flag/stage mismatches."
+                  )
+
+                  failed = True
+
+              if not wrong_ready_stage.empty:
+
+                  print(
+                      f"[FAIL] {timeframe}: "
+                      f"{len(wrong_ready_stage):,} "
+                      "READY flag/stage mismatches."
+                  )
+
+                  failed = True
+
+              if not wrong_setup_stage.empty:
+
+                  print(
+                      f"[FAIL] {timeframe}: "
+                      f"{len(wrong_setup_stage):,} "
+                      "SETUP flag/stage mismatches."
+                  )
+
+                  failed = True
+
+              if (
+                  trigger_without_ready.empty
+                  and wrong_trigger_stage.empty
+                  and wrong_ready_stage.empty
+                  and wrong_setup_stage.empty
+              ):
+
+                  print(
+                      f"[PASS] {timeframe} "
+                      "state consistency verified."
+                  )
+
+          if failed:
+              sys.exit(1)
+
+          print(
+              "[PASS] Detector state consistency verified."
+          )
+          PY
+
+
+      # ======================================================
+      # 17. VERIFY TIMESTAMP INTEGRITY
+      # ======================================================
+
+      - name: Verify detector timestamp integrity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+          import sys
+
+          files = {
+              "H1": (
+                  Path("data/features/h1/KRW-BTC.csv"),
+                  Path("data/signals/256/h1/KRW-BTC.csv"),
+              ),
+              "H4": (
+                  Path("data/features/h4/KRW-BTC.csv"),
+                  Path("data/signals/256/h4/KRW-BTC.csv"),
+              ),
+              "D1": (
+                  Path("data/features/d1/KRW-BTC.csv"),
+                  Path("data/signals/256/d1/KRW-BTC.csv"),
+              ),
+          }
+
+          failed = False
+
+          for timeframe, paths in files.items():
+
+              feature_path, signal_path = paths
+
+              feature_df = pd.read_csv(
+                  feature_path,
+                  encoding="utf-8-sig",
+              )
+
+              signal_df = pd.read_csv(
+                  signal_path,
+                  encoding="utf-8-sig",
+              )
+
+              feature_time = pd.to_datetime(
+                  feature_df[
+                      "candle_date_time_utc"
+                  ],
+                  utc=True,
+                  errors="coerce",
+              )
+
+              signal_time = pd.to_datetime(
+                  signal_df[
+                      "candle_date_time_utc"
+                  ],
+                  utc=True,
+                  errors="coerce",
+              )
+
+              if feature_time.isna().any():
+
+                  print(
+                      f"[FAIL] {timeframe} feature "
+                      "contains invalid timestamps."
+                  )
+
+                  failed = True
+
+              if signal_time.isna().any():
+
+                  print(
+                      f"[FAIL] {timeframe} signal "
+                      "contains invalid timestamps."
+                  )
+
+                  failed = True
+
+              if signal_time.duplicated().any():
+
+                  print(
+                      f"[FAIL] {timeframe} signal "
+                      "contains duplicate timestamps."
+                  )
+
+                  failed = True
+
+              if not signal_time.is_monotonic_increasing:
+
+                  print(
+                      f"[FAIL] {timeframe} signal "
+                      "timestamps are not sorted."
+                  )
+
+                  failed = True
+
+              if not feature_time.reset_index(
+                  drop=True
+              ).equals(
+                  signal_time.reset_index(
+                      drop=True
+                  )
+              ):
+
+                  print(
+                      f"[FAIL] {timeframe} feature/signal "
+                      "timestamps do not match."
+                  )
+
+                  failed = True
+
+              else:
+
+                  print(
+                      f"[PASS] {timeframe} "
+                      "timestamp integrity verified."
+                  )
+
+          if failed:
+              sys.exit(1)
+
+          print(
+              "[PASS] Detector timestamps verified."
+          )
+          PY
+
+
+      # ======================================================
+      # 18. VERIFY SCORE VALUES
+      # ======================================================
+
+      - name: Verify detector score values
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          from pathlib import Path
+          import numpy as np
+          import pandas as pd
+          import sys
+
+          score_limits = {
+              "setup_score": (
+                  0,
+                  5,
+              ),
+              "ready_score": (
+                  0,
+                  6,
+              ),
+              "trigger_score": (
+                  0,
+                  8,
+              ),
+          }
+
+          files = {
+              "H1": Path(
+                  "data/signals/256/h1/KRW-BTC.csv"
+              ),
+              "H4": Path(
+                  "data/signals/256/h4/KRW-BTC.csv"
+              ),
+              "D1": Path(
+                  "data/signals/256/d1/KRW-BTC.csv"
+              ),
+          }
+
+          failed = False
+
+          for timeframe, path in files.items():
+
+              df = pd.read_csv(
+                  path,
+                  encoding="utf-8-sig",
+              )
+
+              for column, limits in score_limits.items():
+
+                  minimum, maximum = limits
+
+                  values = pd.to_numeric(
+                      df[column],
+                      errors="coerce",
+                  )
+
+                  if values.isna().any():
+
+                      print(
+                          f"[FAIL] {timeframe} "
+                          f"{column} contains NaN."
+                      )
+
+                      failed = True
+
+                      continue
+
+                  if np.isinf(
+                      values.to_numpy(
+                          dtype=float
+                      )
+                  ).any():
+
+                      print(
+                          f"[FAIL] {timeframe} "
+                          f"{column} contains infinity."
+                      )
+
+                      failed = True
+
+                  actual_min = int(
+                      values.min()
+                  )
+
+                  actual_max = int(
+                      values.max()
+                  )
+
+                  print(
+                      f"{timeframe} {column}: "
+                      f"min={actual_min}, "
+                      f"max={actual_max}"
+                  )
+
+                  if (
+                      actual_min < minimum
+                      or actual_max > maximum
+                  ):
+
+                      print(
+                          f"[FAIL] {timeframe} "
+                          f"{column} outside expected "
+                          f"range {minimum}~{maximum}."
+                      )
+
+                      failed = True
+
+              if not failed:
+
+                  print(
+                      f"[PASS] {timeframe} "
+                      "score ranges verified."
+                  )
+
+          if failed:
+              sys.exit(1)
+
+          print(
+              "[PASS] Detector score values verified."
+          )
+          PY
+
+
+      # ======================================================
+      # 19. VERIFY NO INFINITE NUMERIC VALUES
+      # ======================================================
+
+      - name: Verify detector numeric integrity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          from pathlib import Path
+          import numpy as np
+          import pandas as pd
+          import sys
+
+          files = {
+              "H1": Path(
+                  "data/signals/256/h1/KRW-BTC.csv"
+              ),
+              "H4": Path(
+                  "data/signals/256/h4/KRW-BTC.csv"
+              ),
+              "D1": Path(
+                  "data/signals/256/d1/KRW-BTC.csv"
+              ),
+          }
+
+          failed = False
+
+          for timeframe, path in files.items():
+
+              df = pd.read_csv(
+                  path,
+                  encoding="utf-8-sig",
+              )
+
+              numeric_df = df.select_dtypes(
+                  include=[
+                      np.number,
+                  ]
+              )
+
+              values = numeric_df.to_numpy(
+                  dtype=float
+              )
+
+              infinity_count = int(
+                  np.isinf(
+                      values
+                  ).sum()
+              )
+
+              if infinity_count > 0:
+
+                  print(
+                      f"[FAIL] {timeframe} contains "
+                      f"{infinity_count:,} infinite "
+                      "numeric values."
+                  )
+
+                  failed = True
+
+              else:
+
+                  print(
+                      f"[PASS] {timeframe} contains "
+                      "no infinite numeric values."
+                  )
+
+          if failed:
+              sys.exit(1)
+
+          print(
+              "[PASS] Detector numeric integrity verified."
+          )
+          PY
+
+
+      # ======================================================
+      # 20. CHECK FOR FORBIDDEN FUTURE/LABEL OUTPUT COLUMNS
+      # ======================================================
+
+      - name: Verify no future result columns were created
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+          import sys
+
+          forbidden_exact_columns = {
+              "label",
+              "target",
+              "future_return",
+              "future_max_return",
+              "future_min_return",
+              "future_high",
+              "future_low",
+              "future_close",
+              "future_price",
+              "hit_30",
+              "hit_30pct",
+              "surge_30",
+              "surge_label",
+              "prediction",
+              "predicted_probability",
+              "buy_signal",
+              "sell_signal",
+          }
+
+          forbidden_prefixes = (
+              "future_",
+              "label_",
+              "target_",
+              "prediction_",
+              "predicted_",
+          )
+
+          files = {
+              "H1": Path(
+                  "data/signals/256/h1/KRW-BTC.csv"
+              ),
+              "H4": Path(
+                  "data/signals/256/h4/KRW-BTC.csv"
+              ),
+              "D1": Path(
+                  "data/signals/256/d1/KRW-BTC.csv"
+              ),
+          }
+
+          failed = False
+
+          for timeframe, path in files.items():
+
+              df = pd.read_csv(
+                  path,
+                  encoding="utf-8-sig",
+                  nrows=1,
+              )
+
+              columns = [
+                  str(column).strip()
+                  for column in df.columns
+              ]
+
+              suspicious = []
+
+              for column in columns:
+
+                  lowered = column.lower()
+
+                  if lowered in forbidden_exact_columns:
+
+                      suspicious.append(
+                          column
+                      )
+
+                      continue
+
+                  if lowered.startswith(
+                      forbidden_prefixes
+                  ):
+
+                      suspicious.append(
+                          column
+                      )
+
+              if suspicious:
+
+                  print(
+                      f"[FAIL] {timeframe} contains "
+                      "future/label/prediction columns:"
+                  )
+
+                  for column in suspicious:
+                      print(
+                          f"  {column}"
+                      )
+
+                  failed = True
+
+              else:
+
+                  print(
+                      f"[PASS] {timeframe} contains "
+                      "no forbidden future/result "
+                      "output columns."
+                  )
+
+          if failed:
+              sys.exit(1)
+
+          print(
+              "[PASS] No future result, label, "
+              "prediction, or trading columns created."
+          )
+          PY
+
+
+      # ======================================================
+      # 21. VERIFY OUTPUT CAN BE RELOADED
+      # ======================================================
+
+      - name: Reload and verify detector output
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+          import sys
+
+          files = {
+              "H1": Path(
+                  "data/signals/256/h1/KRW-BTC.csv"
+              ),
+              "H4": Path(
+                  "data/signals/256/h4/KRW-BTC.csv"
+              ),
+              "D1": Path(
+                  "data/signals/256/d1/KRW-BTC.csv"
+              ),
+          }
+
+          failed = False
+
+          for timeframe, path in files.items():
+
+              try:
+
+                  df = pd.read_csv(
+                      path,
+                      encoding="utf-8-sig",
+                  )
+
+              except Exception as exc:
+
+                  print(
+                      f"[FAIL] {timeframe} output "
+                      f"cannot be reloaded: {exc}"
+                  )
+
+                  failed = True
+
+                  continue
+
+              if df.empty:
+
+                  print(
+                      f"[FAIL] {timeframe} reloaded "
+                      "output is empty."
+                  )
+
+                  failed = True
+
+                  continue
+
+              setup_count = int(
+                  pd.to_numeric(
+                      df["signal_setup"],
+                      errors="coerce",
+                  )
+                  .fillna(0)
+                  .sum()
+              )
+
+              ready_count = int(
+                  pd.to_numeric(
+                      df["signal_ready"],
+                      errors="coerce",
+                  )
+                  .fillna(0)
+                  .sum()
+              )
+
+              trigger_count = int(
+                  pd.to_numeric(
+                      df["signal_trigger"],
+                      errors="coerce",
+                  )
+                  .fillna(0)
+                  .sum()
+              )
+
+              print(
+                  f"{timeframe}: "
+                  f"rows={len(df):,}, "
+                  f"columns={len(df.columns):,}, "
+                  f"SETUP={setup_count:,}, "
+                  f"READY={ready_count:,}, "
+                  f"TRIGGER={trigger_count:,}"
+              )
+
+              print(
+                  f"[PASS] {timeframe} detector "
+                  "output reload successful."
+              )
+
+          if failed:
+              sys.exit(1)
+
+          print(
+              "[PASS] All detector outputs reload "
+              "successfully."
+          )
+          PY
+
+
+      # ======================================================
+      # 22. VERIFY DETECTOR STATUS LOG
+      # ======================================================
+
+      - name: Verify detector status log
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+          import sys
+
+          path = Path(
+              "data/detect_256_status.csv"
+          )
+
+          if not path.exists():
+
+              print(
+                  "[FAIL] detect_256_status.csv "
+                  "not found."
+              )
+
+              sys.exit(1)
+
+          df = pd.read_csv(
+              path,
+              encoding="utf-8-sig",
+          )
+
+          required_columns = [
+              "run_time_utc",
+              "version",
+              "market",
+              "timeframe",
+              "status",
+              "feature_rows",
+              "signal_rows",
+              "feature_sha256_before",
+              "feature_sha256_after",
+              "message",
+          ]
+
+          missing = [
+              column
+              for column in required_columns
+              if column not in df.columns
+          ]
+
+          if missing:
+
+              print(
+                  "[FAIL] Status log missing columns:"
+              )
+
+              for column in missing:
+                  print(
+                      f"  {column}"
+                  )
+
+              sys.exit(1)
+
+          current = df[
+              (
+                  df["market"] == "KRW-BTC"
+              )
+              & (
+                  df["timeframe"].isin(
+                      [
+                          "h1",
+                          "h4",
+                          "d1",
+                      ]
+                  )
+              )
+          ].tail(3)
+
+          if len(current) != 3:
+
+              print(
+                  "[FAIL] Expected 3 current detector "
+                  "status rows."
+              )
+
+              print(
+                  current.to_string(
+                      index=False
+                  )
+              )
+
+              sys.exit(1)
+
+          statuses = set(
+              current[
+                  "status"
+              ]
+              .astype(str)
+              .tolist()
+          )
+
+          if statuses != {
+              "PASSED"
+          }:
+
+              print(
+                  "[FAIL] Detector status contains "
+                  "non-PASSED result."
+              )
+
+              print(
+                  current.to_string(
+                      index=False
+                  )
+              )
+
+              sys.exit(1)
+
+          hash_mismatch = current[
+              current[
+                  "feature_sha256_before"
+              ]
+              != current[
+                  "feature_sha256_after"
+              ]
+          ]
+
+          if not hash_mismatch.empty:
+
+              print(
+                  "[FAIL] Status log reports "
+                  "Feature SHA256 mismatch."
+              )
+
+              print(
+                  hash_mismatch.to_string(
+                      index=False
+                  )
+              )
+
+              sys.exit(1)
+
+          print(
+              current[
+                  [
+                      "market",
+                      "timeframe",
+                      "status",
+                      "feature_rows",
+                      "signal_rows",
+                  ]
+              ].to_string(
+                  index=False
+              )
+          )
+
+          print(
+              "[PASS] Detector status log verified."
+          )
+          PY
+
+
+      # ======================================================
+      # 23. FINAL SUMMARY
+      # ======================================================
+
+      - name: 256 Detector test summary
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+
+          files = {
+              "H1": Path(
+                  "data/signals/256/h1/KRW-BTC.csv"
+              ),
+              "H4": Path(
+                  "data/signals/256/h4/KRW-BTC.csv"
+              ),
+              "D1": Path(
+                  "data/signals/256/d1/KRW-BTC.csv"
+              ),
+          }
+
+          print("=" * 72)
+          print("256 DETECTOR CLEAN V001 TEST RESULT")
+          print("=" * 72)
+
+          total_rows = 0
+          total_setup = 0
+          total_ready = 0
+          total_trigger = 0
+
+          for timeframe, path in files.items():
+
+              df = pd.read_csv(
+                  path,
+                  encoding="utf-8-sig",
+              )
+
+              rows = len(df)
+
+              setup = int(
+                  df[
+                      "signal_setup"
+                  ].sum()
+              )
+
+              ready = int(
+                  df[
+                      "signal_ready"
+                  ].sum()
+              )
+
+              trigger = int(
+                  df[
+                      "signal_trigger"
+                  ].sum()
+              )
+
+              total_rows += rows
+              total_setup += setup
+              total_ready += ready
+              total_trigger += trigger
+
+              print(
+                  f"{timeframe}: "
+                  f"rows={rows:,} | "
+                  f"SETUP={setup:,} | "
+                  f"READY={ready:,} | "
+                  f"TRIGGER={trigger:,}"
+              )
+
+          print("-" * 72)
+
+          print(
+              f"TOTAL: "
+              f"rows={total_rows:,} | "
+              f"SETUP={total_setup:,} | "
+              f"READY={total_ready:,} | "
+              f"TRIGGER={total_trigger:,}"
+          )
+
+          print("-" * 72)
+
+          print(
+              "[PASS] KRW-BTC h1/h4/d1 "
+              "256 detector outputs created."
+          )
+
+          print(
+              "[PASS] Feature CSV SHA256 unchanged."
+          )
+
+          print(
+              "[PASS] Feature/signal row counts match."
+          )
+
+          print(
+              "[PASS] Required detector columns verified."
+          )
+
+          print(
+              "[PASS] Detector flags verified."
+          )
+
+          print(
+              "[PASS] SETUP/READY/TRIGGER stages verified."
+          )
+
+          print(
+              "[PASS] State consistency verified."
+          )
+
+          print(
+              "[PASS] Timestamp integrity verified."
+          )
+
+          print(
+              "[PASS] Score ranges verified."
+          )
+
+          print(
+              "[PASS] Numeric integrity verified."
+          )
+
+          print(
+              "[PASS] No future-result labels created."
+          )
+
+          print(
+              "[PASS] No prediction/trading columns created."
+          )
+
+          print(
+              "[PASS] Detector output reload verified."
+          )
+
+          print(
+              "[PASS] Detector status log verified."
+          )
+
+          print("=" * 72)
+
+          print(
+              "256 DETECTOR CLEAN V001 TEST PASSED"
+          )
+
+          print("=" * 72)
+          PY
