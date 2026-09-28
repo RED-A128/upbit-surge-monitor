@@ -1,6 +1,6 @@
 # ============================================================
 # Upbit Surge Monitor
-# Clean V001
+# Clean V002
 # .gitignore
 # ============================================================
 
@@ -167,7 +167,7 @@ _diag/
 #
 # Raw OHLCV data can become very large.
 #
-# Clean V001 currently stores:
+# Clean V002 currently stores:
 #
 #   data/ohlcv/h1/
 #   data/ohlcv/h4/
@@ -217,12 +217,22 @@ data/backfill_status.csv
 #
 # Feature snapshots can become very large as the project grows.
 #
-# Do not commit generated feature history automatically.
+# build_features.py generates:
+#
+#   data/features/
+#   data/latest_features.csv
+#   data/feature_build_status.csv
+#
+# These are generated runtime outputs and must NOT be committed
+# to the Git repository.
+#
+# build_features.py source code remains tracked.
 #
 # ============================================================
 
 data/features/
 data/latest_features.csv
+data/feature_build_status.csv
 
 
 # ============================================================
