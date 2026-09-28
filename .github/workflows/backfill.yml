@@ -72,6 +72,10 @@ jobs:
           Write-Host "Upbit Surge Monitor - Clean V001"
           Write-Host ""
 
+          Write-Host "Validator:"
+          Write-Host "Clean V002 PRE/POST"
+          Write-Host ""
+
           Write-Host "Repository:"
           Write-Host "${{ github.repository }}"
           Write-Host ""
@@ -218,16 +222,6 @@ jobs:
       # ============================================================
       # 4. FETCH ORIGIN FIRST
       # ============================================================
-      #
-      # IMPORTANT:
-      #
-      # Fetch does NOT modify the local working tree.
-      # Fetch does NOT delete local OHLCV data.
-      #
-      # We fetch first so that the latest origin/main and its
-      # .gitignore rules can be inspected before synchronization.
-      #
-      # ============================================================
 
       - name: Fetch origin safely
         run: |
@@ -352,15 +346,6 @@ jobs:
 
       # ============================================================
       # 6. VERIFY NO TRACKED LOCAL SOURCE CHANGES
-      # ============================================================
-      #
-      # We intentionally check TRACKED changes only here.
-      #
-      # Untracked runtime data such as data/ohlcv may still appear
-      # before the latest .gitignore is merged locally.
-      #
-      # Tracked source changes must never be overwritten.
-      #
       # ============================================================
 
       - name: Protect tracked local source changes
@@ -835,8 +820,8 @@ jobs:
 
           if ($failed) {
               Write-Host ""
-              Write-Host "[FAIL] Existing H1/H4/D1 source data is required."
-              Write-Host "Backfill will not be started."
+              Write-Host "[FAIL] Existing H1/H4/D1 source data is required in SINGLE mode."
+              Write-Host "Run collector first for a newly listed market."
               exit 1
           }
 
@@ -847,17 +832,17 @@ jobs:
 
 
       # ============================================================
-      # 16. VERIFY ALL-MARKET SOURCE DATA
+      # 16. VERIFY ALL-MARKET STORED DATA CONSISTENCY
       # ============================================================
 
-      - name: Verify all-market source data
+      - name: Verify all-market stored data consistency
         if: ${{ inputs.mode == 'all' }}
         run: |
           $project = $env:PROJECT_DIR
           Set-Location $project
 
           Write-Host "============================================================"
-          Write-Host "ALL MARKET SOURCE DATA CHECK"
+          Write-Host "ALL MARKET STORED DATA CONSISTENCY CHECK"
           Write-Host "============================================================"
           Write-Host ""
 
@@ -890,12 +875,18 @@ jobs:
           if (($h1Text -ne $h4Text) -or ($h1Text -ne $d1Text)) {
               Write-Host "[FAIL] H1/H4/D1 stored market sets are different."
               Write-Host ""
-              Write-Host "Run collector validation before ALL backfill."
+              Write-Host "Partial timeframe loss is not treated as a new market."
+              Write-Host "Backfill stopped for data safety."
               exit 1
           }
 
           Write-Host "[PASS] Stored H1/H4/D1 market sets match."
           Write-Host "[PASS] Stored market count: $($h1Markets.Count)"
+          Write-Host ""
+          Write-Host "NOTE:"
+          Write-Host "A completely new current Upbit market may still be absent"
+          Write-Host "from all three timeframes at this stage."
+          Write-Host "PRE validation will classify that market safely."
           Write-Host ""
           Write-Host "============================================================"
 
@@ -914,7 +905,11 @@ jobs:
           Write-Host "============================================================"
           Write-Host ""
 
-          py validate_collector.py
+          Write-Host "Command:"
+          Write-Host "py validate_collector.py --mode pre"
+          Write-Host ""
+
+          py validate_collector.py --mode pre
 
           $exitCode = $LASTEXITCODE
 
@@ -923,19 +918,135 @@ jobs:
 
           if ($exitCode -ne 0) {
               Write-Host ""
-              Write-Host "[FAIL] Existing OHLCV data did not pass validation."
+              Write-Host "[FAIL] Existing OHLCV data did not pass PRE validation."
               Write-Host "Backfill will not start."
               exit $exitCode
           }
 
           Write-Host ""
           Write-Host "[PASS] Pre-backfill validation passed."
+          Write-Host "[PASS] Completely missing new current markets are allowed at PRE stage."
           Write-Host ""
           Write-Host "============================================================"
 
 
       # ============================================================
-      # 18. RUN SINGLE MARKET BACKFILL
+      # 18. RUN COLLECTOR BEFORE BACKFILL
+      # ============================================================
+      #
+      # IMPORTANT:
+      #
+      # collector.py has two responsibilities here:
+      #
+      # 1. Existing markets:
+      #    update only the latest missing/recent candles.
+      #
+      # 2. Newly listed markets:
+      #    create the initial H1/H4/D1 CSV datasets.
+      #
+      # Historical extension beyond the initial collector window
+      # remains the responsibility of backfill_history.py.
+      #
+      # Existing historical OHLCV is preserved and merged.
+      #
+      # ============================================================
+
+      - name: Run collector before history backfill
+        run: |
+          $project = $env:PROJECT_DIR
+          Set-Location $project
+
+          Write-Host "============================================================"
+          Write-Host "PRE-BACKFILL COLLECTOR UPDATE"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          Write-Host "Purpose:"
+          Write-Host "1. Refresh recent candles for existing markets."
+          Write-Host "2. Initialize H1/H4/D1 for newly listed KRW markets."
+          Write-Host "3. Preserve all existing historical OHLCV."
+          Write-Host ""
+
+          Write-Host "Command:"
+          Write-Host "py collector.py"
+          Write-Host ""
+
+          py collector.py
+
+          $exitCode = $LASTEXITCODE
+
+          Write-Host ""
+          Write-Host "Collector exit code: $exitCode"
+
+          if ($exitCode -ne 0) {
+              Write-Host ""
+              Write-Host "[FAIL] Collector did not complete normally."
+              Write-Host ""
+              Write-Host "Existing OHLCV data remains preserved."
+              Write-Host "History backfill will not start."
+              exit $exitCode
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Collector completed."
+          Write-Host "[PASS] Existing markets were refreshed."
+          Write-Host "[PASS] Newly listed markets can now have initial datasets."
+          Write-Host ""
+          Write-Host "============================================================"
+
+
+      # ============================================================
+      # 19. VERIFY COLLECTOR RESULT BEFORE BACKFILL
+      # ============================================================
+      #
+      # After collector.py has run, there is no longer a valid reason
+      # for a current KRW market to be completely missing from H1/H4/D1.
+      #
+      # Therefore POST mode is intentionally used here.
+      #
+      # ============================================================
+
+      - name: Validate collector result before history backfill
+        run: |
+          $project = $env:PROJECT_DIR
+          Set-Location $project
+
+          Write-Host "============================================================"
+          Write-Host "COLLECTOR RESULT VALIDATION"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          Write-Host "Command:"
+          Write-Host "py validate_collector.py --mode post"
+          Write-Host ""
+
+          py validate_collector.py --mode post
+
+          $exitCode = $LASTEXITCODE
+
+          Write-Host ""
+          Write-Host "Validator exit code: $exitCode"
+
+          if ($exitCode -ne 0) {
+              Write-Host ""
+              Write-Host "[FAIL] Collector result did not pass strict validation."
+              Write-Host ""
+              Write-Host "A current KRW market may still be missing,"
+              Write-Host "or an existing OHLCV file may be invalid."
+              Write-Host ""
+              Write-Host "History backfill will not start."
+              exit $exitCode
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Collector result passed strict validation."
+          Write-Host "[PASS] Current KRW markets are ready for history backfill."
+          Write-Host ""
+          Write-Host "============================================================"
+
+
+      # ============================================================
+      # 20. RUN SINGLE MARKET BACKFILL
       # ============================================================
 
       - name: Run single-market history backfill
@@ -981,7 +1092,7 @@ jobs:
 
 
       # ============================================================
-      # 19. RUN ALL MARKET BACKFILL
+      # 21. RUN ALL MARKET BACKFILL
       # ============================================================
 
       - name: Run all-market history backfill
@@ -997,6 +1108,12 @@ jobs:
 
           Write-Host "WARNING:"
           Write-Host "This execution processes all current Upbit KRW markets."
+          Write-Host ""
+
+          Write-Host "RESUME:"
+          Write-Host "Existing CSV history is preserved."
+          Write-Host "Each job continues backward from its currently saved oldest candle."
+          Write-Host "Previously checkpointed batches are not intentionally discarded."
           Write-Host ""
 
           Write-Host "Command:"
@@ -1028,7 +1145,7 @@ jobs:
 
 
       # ============================================================
-      # 20. VERIFY BACKFILL STATUS FILE
+      # 22. VERIFY BACKFILL STATUS FILE
       # ============================================================
 
       - name: Verify backfill status
@@ -1068,7 +1185,7 @@ jobs:
 
 
       # ============================================================
-      # 21. POST-BACKFILL COLLECTOR VALIDATION
+      # 23. POST-BACKFILL COLLECTOR VALIDATION
       # ============================================================
 
       - name: Run post-backfill collector validation
@@ -1081,7 +1198,11 @@ jobs:
           Write-Host "============================================================"
           Write-Host ""
 
-          py validate_collector.py
+          Write-Host "Command:"
+          Write-Host "py validate_collector.py --mode post"
+          Write-Host ""
+
+          py validate_collector.py --mode post
 
           $exitCode = $LASTEXITCODE
 
@@ -1101,7 +1222,7 @@ jobs:
 
 
       # ============================================================
-      # 22. POST-BACKFILL DATA HISTORY AUDIT
+      # 24. POST-BACKFILL DATA HISTORY AUDIT
       # ============================================================
 
       - name: Run post-backfill data history audit
@@ -1134,7 +1255,7 @@ jobs:
 
 
       # ============================================================
-      # 23. FINAL LOCAL STATUS
+      # 25. FINAL LOCAL STATUS
       # ============================================================
 
       - name: Show final local repository status
@@ -1173,7 +1294,7 @@ jobs:
 
 
       # ============================================================
-      # 24. COMPLETED
+      # 26. COMPLETED
       # ============================================================
 
       - name: Backfill completed
@@ -1196,9 +1317,11 @@ jobs:
 
           Write-Host "[PASS] Repository synchronization completed safely."
           Write-Host "[PASS] Existing OHLCV data was preserved."
-          Write-Host "[PASS] Existing OHLCV data passed pre-validation."
+          Write-Host "[PASS] PRE validation completed."
+          Write-Host "[PASS] Collector update/initialization completed."
+          Write-Host "[PASS] Collector result passed strict validation."
           Write-Host "[PASS] Historical backfill completed."
-          Write-Host "[PASS] Existing OHLCV data passed post-validation."
+          Write-Host "[PASS] POST validation completed."
           Write-Host "[PASS] Data history audit completed."
           Write-Host ""
 
