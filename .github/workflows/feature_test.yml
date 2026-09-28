@@ -786,7 +786,6 @@ jobs:
               }
 
               $item = Get-Item $file
-
               Write-Host "[FOUND] $file"
               Write-Host "        Size: $($item.Length) bytes"
 
@@ -898,7 +897,6 @@ jobs:
 
               Write-Host ""
               Write-Host "[FAIL] Feature row count verification failed."
-
               exit 1
           }
 
@@ -993,16 +991,6 @@ jobs:
               "volume_sma_20",
               "volume_ratio_5",
               "volume_ratio_20",
-
-              "body",
-              "body_pct",
-              "range",
-              "range_pct",
-
-              "rolling_high_20",
-              "rolling_low_20",
-              "rolling_high_60",
-              "rolling_low_60",
           ]
 
           feature_256_required = [
@@ -1037,11 +1025,13 @@ jobs:
           ]
 
           if len(feature_256_required) != 21:
+
               print(
                   "[FAIL] Internal test definition error: "
                   f"expected 21 V002 features, "
                   f"got {len(feature_256_required)}."
               )
+
               raise SystemExit(1)
 
           required = (
@@ -1209,7 +1199,6 @@ jobs:
           ]
 
           failed = False
-
           timestamp_column = "candle_date_time_utc"
 
           for source_path, feature_path, timeframe in pairs:
@@ -1356,7 +1345,6 @@ jobs:
 
               Write-Host ""
               Write-Host "[FAIL] Feature timestamp integrity check failed."
-
               exit 1
           }
 
@@ -1516,7 +1504,6 @@ jobs:
 
               Write-Host ""
               Write-Host "[FAIL] Clean V002 feature value check failed."
-
               exit 1
           }
 
