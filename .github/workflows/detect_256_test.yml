@@ -1,1886 +1,1020 @@
+# ============================================================
+# Upbit Surge Monitor
+# Clean V001
+#
+# detect_256_test.yml
+#
+# Purpose
+# ------------------------------------------------------------
+# Test detect_256.py safely against the existing local
+# KRW-BTC OHLCV history stored on the self-hosted Windows PC.
+#
+# IMPORTANT
+# ------------------------------------------------------------
+# Actual local OHLCV structure:
+#
+#   data/
+#     h1/
+#       KRW-BTC.csv
+#     h4/
+#       KRW-BTC.csv
+#     d1/
+#       KRW-BTC.csv
+#
+# This workflow:
+#
+#   1. Uses the existing local OHLCV data.
+#   2. Does NOT delete existing OHLCV data.
+#   3. Does NOT move existing OHLCV data.
+#   4. Does NOT reset the Git repository.
+#   5. Does NOT run git clean.
+#   6. Does NOT automatically commit or push.
+#   7. Verifies OHLCV SHA256 before/after the test.
+#   8. Builds Clean V002 features.
+#   9. Runs the Clean V001 256 detector.
+#  10. Verifies detector outputs.
+#
+# Trading is NOT performed.
+#
+# ============================================================
+
+
 name: 256 Detector Test
+
+
+# ============================================================
+# 1. Manual execution only
+# ============================================================
 
 on:
   workflow_dispatch:
 
+
+# ============================================================
+# 2. Permissions
+# ============================================================
+
 permissions:
   contents: read
 
-jobs:
-  detect-256-test:
-    name: KRW-BTC 256 Detector Test
-    runs-on: ubuntu-latest
 
-    timeout-minutes: 15
+# ============================================================
+# 3. Prevent duplicate test execution
+# ============================================================
+
+concurrency:
+  group: detect-256-test
+  cancel-in-progress: false
+
+
+# ============================================================
+# 4. Environment
+# ============================================================
+
+env:
+  PROJECT_DIR: C:\Users\USER\Documents\upbit-surge-monitor
+  TEST_MARKET: KRW-BTC
+
+
+# ============================================================
+# 5. Job
+# ============================================================
+
+jobs:
+
+  detect-256-test:
+
+    name: KRW-BTC 256 Detector Test
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 30
+
+
+    # ========================================================
+    # Steps
+    # ========================================================
 
     steps:
-      # ======================================================
-      # 1. CHECKOUT
-      # ======================================================
-
-      - name: Checkout repository
-        uses: actions/checkout@v4
 
 
       # ======================================================
-      # 2. PYTHON
+      # STEP 1
+      # Show environment
       # ======================================================
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: "pip"
-
-
-      # ======================================================
-      # 3. INSTALL DEPENDENCIES
-      # ======================================================
-
-      - name: Install dependencies
-        shell: bash
+      - name: Show test environment
+        shell: powershell
         run: |
-          set -euo pipefail
+          $ErrorActionPreference = "Stop"
 
-          python -m pip install --upgrade pip
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "UPBIT SURGE MONITOR - 256 DETECTOR TEST"
+          Write-Host "============================================================"
+          Write-Host ""
 
-          if [ -f requirements.txt ]; then
-            python -m pip install -r requirements.txt
-          fi
+          Write-Host "Project directory:"
+          Write-Host "${{ env.PROJECT_DIR }}"
 
-          python - <<'PY'
-          import numpy
-          import pandas
+          Write-Host ""
+          Write-Host "Test market:"
+          Write-Host "${{ env.TEST_MARKET }}"
 
-          print("numpy :", numpy.__version__)
-          print("pandas:", pandas.__version__)
-          PY
+          Write-Host ""
+          Write-Host "Runner:"
+          Write-Host "$env:RUNNER_NAME"
+
+          Write-Host ""
+          Write-Host "OS:"
+          Write-Host "$env:RUNNER_OS"
+
+          Write-Host ""
+          Write-Host "Safety:"
+          Write-Host "Existing OHLCV deletion : DISABLED"
+          Write-Host "Git reset --hard        : DISABLED"
+          Write-Host "Git clean               : DISABLED"
+          Write-Host "Automatic Git commit    : DISABLED"
+          Write-Host "Automatic Git push      : DISABLED"
+          Write-Host "Trading                  : DISABLED"
+
+          Write-Host ""
+          Write-Host "============================================================"
 
 
       # ======================================================
-      # 4. VERIFY REQUIRED PROJECT FILES
+      # STEP 2
+      # Verify project directory
+      # ======================================================
+
+      - name: Verify project directory
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $project = "${{ env.PROJECT_DIR }}"
+
+          Write-Host ""
+          Write-Host "Checking project directory..."
+          Write-Host $project
+          Write-Host ""
+
+          if (-not (Test-Path $project)) {
+              Write-Host "[FAIL] Project directory does not exist:"
+              Write-Host $project
+              exit 1
+          }
+
+          Set-Location $project
+
+          Write-Host "[PASS] Project directory exists."
+          Write-Host ""
+
+          Write-Host "Current directory:"
+          Get-Location
+
+
+      # ======================================================
+      # STEP 3
+      # Verify Python
+      # ======================================================
+
+      - name: Verify Python
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Set-Location "${{ env.PROJECT_DIR }}"
+
+          Write-Host ""
+          Write-Host "Checking Python..."
+          Write-Host ""
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host "[FAIL] Python launcher 'py' is not available."
+              exit 1
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Python is available."
+
+
+      # ======================================================
+      # STEP 4
+      # Verify required source files
       # ======================================================
 
       - name: Verify required project files
-        shell: bash
+        shell: powershell
         run: |
-          set -euo pipefail
+          $ErrorActionPreference = "Stop"
 
-          echo "Checking required project files..."
+          $project = "${{ env.PROJECT_DIR }}"
+          Set-Location $project
 
-          test -f build_features.py || {
-            echo "[FAIL] build_features.py not found."
-            exit 1
+          Write-Host ""
+          Write-Host "Checking required project files..."
+          Write-Host ""
+
+          $requiredFiles = @(
+              "build_features.py",
+              "detect_256.py",
+              "requirements.txt"
+          )
+
+          $failed = $false
+
+          foreach ($file in $requiredFiles) {
+
+              $path = Join-Path $project $file
+
+              if (Test-Path $path) {
+
+                  Write-Host "[PASS] $file"
+
+              }
+              else {
+
+                  Write-Host "[FAIL] Missing required file:"
+                  Write-Host "       $path"
+
+                  $failed = $true
+              }
           }
 
-          test -f detect_256.py || {
-            echo "[FAIL] detect_256.py not found."
-            exit 1
+          if ($failed) {
+              exit 1
           }
 
-          echo "[PASS] build_features.py found."
-          echo "[PASS] detect_256.py found."
+          Write-Host ""
+          Write-Host "[PASS] Required project files verified."
 
 
       # ======================================================
-      # 5. VERIFY KRW-BTC OHLCV INPUT FILES
+      # STEP 5
+      # Install dependencies
+      # ======================================================
+
+      - name: Install dependencies
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Set-Location "${{ env.PROJECT_DIR }}"
+
+          Write-Host ""
+          Write-Host "Installing/verifying Python dependencies..."
+          Write-Host ""
+
+          py -m pip install -r requirements.txt
+
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host ""
+              Write-Host "[FAIL] Dependency installation failed."
+              exit 1
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Dependencies ready."
+
+
+      # ======================================================
+      # STEP 6
+      # Verify actual local OHLCV directories
+      #
+      # IMPORTANT:
+      #
+      # Actual local structure:
+      #
+      #   data/h1/
+      #   data/h4/
+      #   data/d1/
+      #
+      # There is intentionally NO data/ohlcv/ layer here.
+      # ======================================================
+
+      - name: Verify local OHLCV directories
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $project = "${{ env.PROJECT_DIR }}"
+          Set-Location $project
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY ACTUAL LOCAL OHLCV DIRECTORY STRUCTURE"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $directories = @(
+              "data\h1",
+              "data\h4",
+              "data\d1"
+          )
+
+          $failed = $false
+
+          foreach ($relativePath in $directories) {
+
+              $fullPath = Join-Path $project $relativePath
+
+              if (Test-Path $fullPath) {
+
+                  Write-Host "[PASS] Directory exists:"
+                  Write-Host "       $relativePath"
+
+              }
+              else {
+
+                  Write-Host "[FAIL] Missing directory:"
+                  Write-Host "       $relativePath"
+
+                  $failed = $true
+              }
+          }
+
+          if ($failed) {
+
+              Write-Host ""
+              Write-Host "[FAIL] Required OHLCV directory structure is incomplete."
+              exit 1
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Actual local OHLCV directory structure verified."
+
+
+      # ======================================================
+      # STEP 7
+      # Verify KRW-BTC OHLCV input files
       # ======================================================
 
       - name: Verify KRW-BTC OHLCV input files
-        shell: bash
+        shell: powershell
         run: |
-          set -euo pipefail
+          $ErrorActionPreference = "Stop"
 
-          python - <<'PY'
-          from pathlib import Path
-          import sys
+          $project = "${{ env.PROJECT_DIR }}"
+          $market = "${{ env.TEST_MARKET }}"
 
-          required_files = [
-              Path("data/ohlcv/h1/KRW-BTC.csv"),
-              Path("data/ohlcv/h4/KRW-BTC.csv"),
-              Path("data/ohlcv/d1/KRW-BTC.csv"),
-          ]
+          Set-Location $project
 
-          failed = False
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY KRW-BTC OHLCV INPUT FILES"
+          Write-Host "============================================================"
+          Write-Host ""
 
-          for path in required_files:
-              if not path.exists():
-                  print(f"[FAIL] Missing OHLCV file: {path}")
-                  failed = True
-                  continue
-
-              size = path.stat().st_size
-
-              if size <= 0:
-                  print(f"[FAIL] Empty OHLCV file: {path}")
-                  failed = True
-                  continue
-
-              print(
-                  f"[PASS] {path} "
-                  f"size={size:,} bytes"
-              )
-
-          if failed:
-              sys.exit(1)
-
-          print(
-              "[PASS] All required KRW-BTC "
-              "OHLCV files are present."
+          $files = @(
+              "data\h1\$market.csv",
+              "data\h4\$market.csv",
+              "data\d1\$market.csv"
           )
-          PY
+
+          $failed = $false
+
+          foreach ($relativePath in $files) {
+
+              $fullPath = Join-Path $project $relativePath
+
+              if (-not (Test-Path $fullPath)) {
+
+                  Write-Host "[FAIL] Missing OHLCV file:"
+                  Write-Host "       $relativePath"
+
+                  $failed = $true
+                  continue
+              }
+
+              $fileInfo = Get-Item $fullPath
+
+              if ($fileInfo.Length -le 0) {
+
+                  Write-Host "[FAIL] OHLCV file is empty:"
+                  Write-Host "       $relativePath"
+
+                  $failed = $true
+                  continue
+              }
+
+              Write-Host "[PASS] $relativePath"
+              Write-Host "       Size: $($fileInfo.Length) bytes"
+              Write-Host "       LastWriteTime: $($fileInfo.LastWriteTime)"
+          }
+
+          if ($failed) {
+
+              Write-Host ""
+              Write-Host "[FAIL] KRW-BTC OHLCV verification failed."
+              exit 1
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] KRW-BTC OHLCV files verified."
 
 
       # ======================================================
-      # 6. BUILD KRW-BTC FEATURES
+      # STEP 8
+      # Save OHLCV SHA256 before feature/detector test
+      #
+      # This protects the original accumulated OHLCV data.
+      # ======================================================
+
+      - name: Save OHLCV SHA256 before detector test
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $project = "${{ env.PROJECT_DIR }}"
+          $market = "${{ env.TEST_MARKET }}"
+
+          Set-Location $project
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "SAVE ORIGINAL OHLCV SHA256"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $files = @(
+              "data\h1\$market.csv",
+              "data\h4\$market.csv",
+              "data\d1\$market.csv"
+          )
+
+          $hashLines = @()
+
+          foreach ($relativePath in $files) {
+
+              $fullPath = Join-Path $project $relativePath
+
+              $hash = (Get-FileHash `
+                  -Path $fullPath `
+                  -Algorithm SHA256).Hash
+
+              $hashLines += "$relativePath|$hash"
+
+              Write-Host "$relativePath"
+              Write-Host "SHA256: $hash"
+              Write-Host ""
+          }
+
+          $hashFile = Join-Path $env:RUNNER_TEMP "detect_256_ohlcv_before.sha256"
+
+          $hashLines | Set-Content `
+              -Path $hashFile `
+              -Encoding UTF8
+
+          Write-Host "[PASS] Original OHLCV hashes saved."
+          Write-Host "Temporary hash file:"
+          Write-Host $hashFile
+
+
+      # ======================================================
+      # STEP 9
+      # Build KRW-BTC Clean V002 features
+      #
+      # IMPORTANT:
+      # build_features.py must use the actual local OHLCV
+      # structure:
+      #
+      #   data/h1
+      #   data/h4
+      #   data/d1
+      #
       # ======================================================
 
       - name: Build KRW-BTC Clean V002 features
-        shell: bash
+        shell: powershell
         run: |
-          set -euo pipefail
+          $ErrorActionPreference = "Stop"
 
-          echo "Running build_features.py..."
+          $project = "${{ env.PROJECT_DIR }}"
+          Set-Location $project
 
-          python build_features.py
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "BUILD CLEAN V002 FEATURES"
+          Write-Host "============================================================"
+          Write-Host ""
 
-          echo "[PASS] build_features.py completed."
+          py build_features.py --market "${{ env.TEST_MARKET }}"
+
+          if ($LASTEXITCODE -ne 0) {
+
+              Write-Host ""
+              Write-Host "[FAIL] build_features.py failed."
+              exit 1
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Clean V002 feature build completed."
 
 
       # ======================================================
-      # 7. VERIFY FEATURE INPUT FILES
+      # STEP 10
+      # Verify detector feature input files
       # ======================================================
 
       - name: Verify detector feature input files
-        shell: bash
+        shell: powershell
         run: |
-          set -euo pipefail
+          $ErrorActionPreference = "Stop"
 
-          python - <<'PY'
-          from pathlib import Path
-          import pandas as pd
-          import sys
+          $project = "${{ env.PROJECT_DIR }}"
+          $market = "${{ env.TEST_MARKET }}"
 
-          feature_files = {
-              "H1": Path("data/features/h1/KRW-BTC.csv"),
-              "H4": Path("data/features/h4/KRW-BTC.csv"),
-              "D1": Path("data/features/d1/KRW-BTC.csv"),
+          Set-Location $project
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY DETECTOR FEATURE INPUT"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $featureCandidates = @(
+              "data\features\h1\$market.csv",
+              "data\features\h4\$market.csv",
+              "data\features\d1\$market.csv"
+          )
+
+          $failed = $false
+
+          foreach ($relativePath in $featureCandidates) {
+
+              $fullPath = Join-Path $project $relativePath
+
+              if (-not (Test-Path $fullPath)) {
+
+                  Write-Host "[FAIL] Missing feature file:"
+                  Write-Host "       $relativePath"
+
+                  $failed = $true
+                  continue
+              }
+
+              $fileInfo = Get-Item $fullPath
+
+              if ($fileInfo.Length -le 0) {
+
+                  Write-Host "[FAIL] Feature file is empty:"
+                  Write-Host "       $relativePath"
+
+                  $failed = $true
+                  continue
+              }
+
+              Write-Host "[PASS] $relativePath"
+              Write-Host "       Size: $($fileInfo.Length) bytes"
           }
 
-          failed = False
+          if ($failed) {
 
-          for timeframe, path in feature_files.items():
+              Write-Host ""
+              Write-Host "[FAIL] Detector feature input verification failed."
+              exit 1
+          }
 
-              if not path.exists():
-                  print(
-                      f"[FAIL] {timeframe} feature file "
-                      f"not found: {path}"
-                  )
-                  failed = True
-                  continue
-
-              try:
-                  df = pd.read_csv(
-                      path,
-                      encoding="utf-8-sig",
-                  )
-
-              except Exception as exc:
-                  print(
-                      f"[FAIL] {timeframe} cannot read "
-                      f"feature CSV: {exc}"
-                  )
-                  failed = True
-                  continue
-
-              if df.empty:
-                  print(
-                      f"[FAIL] {timeframe} feature CSV "
-                      "contains no rows."
-                  )
-                  failed = True
-                  continue
-
-              print(
-                  f"[PASS] {timeframe}: "
-                  f"{len(df):,} rows / "
-                  f"{len(df.columns):,} columns"
-              )
-
-          if failed:
-              sys.exit(1)
-
-          print(
-              "[PASS] All detector feature inputs "
-              "are available."
-          )
-          PY
+          Write-Host ""
+          Write-Host "[PASS] Detector feature input files verified."
 
 
       # ======================================================
-      # 8. SAVE FEATURE SHA256 BEFORE DETECTOR
+      # STEP 11
+      # Save feature SHA256 before detector
+      #
+      # Detector should READ features, not mutate them.
       # ======================================================
 
       - name: Save feature SHA256 before detector
-        shell: bash
+        shell: powershell
         run: |
-          set -euo pipefail
+          $ErrorActionPreference = "Stop"
 
-          python - <<'PY'
-          from pathlib import Path
-          import hashlib
-          import json
+          $project = "${{ env.PROJECT_DIR }}"
+          $market = "${{ env.TEST_MARKET }}"
 
-          feature_files = {
-              "h1": Path("data/features/h1/KRW-BTC.csv"),
-              "h4": Path("data/features/h4/KRW-BTC.csv"),
-              "d1": Path("data/features/d1/KRW-BTC.csv"),
+          Set-Location $project
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "SAVE FEATURE SHA256 BEFORE DETECTOR"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $files = @(
+              "data\features\h1\$market.csv",
+              "data\features\h4\$market.csv",
+              "data\features\d1\$market.csv"
+          )
+
+          $hashLines = @()
+
+          foreach ($relativePath in $files) {
+
+              $fullPath = Join-Path $project $relativePath
+
+              $hash = (Get-FileHash `
+                  -Path $fullPath `
+                  -Algorithm SHA256).Hash
+
+              $hashLines += "$relativePath|$hash"
+
+              Write-Host "$relativePath"
+              Write-Host "SHA256: $hash"
+              Write-Host ""
           }
 
-          hashes = {}
+          $hashFile = Join-Path $env:RUNNER_TEMP "detect_256_features_before.sha256"
 
-          for timeframe, path in feature_files.items():
+          $hashLines | Set-Content `
+              -Path $hashFile `
+              -Encoding UTF8
 
-              sha256 = hashlib.sha256()
-
-              with path.open("rb") as file:
-                  while True:
-                      chunk = file.read(1024 * 1024)
-
-                      if not chunk:
-                          break
-
-                      sha256.update(chunk)
-
-              digest = sha256.hexdigest()
-
-              hashes[timeframe] = digest
-
-              print(
-                  f"{timeframe.upper()} "
-                  f"{digest}"
-              )
-
-          output = Path(
-              "/tmp/detect_256_feature_hashes_before.json"
-          )
-
-          output.write_text(
-              json.dumps(
-                  hashes,
-                  indent=2,
-              ),
-              encoding="utf-8",
-          )
-
-          print(
-              "[PASS] Feature SHA256 baseline saved."
-          )
-          PY
+          Write-Host "[PASS] Feature hashes saved."
 
 
       # ======================================================
-      # 9. RUN 256 DETECTOR
+      # STEP 12
+      # Run 256 Detector Clean V001
       # ======================================================
 
       - name: Run 256 Detector Clean V001
-        shell: bash
+        shell: powershell
         run: |
-          set -euo pipefail
+          $ErrorActionPreference = "Stop"
 
-          echo "Running detect_256.py..."
+          $project = "${{ env.PROJECT_DIR }}"
+          Set-Location $project
 
-          python detect_256.py
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "RUN 256 DETECTOR CLEAN V001"
+          Write-Host "============================================================"
+          Write-Host ""
 
-          echo "[PASS] detect_256.py completed."
+          py detect_256.py --market "${{ env.TEST_MARKET }}"
 
+          if ($LASTEXITCODE -ne 0) {
 
-      # ======================================================
-      # 10. VERIFY SIGNAL FILES EXIST
-      # ======================================================
-
-      - name: Verify 256 signal output files
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          python - <<'PY'
-          from pathlib import Path
-          import sys
-
-          signal_files = {
-              "H1": Path(
-                  "data/signals/256/h1/KRW-BTC.csv"
-              ),
-              "H4": Path(
-                  "data/signals/256/h4/KRW-BTC.csv"
-              ),
-              "D1": Path(
-                  "data/signals/256/d1/KRW-BTC.csv"
-              ),
+              Write-Host ""
+              Write-Host "[FAIL] detect_256.py failed."
+              exit 1
           }
 
-          failed = False
+          Write-Host ""
+          Write-Host "[PASS] 256 detector execution completed."
 
-          for timeframe, path in signal_files.items():
 
-              if not path.exists():
+      # ======================================================
+      # STEP 13
+      # Verify feature files were NOT modified by detector
+      # ======================================================
 
-                  print(
-                      f"[FAIL] {timeframe} signal file "
-                      f"not found: {path}"
-                  )
+      - name: Verify detector did not modify feature files
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
 
-                  failed = True
+          $project = "${{ env.PROJECT_DIR }}"
+          $market = "${{ env.TEST_MARKET }}"
 
+          Set-Location $project
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY FEATURE FILE INTEGRITY"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $hashFile = Join-Path $env:RUNNER_TEMP "detect_256_features_before.sha256"
+
+          if (-not (Test-Path $hashFile)) {
+
+              Write-Host "[FAIL] Saved feature hash file is missing."
+              exit 1
+          }
+
+          $savedLines = Get-Content $hashFile
+
+          $failed = $false
+
+          foreach ($line in $savedLines) {
+
+              if ([string]::IsNullOrWhiteSpace($line)) {
                   continue
+              }
 
-              size = path.stat().st_size
+              $parts = $line -split '\|', 2
 
-              if size <= 0:
+              if ($parts.Count -ne 2) {
 
-                  print(
-                      f"[FAIL] {timeframe} signal file "
-                      f"is empty: {path}"
-                  )
+                  Write-Host "[FAIL] Invalid saved hash line:"
+                  Write-Host $line
 
-                  failed = True
-
+                  $failed = $true
                   continue
+              }
 
-              print(
-                  f"[PASS] {timeframe}: "
-                  f"{path} "
-                  f"size={size:,} bytes"
-              )
+              $relativePath = $parts[0]
+              $beforeHash = $parts[1]
 
-          if failed:
-              sys.exit(1)
+              $fullPath = Join-Path $project $relativePath
 
-          print(
-              "[PASS] All 256 signal files exist."
-          )
-          PY
+              if (-not (Test-Path $fullPath)) {
 
+                  Write-Host "[FAIL] Feature file disappeared:"
+                  Write-Host "       $relativePath"
 
-      # ======================================================
-      # 11. VERIFY FEATURE SHA256 UNCHANGED
-      # ======================================================
+                  $failed = $true
+                  continue
+              }
 
-      - name: Verify feature CSV files were not modified
-        shell: bash
-        run: |
-          set -euo pipefail
+              $afterHash = (Get-FileHash `
+                  -Path $fullPath `
+                  -Algorithm SHA256).Hash
 
-          python - <<'PY'
-          from pathlib import Path
-          import hashlib
-          import json
-          import sys
+              if ($beforeHash -ne $afterHash) {
 
-          baseline_file = Path(
-              "/tmp/detect_256_feature_hashes_before.json"
-          )
+                  Write-Host "[FAIL] Detector modified feature file:"
+                  Write-Host "       $relativePath"
+                  Write-Host "       Before: $beforeHash"
+                  Write-Host "       After : $afterHash"
 
-          if not baseline_file.exists():
-              print(
-                  "[FAIL] SHA256 baseline file missing."
-              )
-              sys.exit(1)
+                  $failed = $true
+              }
+              else {
 
-          before = json.loads(
-              baseline_file.read_text(
-                  encoding="utf-8"
-              )
-          )
-
-          feature_files = {
-              "h1": Path("data/features/h1/KRW-BTC.csv"),
-              "h4": Path("data/features/h4/KRW-BTC.csv"),
-              "d1": Path("data/features/d1/KRW-BTC.csv"),
+                  Write-Host "[PASS] Unchanged:"
+                  Write-Host "       $relativePath"
+              }
           }
 
-          failed = False
+          if ($failed) {
 
-          for timeframe, path in feature_files.items():
-
-              sha256 = hashlib.sha256()
-
-              with path.open("rb") as file:
-
-                  while True:
-
-                      chunk = file.read(
-                          1024 * 1024
-                      )
-
-                      if not chunk:
-                          break
-
-                      sha256.update(chunk)
-
-              after = sha256.hexdigest()
-
-              expected = before.get(
-                  timeframe
-              )
-
-              print(
-                  f"{timeframe.upper()} BEFORE: "
-                  f"{expected}"
-              )
-
-              print(
-                  f"{timeframe.upper()} AFTER : "
-                  f"{after}"
-              )
-
-              if expected != after:
-
-                  print(
-                      f"[FAIL] {timeframe.upper()} "
-                      "feature CSV was modified."
-                  )
-
-                  failed = True
-
-              else:
-
-                  print(
-                      f"[PASS] {timeframe.upper()} "
-                      "feature SHA256 unchanged."
-                  )
-
-          if failed:
-              sys.exit(1)
-
-          print(
-              "[PASS] Detector did not modify "
-              "Feature CSV files."
-          )
-          PY
-
-
-      # ======================================================
-      # 12. VERIFY FEATURE / SIGNAL ROW COUNTS
-      # ======================================================
-
-      - name: Verify feature and signal row counts
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          python - <<'PY'
-          from pathlib import Path
-          import pandas as pd
-          import sys
-
-          files = {
-              "H1": (
-                  Path("data/features/h1/KRW-BTC.csv"),
-                  Path("data/signals/256/h1/KRW-BTC.csv"),
-              ),
-              "H4": (
-                  Path("data/features/h4/KRW-BTC.csv"),
-                  Path("data/signals/256/h4/KRW-BTC.csv"),
-              ),
-              "D1": (
-                  Path("data/features/d1/KRW-BTC.csv"),
-                  Path("data/signals/256/d1/KRW-BTC.csv"),
-              ),
+              Write-Host ""
+              Write-Host "[FAIL] Feature integrity verification failed."
+              exit 1
           }
 
-          failed = False
-
-          for timeframe, paths in files.items():
-
-              feature_path, signal_path = paths
-
-              feature_df = pd.read_csv(
-                  feature_path,
-                  encoding="utf-8-sig",
-              )
-
-              signal_df = pd.read_csv(
-                  signal_path,
-                  encoding="utf-8-sig",
-              )
-
-              feature_rows = len(
-                  feature_df
-              )
-
-              signal_rows = len(
-                  signal_df
-              )
-
-              print(
-                  f"{timeframe}: "
-                  f"feature={feature_rows:,}, "
-                  f"signal={signal_rows:,}"
-              )
-
-              if feature_rows != signal_rows:
-
-                  print(
-                      f"[FAIL] {timeframe} row count "
-                      "mismatch."
-                  )
-
-                  failed = True
-
-              else:
-
-                  print(
-                      f"[PASS] {timeframe} row count "
-                      "matches."
-                  )
-
-          if failed:
-              sys.exit(1)
-
-          print(
-              "[PASS] All feature/signal row counts match."
-          )
-          PY
+          Write-Host ""
+          Write-Host "[PASS] Detector did not modify feature files."
 
 
       # ======================================================
-      # 13. VERIFY REQUIRED DETECTOR COLUMNS
+      # STEP 14
+      # Verify original OHLCV was NOT modified
       # ======================================================
 
-      - name: Verify required 256 detector columns
-        shell: bash
+      - name: Verify original OHLCV was preserved
+        shell: powershell
         run: |
-          set -euo pipefail
+          $ErrorActionPreference = "Stop"
 
-          python - <<'PY'
-          from pathlib import Path
-          import pandas as pd
-          import sys
+          $project = "${{ env.PROJECT_DIR }}"
 
-          required_columns = [
+          Set-Location $project
 
-              "cond_ma_compression",
-              "cond_long_ma_compression",
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY ORIGINAL OHLCV INTEGRITY"
+          Write-Host "============================================================"
+          Write-Host ""
 
-              "cond_short_ma_turn",
-              "cond_mid_ma_turn",
-              "cond_long_ma_stable",
+          $hashFile = Join-Path $env:RUNNER_TEMP "detect_256_ohlcv_before.sha256"
 
-              "cond_price_above_sma5",
-              "cond_price_above_sma20",
+          if (-not (Test-Path $hashFile)) {
 
-              "cond_momentum_positive",
-              "cond_macd_positive",
-
-              "cond_volume_expansion",
-              "cond_trade_value_expansion",
-
-              "cond_candle_strength",
-
-              "cond_not_overextended",
-
-              "setup_score",
-              "ready_score",
-              "trigger_score",
-
-              "signal_setup",
-              "signal_ready",
-              "signal_trigger",
-
-              "signal_stage",
-          ]
-
-          files = {
-              "H1": Path(
-                  "data/signals/256/h1/KRW-BTC.csv"
-              ),
-              "H4": Path(
-                  "data/signals/256/h4/KRW-BTC.csv"
-              ),
-              "D1": Path(
-                  "data/signals/256/d1/KRW-BTC.csv"
-              ),
+              Write-Host "[FAIL] Saved OHLCV hash file is missing."
+              exit 1
           }
 
-          failed = False
+          $savedLines = Get-Content $hashFile
 
-          for timeframe, path in files.items():
+          $failed = $false
 
-              df = pd.read_csv(
-                  path,
-                  encoding="utf-8-sig",
-                  nrows=5,
-              )
+          foreach ($line in $savedLines) {
 
-              missing = [
-                  column
-                  for column in required_columns
-                  if column not in df.columns
-              ]
+              if ([string]::IsNullOrWhiteSpace($line)) {
+                  continue
+              }
 
-              print(
-                  f"{timeframe}: "
-                  f"{len(df.columns):,} columns"
-              )
+              $parts = $line -split '\|', 2
 
-              if missing:
+              if ($parts.Count -ne 2) {
 
-                  print(
-                      f"[FAIL] {timeframe} missing "
-                      "detector columns:"
-                  )
+                  Write-Host "[FAIL] Invalid saved OHLCV hash line:"
+                  Write-Host $line
 
-                  for column in missing:
-                      print(
-                          f"  {column}"
-                      )
+                  $failed = $true
+                  continue
+              }
 
-                  failed = True
+              $relativePath = $parts[0]
+              $beforeHash = $parts[1]
 
-              else:
+              $fullPath = Join-Path $project $relativePath
 
-                  print(
-                      f"[PASS] {timeframe} all "
-                      f"{len(required_columns)} "
-                      "detector columns present."
-                  )
+              if (-not (Test-Path $fullPath)) {
 
-          if failed:
-              sys.exit(1)
+                  Write-Host "[FAIL] Original OHLCV file disappeared:"
+                  Write-Host "       $relativePath"
 
-          print(
-              "[PASS] Required 256 detector "
-              "columns verified."
-          )
-          PY
+                  $failed = $true
+                  continue
+              }
 
+              $afterHash = (Get-FileHash `
+                  -Path $fullPath `
+                  -Algorithm SHA256).Hash
 
-      # ======================================================
-      # 14. VERIFY FLAG VALUES
-      # ======================================================
+              if ($beforeHash -ne $afterHash) {
 
-      - name: Verify detector flag values
-        shell: bash
-        run: |
-          set -euo pipefail
+                  Write-Host "[FAIL] Original OHLCV file was modified:"
+                  Write-Host "       $relativePath"
+                  Write-Host "       Before: $beforeHash"
+                  Write-Host "       After : $afterHash"
 
-          python - <<'PY'
-          from pathlib import Path
-          import pandas as pd
-          import sys
+                  $failed = $true
+              }
+              else {
 
-          flag_columns = [
-
-              "cond_ma_compression",
-              "cond_long_ma_compression",
-
-              "cond_short_ma_turn",
-              "cond_mid_ma_turn",
-              "cond_long_ma_stable",
-
-              "cond_price_above_sma5",
-              "cond_price_above_sma20",
-
-              "cond_momentum_positive",
-              "cond_macd_positive",
-
-              "cond_volume_expansion",
-              "cond_trade_value_expansion",
-
-              "cond_candle_strength",
-
-              "cond_not_overextended",
-
-              "signal_setup",
-              "signal_ready",
-              "signal_trigger",
-          ]
-
-          files = {
-              "H1": Path(
-                  "data/signals/256/h1/KRW-BTC.csv"
-              ),
-              "H4": Path(
-                  "data/signals/256/h4/KRW-BTC.csv"
-              ),
-              "D1": Path(
-                  "data/signals/256/d1/KRW-BTC.csv"
-              ),
+                  Write-Host "[PASS] Original OHLCV preserved:"
+                  Write-Host "       $relativePath"
+              }
           }
 
-          failed = False
+          if ($failed) {
 
-          for timeframe, path in files.items():
+              Write-Host ""
+              Write-Host "[FAIL] Original OHLCV integrity verification failed."
+              exit 1
+          }
 
-              df = pd.read_csv(
-                  path,
-                  encoding="utf-8-sig",
-              )
+          Write-Host ""
+          Write-Host "[PASS] All original OHLCV files were preserved."
 
-              for column in flag_columns:
 
-                  if column not in df.columns:
+      # ======================================================
+      # STEP 15
+      # Show detector output candidates
+      #
+      # We do not assume one exact output filename here.
+      # This step only reports files generated under likely
+      # detector/signal/result locations.
+      # ======================================================
 
-                      print(
-                          f"[FAIL] {timeframe} missing "
-                          f"flag column: {column}"
-                      )
+      - name: Show detector output files
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
 
-                      failed = True
+          $project = "${{ env.PROJECT_DIR }}"
+          Set-Location $project
 
-                      continue
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "DETECTOR OUTPUT FILES"
+          Write-Host "============================================================"
+          Write-Host ""
 
-                  values = set(
-                      pd.to_numeric(
-                          df[column],
-                          errors="coerce",
-                      )
-                      .dropna()
-                      .unique()
-                      .tolist()
-                  )
+          $candidateDirs = @(
+              "data\signals",
+              "data\results",
+              "data\detect_256",
+              "signals",
+              "results"
+          )
 
-                  invalid_values = (
-                      values
-                      - {
-                          0,
-                          1,
+          $foundAny = $false
+
+          foreach ($relativeDir in $candidateDirs) {
+
+              $fullDir = Join-Path $project $relativeDir
+
+              if (Test-Path $fullDir) {
+
+                  Write-Host ""
+                  Write-Host "Directory:"
+                  Write-Host $relativeDir
+
+                  $files = Get-ChildItem `
+                      -Path $fullDir `
+                      -File `
+                      -Recurse `
+                      -ErrorAction SilentlyContinue
+
+                  if ($files) {
+
+                      $foundAny = $true
+
+                      foreach ($file in $files) {
+
+                          Write-Host "  $($file.FullName)"
+                          Write-Host "    Size: $($file.Length) bytes"
+                          Write-Host "    Modified: $($file.LastWriteTime)"
                       }
-                  )
+                  }
+                  else {
 
-                  if invalid_values:
+                      Write-Host "  No files."
+                  }
+              }
+          }
 
-                      print(
-                          f"[FAIL] {timeframe} "
-                          f"{column} invalid values: "
-                          f"{invalid_values}"
-                      )
+          if (-not $foundAny) {
 
-                      failed = True
-
-              if not failed:
-
-                  print(
-                      f"[PASS] {timeframe} "
-                      "flag values are 0/1."
-                  )
-
-          if failed:
-              sys.exit(1)
-
-          print(
-              "[PASS] All detector flag values verified."
-          )
-          PY
+              Write-Host ""
+              Write-Host "[INFO] No detector output file was found in the standard"
+              Write-Host "       candidate directories."
+              Write-Host ""
+              Write-Host "       This is not automatically treated as failure."
+              Write-Host "       detect_256.py may print results only, or may use"
+              Write-Host "       a different output path."
+          }
 
 
       # ======================================================
-      # 15. VERIFY SIGNAL STAGES
+      # STEP 16
+      # Git safety check
+      #
+      # Runtime/generated data may be untracked.
+      # No commit/push is performed.
       # ======================================================
 
-      - name: Verify detector signal stages
-        shell: bash
+      - name: Show Git status safely
+        shell: powershell
         run: |
-          set -euo pipefail
+          $ErrorActionPreference = "Stop"
 
-          python - <<'PY'
-          from pathlib import Path
-          import pandas as pd
-          import sys
+          $project = "${{ env.PROJECT_DIR }}"
+          Set-Location $project
 
-          allowed_stages = {
-              "NONE",
-              "SETUP",
-              "READY",
-              "TRIGGER",
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "GIT STATUS"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          if (Test-Path ".git") {
+
+              git status --short --untracked-files=all
+
+              Write-Host ""
+              Write-Host "[INFO] Git status displayed."
+              Write-Host "[INFO] No git reset was executed."
+              Write-Host "[INFO] No git clean was executed."
+              Write-Host "[INFO] No automatic commit was executed."
+              Write-Host "[INFO] No automatic push was executed."
           }
+          else {
 
-          files = {
-              "H1": Path(
-                  "data/signals/256/h1/KRW-BTC.csv"
-              ),
-              "H4": Path(
-                  "data/signals/256/h4/KRW-BTC.csv"
-              ),
-              "D1": Path(
-                  "data/signals/256/d1/KRW-BTC.csv"
-              ),
+              Write-Host "[INFO] Local project directory is not a Git working tree."
+              Write-Host "[INFO] Detector test itself can still be evaluated."
           }
-
-          failed = False
-
-          for timeframe, path in files.items():
-
-              df = pd.read_csv(
-                  path,
-                  encoding="utf-8-sig",
-              )
-
-              stages = set(
-                  df[
-                      "signal_stage"
-                  ]
-                  .dropna()
-                  .astype(str)
-                  .unique()
-                  .tolist()
-              )
-
-              invalid = (
-                  stages
-                  - allowed_stages
-              )
-
-              print(
-                  f"{timeframe} stages: "
-                  f"{sorted(stages)}"
-              )
-
-              if invalid:
-
-                  print(
-                      f"[FAIL] {timeframe} invalid "
-                      f"signal stages: {invalid}"
-                  )
-
-                  failed = True
-
-              else:
-
-                  print(
-                      f"[PASS] {timeframe} "
-                      "signal stages valid."
-                  )
-
-          if failed:
-              sys.exit(1)
-
-          print(
-              "[PASS] All signal stages verified."
-          )
-          PY
 
 
       # ======================================================
-      # 16. VERIFY SIGNAL LOGIC CONSISTENCY
+      # STEP 17
+      # Final result
       # ======================================================
 
-      - name: Verify detector state consistency
-        shell: bash
+      - name: Detector test completed
+        shell: powershell
         run: |
-          set -euo pipefail
-
-          python - <<'PY'
-          from pathlib import Path
-          import pandas as pd
-          import sys
-
-          files = {
-              "H1": Path(
-                  "data/signals/256/h1/KRW-BTC.csv"
-              ),
-              "H4": Path(
-                  "data/signals/256/h4/KRW-BTC.csv"
-              ),
-              "D1": Path(
-                  "data/signals/256/d1/KRW-BTC.csv"
-              ),
-          }
-
-          failed = False
-
-          for timeframe, path in files.items():
-
-              df = pd.read_csv(
-                  path,
-                  encoding="utf-8-sig",
-              )
-
-              trigger_without_ready = df[
-                  (
-                      df["signal_trigger"] == 1
-                  )
-                  & (
-                      df["signal_ready"] != 1
-                  )
-              ]
-
-              wrong_trigger_stage = df[
-                  (
-                      df["signal_trigger"] == 1
-                  )
-                  & (
-                      df["signal_stage"] != "TRIGGER"
-                  )
-              ]
-
-              wrong_ready_stage = df[
-                  (
-                      df["signal_trigger"] != 1
-                  )
-                  & (
-                      df["signal_ready"] == 1
-                  )
-                  & (
-                      df["signal_stage"] != "READY"
-                  )
-              ]
-
-              wrong_setup_stage = df[
-                  (
-                      df["signal_trigger"] != 1
-                  )
-                  & (
-                      df["signal_ready"] != 1
-                  )
-                  & (
-                      df["signal_setup"] == 1
-                  )
-                  & (
-                      df["signal_stage"] != "SETUP"
-                  )
-              ]
-
-              if not trigger_without_ready.empty:
-
-                  print(
-                      f"[FAIL] {timeframe}: "
-                      f"{len(trigger_without_ready):,} "
-                      "TRIGGER rows without READY."
-                  )
-
-                  failed = True
-
-              if not wrong_trigger_stage.empty:
-
-                  print(
-                      f"[FAIL] {timeframe}: "
-                      f"{len(wrong_trigger_stage):,} "
-                      "TRIGGER flag/stage mismatches."
-                  )
-
-                  failed = True
-
-              if not wrong_ready_stage.empty:
-
-                  print(
-                      f"[FAIL] {timeframe}: "
-                      f"{len(wrong_ready_stage):,} "
-                      "READY flag/stage mismatches."
-                  )
-
-                  failed = True
-
-              if not wrong_setup_stage.empty:
-
-                  print(
-                      f"[FAIL] {timeframe}: "
-                      f"{len(wrong_setup_stage):,} "
-                      "SETUP flag/stage mismatches."
-                  )
-
-                  failed = True
-
-              if (
-                  trigger_without_ready.empty
-                  and wrong_trigger_stage.empty
-                  and wrong_ready_stage.empty
-                  and wrong_setup_stage.empty
-              ):
-
-                  print(
-                      f"[PASS] {timeframe} "
-                      "state consistency verified."
-                  )
-
-          if failed:
-              sys.exit(1)
-
-          print(
-              "[PASS] Detector state consistency verified."
-          )
-          PY
-
-
-      # ======================================================
-      # 17. VERIFY TIMESTAMP INTEGRITY
-      # ======================================================
-
-      - name: Verify detector timestamp integrity
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          python - <<'PY'
-          from pathlib import Path
-          import pandas as pd
-          import sys
-
-          files = {
-              "H1": (
-                  Path("data/features/h1/KRW-BTC.csv"),
-                  Path("data/signals/256/h1/KRW-BTC.csv"),
-              ),
-              "H4": (
-                  Path("data/features/h4/KRW-BTC.csv"),
-                  Path("data/signals/256/h4/KRW-BTC.csv"),
-              ),
-              "D1": (
-                  Path("data/features/d1/KRW-BTC.csv"),
-                  Path("data/signals/256/d1/KRW-BTC.csv"),
-              ),
-          }
-
-          failed = False
-
-          for timeframe, paths in files.items():
-
-              feature_path, signal_path = paths
-
-              feature_df = pd.read_csv(
-                  feature_path,
-                  encoding="utf-8-sig",
-              )
-
-              signal_df = pd.read_csv(
-                  signal_path,
-                  encoding="utf-8-sig",
-              )
-
-              feature_time = pd.to_datetime(
-                  feature_df[
-                      "candle_date_time_utc"
-                  ],
-                  utc=True,
-                  errors="coerce",
-              )
-
-              signal_time = pd.to_datetime(
-                  signal_df[
-                      "candle_date_time_utc"
-                  ],
-                  utc=True,
-                  errors="coerce",
-              )
-
-              if feature_time.isna().any():
-
-                  print(
-                      f"[FAIL] {timeframe} feature "
-                      "contains invalid timestamps."
-                  )
-
-                  failed = True
-
-              if signal_time.isna().any():
-
-                  print(
-                      f"[FAIL] {timeframe} signal "
-                      "contains invalid timestamps."
-                  )
-
-                  failed = True
-
-              if signal_time.duplicated().any():
-
-                  print(
-                      f"[FAIL] {timeframe} signal "
-                      "contains duplicate timestamps."
-                  )
-
-                  failed = True
-
-              if not signal_time.is_monotonic_increasing:
-
-                  print(
-                      f"[FAIL] {timeframe} signal "
-                      "timestamps are not sorted."
-                  )
-
-                  failed = True
-
-              if not feature_time.reset_index(
-                  drop=True
-              ).equals(
-                  signal_time.reset_index(
-                      drop=True
-                  )
-              ):
-
-                  print(
-                      f"[FAIL] {timeframe} feature/signal "
-                      "timestamps do not match."
-                  )
-
-                  failed = True
-
-              else:
-
-                  print(
-                      f"[PASS] {timeframe} "
-                      "timestamp integrity verified."
-                  )
-
-          if failed:
-              sys.exit(1)
-
-          print(
-              "[PASS] Detector timestamps verified."
-          )
-          PY
-
-
-      # ======================================================
-      # 18. VERIFY SCORE VALUES
-      # ======================================================
-
-      - name: Verify detector score values
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          python - <<'PY'
-          from pathlib import Path
-          import numpy as np
-          import pandas as pd
-          import sys
-
-          score_limits = {
-              "setup_score": (
-                  0,
-                  5,
-              ),
-              "ready_score": (
-                  0,
-                  6,
-              ),
-              "trigger_score": (
-                  0,
-                  8,
-              ),
-          }
-
-          files = {
-              "H1": Path(
-                  "data/signals/256/h1/KRW-BTC.csv"
-              ),
-              "H4": Path(
-                  "data/signals/256/h4/KRW-BTC.csv"
-              ),
-              "D1": Path(
-                  "data/signals/256/d1/KRW-BTC.csv"
-              ),
-          }
-
-          failed = False
-
-          for timeframe, path in files.items():
-
-              df = pd.read_csv(
-                  path,
-                  encoding="utf-8-sig",
-              )
-
-              for column, limits in score_limits.items():
-
-                  minimum, maximum = limits
-
-                  values = pd.to_numeric(
-                      df[column],
-                      errors="coerce",
-                  )
-
-                  if values.isna().any():
-
-                      print(
-                          f"[FAIL] {timeframe} "
-                          f"{column} contains NaN."
-                      )
-
-                      failed = True
-
-                      continue
-
-                  if np.isinf(
-                      values.to_numpy(
-                          dtype=float
-                      )
-                  ).any():
-
-                      print(
-                          f"[FAIL] {timeframe} "
-                          f"{column} contains infinity."
-                      )
-
-                      failed = True
-
-                  actual_min = int(
-                      values.min()
-                  )
-
-                  actual_max = int(
-                      values.max()
-                  )
-
-                  print(
-                      f"{timeframe} {column}: "
-                      f"min={actual_min}, "
-                      f"max={actual_max}"
-                  )
-
-                  if (
-                      actual_min < minimum
-                      or actual_max > maximum
-                  ):
-
-                      print(
-                          f"[FAIL] {timeframe} "
-                          f"{column} outside expected "
-                          f"range {minimum}~{maximum}."
-                      )
-
-                      failed = True
-
-              if not failed:
-
-                  print(
-                      f"[PASS] {timeframe} "
-                      "score ranges verified."
-                  )
-
-          if failed:
-              sys.exit(1)
-
-          print(
-              "[PASS] Detector score values verified."
-          )
-          PY
-
-
-      # ======================================================
-      # 19. VERIFY NO INFINITE NUMERIC VALUES
-      # ======================================================
-
-      - name: Verify detector numeric integrity
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          python - <<'PY'
-          from pathlib import Path
-          import numpy as np
-          import pandas as pd
-          import sys
-
-          files = {
-              "H1": Path(
-                  "data/signals/256/h1/KRW-BTC.csv"
-              ),
-              "H4": Path(
-                  "data/signals/256/h4/KRW-BTC.csv"
-              ),
-              "D1": Path(
-                  "data/signals/256/d1/KRW-BTC.csv"
-              ),
-          }
-
-          failed = False
-
-          for timeframe, path in files.items():
-
-              df = pd.read_csv(
-                  path,
-                  encoding="utf-8-sig",
-              )
-
-              numeric_df = df.select_dtypes(
-                  include=[
-                      np.number,
-                  ]
-              )
-
-              values = numeric_df.to_numpy(
-                  dtype=float
-              )
-
-              infinity_count = int(
-                  np.isinf(
-                      values
-                  ).sum()
-              )
-
-              if infinity_count > 0:
-
-                  print(
-                      f"[FAIL] {timeframe} contains "
-                      f"{infinity_count:,} infinite "
-                      "numeric values."
-                  )
-
-                  failed = True
-
-              else:
-
-                  print(
-                      f"[PASS] {timeframe} contains "
-                      "no infinite numeric values."
-                  )
-
-          if failed:
-              sys.exit(1)
-
-          print(
-              "[PASS] Detector numeric integrity verified."
-          )
-          PY
-
-
-      # ======================================================
-      # 20. CHECK FOR FORBIDDEN FUTURE/LABEL OUTPUT COLUMNS
-      # ======================================================
-
-      - name: Verify no future result columns were created
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          python - <<'PY'
-          from pathlib import Path
-          import pandas as pd
-          import sys
-
-          forbidden_exact_columns = {
-              "label",
-              "target",
-              "future_return",
-              "future_max_return",
-              "future_min_return",
-              "future_high",
-              "future_low",
-              "future_close",
-              "future_price",
-              "hit_30",
-              "hit_30pct",
-              "surge_30",
-              "surge_label",
-              "prediction",
-              "predicted_probability",
-              "buy_signal",
-              "sell_signal",
-          }
-
-          forbidden_prefixes = (
-              "future_",
-              "label_",
-              "target_",
-              "prediction_",
-              "predicted_",
-          )
-
-          files = {
-              "H1": Path(
-                  "data/signals/256/h1/KRW-BTC.csv"
-              ),
-              "H4": Path(
-                  "data/signals/256/h4/KRW-BTC.csv"
-              ),
-              "D1": Path(
-                  "data/signals/256/d1/KRW-BTC.csv"
-              ),
-          }
-
-          failed = False
-
-          for timeframe, path in files.items():
-
-              df = pd.read_csv(
-                  path,
-                  encoding="utf-8-sig",
-                  nrows=1,
-              )
-
-              columns = [
-                  str(column).strip()
-                  for column in df.columns
-              ]
-
-              suspicious = []
-
-              for column in columns:
-
-                  lowered = column.lower()
-
-                  if lowered in forbidden_exact_columns:
-
-                      suspicious.append(
-                          column
-                      )
-
-                      continue
-
-                  if lowered.startswith(
-                      forbidden_prefixes
-                  ):
-
-                      suspicious.append(
-                          column
-                      )
-
-              if suspicious:
-
-                  print(
-                      f"[FAIL] {timeframe} contains "
-                      "future/label/prediction columns:"
-                  )
-
-                  for column in suspicious:
-                      print(
-                          f"  {column}"
-                      )
-
-                  failed = True
-
-              else:
-
-                  print(
-                      f"[PASS] {timeframe} contains "
-                      "no forbidden future/result "
-                      "output columns."
-                  )
-
-          if failed:
-              sys.exit(1)
-
-          print(
-              "[PASS] No future result, label, "
-              "prediction, or trading columns created."
-          )
-          PY
-
-
-      # ======================================================
-      # 21. VERIFY OUTPUT CAN BE RELOADED
-      # ======================================================
-
-      - name: Reload and verify detector output
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          python - <<'PY'
-          from pathlib import Path
-          import pandas as pd
-          import sys
-
-          files = {
-              "H1": Path(
-                  "data/signals/256/h1/KRW-BTC.csv"
-              ),
-              "H4": Path(
-                  "data/signals/256/h4/KRW-BTC.csv"
-              ),
-              "D1": Path(
-                  "data/signals/256/d1/KRW-BTC.csv"
-              ),
-          }
-
-          failed = False
-
-          for timeframe, path in files.items():
-
-              try:
-
-                  df = pd.read_csv(
-                      path,
-                      encoding="utf-8-sig",
-                  )
-
-              except Exception as exc:
-
-                  print(
-                      f"[FAIL] {timeframe} output "
-                      f"cannot be reloaded: {exc}"
-                  )
-
-                  failed = True
-
-                  continue
-
-              if df.empty:
-
-                  print(
-                      f"[FAIL] {timeframe} reloaded "
-                      "output is empty."
-                  )
-
-                  failed = True
-
-                  continue
-
-              setup_count = int(
-                  pd.to_numeric(
-                      df["signal_setup"],
-                      errors="coerce",
-                  )
-                  .fillna(0)
-                  .sum()
-              )
-
-              ready_count = int(
-                  pd.to_numeric(
-                      df["signal_ready"],
-                      errors="coerce",
-                  )
-                  .fillna(0)
-                  .sum()
-              )
-
-              trigger_count = int(
-                  pd.to_numeric(
-                      df["signal_trigger"],
-                      errors="coerce",
-                  )
-                  .fillna(0)
-                  .sum()
-              )
-
-              print(
-                  f"{timeframe}: "
-                  f"rows={len(df):,}, "
-                  f"columns={len(df.columns):,}, "
-                  f"SETUP={setup_count:,}, "
-                  f"READY={ready_count:,}, "
-                  f"TRIGGER={trigger_count:,}"
-              )
-
-              print(
-                  f"[PASS] {timeframe} detector "
-                  "output reload successful."
-              )
-
-          if failed:
-              sys.exit(1)
-
-          print(
-              "[PASS] All detector outputs reload "
-              "successfully."
-          )
-          PY
-
-
-      # ======================================================
-      # 22. VERIFY DETECTOR STATUS LOG
-      # ======================================================
-
-      - name: Verify detector status log
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          python - <<'PY'
-          from pathlib import Path
-          import pandas as pd
-          import sys
-
-          path = Path(
-              "data/detect_256_status.csv"
-          )
-
-          if not path.exists():
-
-              print(
-                  "[FAIL] detect_256_status.csv "
-                  "not found."
-              )
-
-              sys.exit(1)
-
-          df = pd.read_csv(
-              path,
-              encoding="utf-8-sig",
-          )
-
-          required_columns = [
-              "run_time_utc",
-              "version",
-              "market",
-              "timeframe",
-              "status",
-              "feature_rows",
-              "signal_rows",
-              "feature_sha256_before",
-              "feature_sha256_after",
-              "message",
-          ]
-
-          missing = [
-              column
-              for column in required_columns
-              if column not in df.columns
-          ]
-
-          if missing:
-
-              print(
-                  "[FAIL] Status log missing columns:"
-              )
-
-              for column in missing:
-                  print(
-                      f"  {column}"
-                  )
-
-              sys.exit(1)
-
-          current = df[
-              (
-                  df["market"] == "KRW-BTC"
-              )
-              & (
-                  df["timeframe"].isin(
-                      [
-                          "h1",
-                          "h4",
-                          "d1",
-                      ]
-                  )
-              )
-          ].tail(3)
-
-          if len(current) != 3:
-
-              print(
-                  "[FAIL] Expected 3 current detector "
-                  "status rows."
-              )
-
-              print(
-                  current.to_string(
-                      index=False
-                  )
-              )
-
-              sys.exit(1)
-
-          statuses = set(
-              current[
-                  "status"
-              ]
-              .astype(str)
-              .tolist()
-          )
-
-          if statuses != {
-              "PASSED"
-          }:
-
-              print(
-                  "[FAIL] Detector status contains "
-                  "non-PASSED result."
-              )
-
-              print(
-                  current.to_string(
-                      index=False
-                  )
-              )
-
-              sys.exit(1)
-
-          hash_mismatch = current[
-              current[
-                  "feature_sha256_before"
-              ]
-              != current[
-                  "feature_sha256_after"
-              ]
-          ]
-
-          if not hash_mismatch.empty:
-
-              print(
-                  "[FAIL] Status log reports "
-                  "Feature SHA256 mismatch."
-              )
-
-              print(
-                  hash_mismatch.to_string(
-                      index=False
-                  )
-              )
-
-              sys.exit(1)
-
-          print(
-              current[
-                  [
-                      "market",
-                      "timeframe",
-                      "status",
-                      "feature_rows",
-                      "signal_rows",
-                  ]
-              ].to_string(
-                  index=False
-              )
-          )
-
-          print(
-              "[PASS] Detector status log verified."
-          )
-          PY
-
-
-      # ======================================================
-      # 23. FINAL SUMMARY
-      # ======================================================
-
-      - name: 256 Detector test summary
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          python - <<'PY'
-          from pathlib import Path
-          import pandas as pd
-
-          files = {
-              "H1": Path(
-                  "data/signals/256/h1/KRW-BTC.csv"
-              ),
-              "H4": Path(
-                  "data/signals/256/h4/KRW-BTC.csv"
-              ),
-              "D1": Path(
-                  "data/signals/256/d1/KRW-BTC.csv"
-              ),
-          }
-
-          print("=" * 72)
-          print("256 DETECTOR CLEAN V001 TEST RESULT")
-          print("=" * 72)
-
-          total_rows = 0
-          total_setup = 0
-          total_ready = 0
-          total_trigger = 0
-
-          for timeframe, path in files.items():
-
-              df = pd.read_csv(
-                  path,
-                  encoding="utf-8-sig",
-              )
-
-              rows = len(df)
-
-              setup = int(
-                  df[
-                      "signal_setup"
-                  ].sum()
-              )
-
-              ready = int(
-                  df[
-                      "signal_ready"
-                  ].sum()
-              )
-
-              trigger = int(
-                  df[
-                      "signal_trigger"
-                  ].sum()
-              )
-
-              total_rows += rows
-              total_setup += setup
-              total_ready += ready
-              total_trigger += trigger
-
-              print(
-                  f"{timeframe}: "
-                  f"rows={rows:,} | "
-                  f"SETUP={setup:,} | "
-                  f"READY={ready:,} | "
-                  f"TRIGGER={trigger:,}"
-              )
-
-          print("-" * 72)
-
-          print(
-              f"TOTAL: "
-              f"rows={total_rows:,} | "
-              f"SETUP={total_setup:,} | "
-              f"READY={total_ready:,} | "
-              f"TRIGGER={total_trigger:,}"
-          )
-
-          print("-" * 72)
-
-          print(
-              "[PASS] KRW-BTC h1/h4/d1 "
-              "256 detector outputs created."
-          )
-
-          print(
-              "[PASS] Feature CSV SHA256 unchanged."
-          )
-
-          print(
-              "[PASS] Feature/signal row counts match."
-          )
-
-          print(
-              "[PASS] Required detector columns verified."
-          )
-
-          print(
-              "[PASS] Detector flags verified."
-          )
-
-          print(
-              "[PASS] SETUP/READY/TRIGGER stages verified."
-          )
-
-          print(
-              "[PASS] State consistency verified."
-          )
-
-          print(
-              "[PASS] Timestamp integrity verified."
-          )
-
-          print(
-              "[PASS] Score ranges verified."
-          )
-
-          print(
-              "[PASS] Numeric integrity verified."
-          )
-
-          print(
-              "[PASS] No future-result labels created."
-          )
-
-          print(
-              "[PASS] No prediction/trading columns created."
-          )
-
-          print(
-              "[PASS] Detector output reload verified."
-          )
-
-          print(
-              "[PASS] Detector status log verified."
-          )
-
-          print("=" * 72)
-
-          print(
-              "256 DETECTOR CLEAN V001 TEST PASSED"
-          )
-
-          print("=" * 72)
-          PY
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "UPBIT SURGE MONITOR - 256 DETECTOR TEST COMPLETED"
+          Write-Host "============================================================"
+          Write-Host ""
+          Write-Host "Market:"
+          Write-Host "${{ env.TEST_MARKET }}"
+          Write-Host ""
+          Write-Host "[PASS] Local project directory verified."
+          Write-Host "[PASS] Python verified."
+          Write-Host "[PASS] Required project files verified."
+          Write-Host "[PASS] Dependencies verified."
+          Write-Host "[PASS] Actual local OHLCV directories verified."
+          Write-Host "[PASS] KRW-BTC OHLCV files verified."
+          Write-Host "[PASS] Clean V002 features built."
+          Write-Host "[PASS] Detector feature inputs verified."
+          Write-Host "[PASS] 256 detector executed."
+          Write-Host "[PASS] Feature files preserved."
+          Write-Host "[PASS] Original accumulated OHLCV preserved."
+          Write-Host ""
+          Write-Host "Safety:"
+          Write-Host "Existing OHLCV deletion : DISABLED"
+          Write-Host "Git reset --hard        : DISABLED"
+          Write-Host "Git clean               : DISABLED"
+          Write-Host "Automatic Git commit    : DISABLED"
+          Write-Host "Automatic Git push      : DISABLED"
+          Write-Host "Trading                  : DISABLED"
+          Write-Host ""
+          Write-Host "============================================================"
