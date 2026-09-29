@@ -11,15 +11,24 @@
 #
 # IMPORTANT
 # ------------------------------------------------------------
-# Actual local OHLCV structure:
+# Actual local data structure:
 #
 #   data/
-#     h1/
-#       KRW-BTC.csv
-#     h4/
-#       KRW-BTC.csv
-#     d1/
-#       KRW-BTC.csv
+#     ohlcv/
+#       h1/
+#         KRW-BTC.csv
+#       h4/
+#         KRW-BTC.csv
+#       d1/
+#         KRW-BTC.csv
+#
+#     features/
+#       h1/
+#         KRW-BTC.csv
+#       h4/
+#         KRW-BTC.csv
+#       d1/
+#         KRW-BTC.csv
 #
 # This workflow:
 #
@@ -37,7 +46,6 @@
 # Trading is NOT performed.
 #
 # ============================================================
-
 
 name: 256 Detector Test
 
@@ -138,7 +146,7 @@ jobs:
           Write-Host "Git clean               : DISABLED"
           Write-Host "Automatic Git commit    : DISABLED"
           Write-Host "Automatic Git push      : DISABLED"
-          Write-Host "Trading                  : DISABLED"
+          Write-Host "Trading                 : DISABLED"
 
           Write-Host ""
           Write-Host "============================================================"
@@ -286,15 +294,12 @@ jobs:
       # STEP 6
       # Verify actual local OHLCV directories
       #
-      # IMPORTANT:
-      #
       # Actual local structure:
       #
-      #   data/h1/
-      #   data/h4/
-      #   data/d1/
+      #   data/ohlcv/h1/
+      #   data/ohlcv/h4/
+      #   data/ohlcv/d1/
       #
-      # There is intentionally NO data/ohlcv/ layer here.
       # ======================================================
 
       - name: Verify local OHLCV directories
@@ -312,9 +317,9 @@ jobs:
           Write-Host ""
 
           $directories = @(
-              "data\h1",
-              "data\h4",
-              "data\d1"
+              "data\ohlcv\h1",
+              "data\ohlcv\h4",
+              "data\ohlcv\d1"
           )
 
           $failed = $false
@@ -371,9 +376,9 @@ jobs:
           Write-Host ""
 
           $files = @(
-              "data\h1\$market.csv",
-              "data\h4\$market.csv",
-              "data\d1\$market.csv"
+              "data\ohlcv\h1\$market.csv",
+              "data\ohlcv\h4\$market.csv",
+              "data\ohlcv\d1\$market.csv"
           )
 
           $failed = $false
@@ -442,9 +447,9 @@ jobs:
           Write-Host ""
 
           $files = @(
-              "data\h1\$market.csv",
-              "data\h4\$market.csv",
-              "data\d1\$market.csv"
+              "data\ohlcv\h1\$market.csv",
+              "data\ohlcv\h4\$market.csv",
+              "data\ohlcv\d1\$market.csv"
           )
 
           $hashLines = @()
@@ -479,13 +484,17 @@ jobs:
       # STEP 9
       # Build KRW-BTC Clean V002 features
       #
-      # IMPORTANT:
-      # build_features.py must use the actual local OHLCV
-      # structure:
+      # build_features.py reads:
       #
-      #   data/h1
-      #   data/h4
-      #   data/d1
+      #   data/ohlcv/h1
+      #   data/ohlcv/h4
+      #   data/ohlcv/d1
+      #
+      # and writes:
+      #
+      #   data/features/h1
+      #   data/features/h4
+      #   data/features/d1
       #
       # ======================================================
 
@@ -682,7 +691,6 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           $project = "${{ env.PROJECT_DIR }}"
-          $market = "${{ env.TEST_MARKET }}"
 
           Set-Location $project
 
@@ -865,7 +873,7 @@ jobs:
       # Show detector output candidates
       #
       # We do not assume one exact output filename here.
-      # This step only reports files generated under likely
+      # This step reports files generated under likely
       # detector/signal/result locations.
       # ======================================================
 
@@ -994,9 +1002,11 @@ jobs:
           Write-Host "UPBIT SURGE MONITOR - 256 DETECTOR TEST COMPLETED"
           Write-Host "============================================================"
           Write-Host ""
+
           Write-Host "Market:"
           Write-Host "${{ env.TEST_MARKET }}"
           Write-Host ""
+
           Write-Host "[PASS] Local project directory verified."
           Write-Host "[PASS] Python verified."
           Write-Host "[PASS] Required project files verified."
@@ -1008,6 +1018,12 @@ jobs:
           Write-Host "[PASS] 256 detector executed."
           Write-Host "[PASS] Feature files preserved."
           Write-Host "[PASS] Original accumulated OHLCV preserved."
+
+          Write-Host ""
+          Write-Host "Data structure:"
+          Write-Host "OHLCV    : data\ohlcv\h1 | h4 | d1"
+          Write-Host "Features : data\features\h1 | h4 | d1"
+
           Write-Host ""
           Write-Host "Safety:"
           Write-Host "Existing OHLCV deletion : DISABLED"
@@ -1015,6 +1031,7 @@ jobs:
           Write-Host "Git clean               : DISABLED"
           Write-Host "Automatic Git commit    : DISABLED"
           Write-Host "Automatic Git push      : DISABLED"
-          Write-Host "Trading                  : DISABLED"
+          Write-Host "Trading                 : DISABLED"
+
           Write-Host ""
           Write-Host "============================================================"
