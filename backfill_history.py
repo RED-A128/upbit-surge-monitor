@@ -1,50 +1,40 @@
 """
-Upbit Surge Monitor - Clean V001
-================================
+Upbit Surge Monitor - Backfill History Clean V002
+=================================================
 
 File:
     backfill_history.py
 
 Purpose:
-    Existing OHLCV CSV files are extended backward in time.
+    기존 OHLCV CSV의 과거 데이터를 뒤쪽이 아닌
+    과거 방향으로 계속 확장한다.
 
-    This script is dedicated to STEP 2 historical OHLCV backfill.
+Clean V002:
+    timestamp는 Upbit API timestamp를 사용하지 않는다.
 
-    It does NOT replace collector.py.
+    timestamp =
+        candle_date_time_utc Unix epoch milliseconds
 
-Roles:
-    collector.py
-        -> Keeps current/latest OHLCV data updated.
+    기존 누적 CSV 역시 로드 시 canonical timestamp로
+    정규화한다.
 
-    backfill_history.py
-        -> Extends existing OHLCV history backward.
-
-Important:
-    - Existing OHLCV data is preserved.
-    - Existing CSV files are never intentionally deleted.
-    - Historical candles are merged with existing candles.
-    - Duplicate candle timestamps are removed.
-    - Candles are sorted in chronological order.
-    - Each successful batch is saved immediately.
-    - The script can be stopped and restarted.
-    - On restart, it continues from the oldest stored candle.
-    - No pattern analysis.
-    - No prediction.
-    - No machine learning.
-    - No trading.
-    - No automatic orders.
+Safety:
+    - 기존 OHLCV 삭제 금지
+    - 기존 행 보존
+    - 과거 candle 병합
+    - candle UTC 기준 중복 제거
+    - candle UTC 기준 정렬
+    - timestamp 자동 복구
+    - batch별 checkpoint 저장
+    - 중단 후 재개 가능
+    - prediction 없음
+    - trading 없음
 
 Windows:
-    Single market test:
-        py backfill_history.py --market KRW-BTC
+    py backfill_history.py --market KRW-BTC
 
-    All current KRW markets:
-        py backfill_history.py
-
-Expected existing directories:
-    data/ohlcv/h1/
-    data/ohlcv/h4/
-    data/ohlcv/d1/
+    전체:
+    py backfill_history.py
 """
 
 from __future__ import annotations
@@ -61,11 +51,11 @@ import requests
 
 
 # ============================================================
-# PROJECT CONFIGURATION
+# CONFIG
 # ============================================================
 
 PROJECT_NAME = "Upbit Surge Monitor"
-VERSION = "Clean V001"
+VERSION = "Backfill Clean V002"
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -76,67 +66,59 @@ H1_DIR = OHLCV_DIR / "h1"
 H4_DIR = OHLCV_DIR / "h4"
 D1_DIR = OHLCV_DIR / "d1"
 
-BACKFILL_STATUS_FILE = DATA_DIR / "backfill_status.csv"
+BACKFILL_STATUS_FILE = (
+    DATA_DIR
+    / "backfill_status.csv"
+)
 
 UPBIT_API_BASE = "https://api.upbit.com/v1"
 
 REQUEST_TIMEOUT = 15
-
-# Upbit candle API request count per call.
 API_MAX_COUNT = 200
 
-# Delay between API requests.
-#
-# This intentionally stays conservative.
 REQUEST_SLEEP_SECONDS = 0.15
-
-# Delay between market jobs.
 MARKET_SLEEP_SECONDS = 0.05
 
-# HTTP retry count.
 MAX_RETRIES = 5
 
-# Save after every successful API batch.
-#
-# This is intentionally 1 so that a stopped GitHub Action,
-# PC shutdown, network interruption, or manual cancellation
-# loses as little completed work as possible.
 SAVE_EVERY_BATCHES = 1
 
-# Safety limit for one market + timeframe during one execution.
-#
-# This is NOT the desired history depth.
-#
-# It prevents one abnormal API response sequence from creating
-# an infinite loop.
-#
-# 50,000 candles is far beyond the current Clean V001 history
-# and can be continued on the next run if ever reached.
-MAX_CANDLES_PER_JOB_PER_RUN = 50_000
+MAX_CANDLES_PER_JOB_PER_RUN = (
+    50_000
+)
 
 
 # ============================================================
-# TIMEFRAME CONFIGURATION
+# TIMEFRAMES
 # ============================================================
 
 TIMEFRAMES = {
     "h1": {
-        "url": f"{UPBIT_API_BASE}/candles/minutes/60",
+        "url": (
+            f"{UPBIT_API_BASE}"
+            "/candles/minutes/60"
+        ),
         "directory": H1_DIR,
     },
     "h4": {
-        "url": f"{UPBIT_API_BASE}/candles/minutes/240",
+        "url": (
+            f"{UPBIT_API_BASE}"
+            "/candles/minutes/240"
+        ),
         "directory": H4_DIR,
     },
     "d1": {
-        "url": f"{UPBIT_API_BASE}/candles/days",
+        "url": (
+            f"{UPBIT_API_BASE}"
+            "/candles/days"
+        ),
         "directory": D1_DIR,
     },
 }
 
 
 # ============================================================
-# OHLCV FORMAT
+# COLUMNS
 # ============================================================
 
 OHLCV_COLUMNS = [
@@ -151,7 +133,6 @@ OHLCV_COLUMNS = [
     "volume",
     "trade_value",
 ]
-
 
 BACKFILL_STATUS_COLUMNS = [
     "run_time_utc",
@@ -169,7 +150,7 @@ BACKFILL_STATUS_COLUMNS = [
 
 
 # ============================================================
-# HTTP SESSION
+# SESSION
 # ============================================================
 
 SESSION = requests.Session()
@@ -177,30 +158,24 @@ SESSION = requests.Session()
 SESSION.headers.update(
     {
         "Accept": "application/json",
-        "User-Agent": "upbit-surge-monitor-clean-v001-backfill",
+        "User-Agent": (
+            "upbit-surge-monitor-"
+            "backfill-clean-v002"
+        ),
     }
 )
 
 
 # ============================================================
-# COMMAND LINE ARGUMENTS
+# ARGUMENTS
 # ============================================================
 
 def parse_arguments() -> argparse.Namespace:
-    """
-    Parse command-line arguments.
-
-    Examples:
-
-        py backfill_history.py
-
-        py backfill_history.py --market KRW-BTC
-    """
 
     parser = argparse.ArgumentParser(
         description=(
-            "Extend existing Upbit OHLCV CSV files "
-            "backward in time."
+            "Extend existing Upbit OHLCV "
+            "CSV files backward in time."
         )
     )
 
@@ -209,10 +184,8 @@ def parse_arguments() -> argparse.Namespace:
         type=str,
         default=None,
         help=(
-            "Run backfill for one KRW market only. "
-            "Example: --market KRW-BTC. "
-            "If omitted, all current Upbit KRW markets "
-            "are processed."
+            "Single KRW market. "
+            "Example: KRW-BTC"
         ),
     )
 
@@ -220,14 +193,16 @@ def parse_arguments() -> argparse.Namespace:
 
 
 # ============================================================
-# DISPLAY / UTILITY
+# UTILITY
 # ============================================================
 
 def print_line(
     char: str = "=",
     length: int = 78,
 ) -> None:
-    print(char * length)
+    print(
+        char * length
+    )
 
 
 def utc_now_iso() -> str:
@@ -237,30 +212,35 @@ def utc_now_iso() -> str:
 
 
 def ensure_required_directories() -> None:
-    """
-    Create only the project data directories if necessary.
 
-    Existing OHLCV files are never removed.
-    """
-
-    directories = [
+    for directory in (
         DATA_DIR,
         OHLCV_DIR,
         H1_DIR,
         H4_DIR,
         D1_DIR,
-    ]
-
-    for directory in directories:
+    ):
         directory.mkdir(
             parents=True,
             exist_ok=True,
         )
 
 
+def normalize_market_argument(
+    market: str,
+) -> str:
+
+    return (
+        market
+        .strip()
+        .upper()
+    )
+
+
 def format_timestamp(
     value: pd.Timestamp | None,
 ) -> str:
+
     if value is None:
         return ""
 
@@ -270,17 +250,204 @@ def format_timestamp(
     return value.isoformat()
 
 
-def normalize_market_argument(
+# ============================================================
+# CANONICAL TIMESTAMP
+# ============================================================
+
+def normalize_candle_time(
+    series: pd.Series,
+) -> pd.Series:
+
+    return pd.to_datetime(
+        series,
+        utc=True,
+        errors="coerce",
+    )
+
+
+def build_canonical_timestamp(
+    candle_time: pd.Series,
+) -> pd.Series:
+
+    parsed = normalize_candle_time(
+        candle_time
+    )
+
+    result = pd.Series(
+        pd.NA,
+        index=parsed.index,
+        dtype="Int64",
+    )
+
+    valid = parsed.notna()
+
+    if valid.any():
+
+        result.loc[valid] = (
+            parsed.loc[valid]
+            .astype("int64")
+            // 1_000_000
+        ).astype("int64")
+
+    return result
+
+
+def normalize_ohlcv_dataframe(
+    df: pd.DataFrame,
     market: str,
-) -> str:
-    """
-    Normalize a user supplied market name.
+) -> pd.DataFrame:
 
-    Example:
-        krw-btc -> KRW-BTC
-    """
+    if df.empty:
 
-    return market.strip().upper()
+        return pd.DataFrame(
+            columns=OHLCV_COLUMNS
+        )
+
+    work = df.copy()
+
+    missing_columns = [
+        column
+        for column in OHLCV_COLUMNS
+        if column not in work.columns
+    ]
+
+    if missing_columns:
+
+        raise RuntimeError(
+            "OHLCV missing required columns: "
+            + ", ".join(
+                missing_columns
+            )
+        )
+
+    work = work[
+        OHLCV_COLUMNS
+    ].copy()
+
+    work[
+        "candle_date_time_utc"
+    ] = normalize_candle_time(
+        work[
+            "candle_date_time_utc"
+        ]
+    )
+
+    invalid_time_count = int(
+        work[
+            "candle_date_time_utc"
+        ].isna().sum()
+    )
+
+    if invalid_time_count:
+
+        raise RuntimeError(
+            "Invalid candle_date_time_utc: "
+            f"{invalid_time_count:,}"
+        )
+
+    market_values = (
+        work["market"]
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
+
+    if (
+        market_values
+        != market
+    ).any():
+
+        raise RuntimeError(
+            "Unexpected market value "
+            "inside OHLCV CSV."
+        )
+
+    work["market"] = market
+
+    # --------------------------------------------------------
+    # Clean V002 canonical timestamp
+    # --------------------------------------------------------
+
+    work["timestamp"] = (
+        build_canonical_timestamp(
+            work[
+                "candle_date_time_utc"
+            ]
+        )
+    )
+
+    if work[
+        "timestamp"
+    ].isna().any():
+
+        raise RuntimeError(
+            "Canonical timestamp generation "
+            "failed."
+        )
+
+    for column in (
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "trade_value",
+    ):
+
+        work[column] = pd.to_numeric(
+            work[column],
+            errors="coerce",
+        )
+
+    work = work.drop_duplicates(
+        subset=[
+            "candle_date_time_utc"
+        ],
+        keep="last",
+    )
+
+    work = work.sort_values(
+        "candle_date_time_utc"
+    )
+
+    work = work.reset_index(
+        drop=True
+    )
+
+    if not work[
+        "candle_date_time_utc"
+    ].is_monotonic_increasing:
+
+        raise RuntimeError(
+            "candle_date_time_utc "
+            "is not chronological."
+        )
+
+    timestamp_numeric = pd.to_numeric(
+        work["timestamp"],
+        errors="coerce",
+    )
+
+    if timestamp_numeric.isna().any():
+
+        raise RuntimeError(
+            "Canonical timestamp "
+            "contains invalid values."
+        )
+
+    if not (
+        timestamp_numeric
+        .is_monotonic_increasing
+    ):
+
+        raise RuntimeError(
+            "Canonical timestamp "
+            "is not chronological."
+        )
+
+    return work[
+        OHLCV_COLUMNS
+    ]
 
 
 # ============================================================
@@ -291,12 +458,6 @@ def request_json(
     url: str,
     params: dict[str, Any] | None = None,
 ) -> Any:
-    """
-    Request JSON from Upbit.
-
-    Temporary network errors, HTTP 429, and server errors
-    are retried.
-    """
 
     last_error: Exception | None = None
 
@@ -316,14 +477,14 @@ def request_json(
             if response.status_code == 429:
 
                 wait_seconds = min(
-                    1.0 * attempt,
+                    float(attempt),
                     5.0,
                 )
 
                 print(
-                    f"      [WARN] HTTP 429 rate limit. "
-                    f"retry={attempt}/{MAX_RETRIES}, "
-                    f"wait={wait_seconds:.1f}s"
+                    "      [WARN] HTTP 429 "
+                    f"retry={attempt}/"
+                    f"{MAX_RETRIES}"
                 )
 
                 time.sleep(
@@ -332,17 +493,21 @@ def request_json(
 
                 continue
 
-            if 500 <= response.status_code <= 599:
+            if (
+                500
+                <= response.status_code
+                <= 599
+            ):
 
                 wait_seconds = min(
-                    1.0 * attempt,
+                    float(attempt),
                     5.0,
                 )
 
                 print(
-                    f"      [WARN] Upbit server error "
-                    f"{response.status_code}. "
-                    f"retry={attempt}/{MAX_RETRIES}"
+                    "      [WARN] Upbit "
+                    "server error "
+                    f"{response.status_code}"
                 )
 
                 time.sleep(
@@ -368,14 +533,13 @@ def request_json(
                 break
 
             wait_seconds = min(
-                1.0 * attempt,
+                float(attempt),
                 5.0,
             )
 
             print(
-                f"      [WARN] Request failed: "
-                f"{exc} "
-                f"retry={attempt}/{MAX_RETRIES}"
+                "      [WARN] Request "
+                f"failed: {exc}"
             )
 
             time.sleep(
@@ -389,8 +553,8 @@ def request_json(
         )
 
     raise RuntimeError(
-        f"Upbit API request failed after "
-        f"{MAX_RETRIES} attempts: "
+        "Upbit API request failed "
+        f"after {MAX_RETRIES} attempts: "
         f"{last_error}"
     )
 
@@ -400,14 +564,9 @@ def request_json(
 # ============================================================
 
 def get_krw_markets() -> list[str]:
-    """
-    Load the current Upbit KRW market list.
-    """
-
-    url = f"{UPBIT_API_BASE}/market/all"
 
     data = request_json(
-        url,
+        f"{UPBIT_API_BASE}/market/all",
         params={
             "is_details": "false",
         },
@@ -417,6 +576,7 @@ def get_krw_markets() -> list[str]:
         data,
         list,
     ):
+
         raise RuntimeError(
             "Unexpected market API response."
         )
@@ -436,7 +596,7 @@ def get_krw_markets() -> list[str]:
                 "market",
                 "",
             )
-        ).strip()
+        ).strip().upper()
 
         if market.startswith(
             "KRW-"
@@ -452,8 +612,7 @@ def get_krw_markets() -> list[str]:
     if not markets:
 
         raise RuntimeError(
-            "No KRW markets were returned "
-            "from Upbit."
+            "No KRW markets returned."
         )
 
     return markets
@@ -463,21 +622,14 @@ def select_markets(
     available_markets: list[str],
     requested_market: str | None,
 ) -> list[str]:
-    """
-    Select either:
-        - all current KRW markets
-        - one explicitly requested KRW market
-
-    The requested market must exist in the current Upbit
-    KRW market list.
-    """
 
     if requested_market is None:
-
         return available_markets
 
-    market = normalize_market_argument(
-        requested_market
+    market = (
+        normalize_market_argument(
+            requested_market
+        )
     )
 
     if not market.startswith(
@@ -485,16 +637,14 @@ def select_markets(
     ):
 
         raise RuntimeError(
-            "The --market option must use "
-            "an Upbit KRW market code. "
-            "Example: KRW-BTC"
+            "--market must be KRW market."
         )
 
     if market not in available_markets:
 
         raise RuntimeError(
-            f"Requested market is not in the current "
-            f"Upbit KRW market list: {market}"
+            "Requested market does not "
+            f"exist: {market}"
         )
 
     return [
@@ -510,10 +660,6 @@ def candle_records_to_dataframe(
     market: str,
     records: list[dict[str, Any]],
 ) -> pd.DataFrame:
-    """
-    Convert Upbit candle records into the OHLCV format
-    used by Clean V001 collector.py.
-    """
 
     rows: list[dict[str, Any]] = []
 
@@ -522,30 +668,42 @@ def candle_records_to_dataframe(
         rows.append(
             {
                 "market": market,
-                "candle_date_time_utc": item.get(
-                    "candle_date_time_utc"
+
+                "candle_date_time_utc": (
+                    item.get(
+                        "candle_date_time_utc"
+                    )
                 ),
-                "candle_date_time_kst": item.get(
-                    "candle_date_time_kst"
+
+                "candle_date_time_kst": (
+                    item.get(
+                        "candle_date_time_kst"
+                    )
                 ),
-                "timestamp": item.get(
-                    "timestamp"
-                ),
+
+                # Clean V002
+                "timestamp": pd.NA,
+
                 "open": item.get(
                     "opening_price"
                 ),
+
                 "high": item.get(
                     "high_price"
                 ),
+
                 "low": item.get(
                     "low_price"
                 ),
+
                 "close": item.get(
                     "trade_price"
                 ),
+
                 "volume": item.get(
                     "candle_acc_trade_volume"
                 ),
+
                 "trade_value": item.get(
                     "candle_acc_trade_price"
                 ),
@@ -562,47 +720,10 @@ def candle_records_to_dataframe(
         rows
     )
 
-    for column in OHLCV_COLUMNS:
-
-        if column not in df.columns:
-            df[column] = pd.NA
-
-    df = df[
-        OHLCV_COLUMNS
-    ]
-
-    df[
-        "candle_date_time_utc"
-    ] = pd.to_datetime(
-        df[
-            "candle_date_time_utc"
-        ],
-        utc=True,
-        errors="coerce",
+    return normalize_ohlcv_dataframe(
+        df,
+        market,
     )
-
-    df = df.dropna(
-        subset=[
-            "candle_date_time_utc"
-        ]
-    )
-
-    df = df.drop_duplicates(
-        subset=[
-            "candle_date_time_utc"
-        ],
-        keep="last",
-    )
-
-    df = df.sort_values(
-        "candle_date_time_utc"
-    )
-
-    df = df.reset_index(
-        drop=True
-    )
-
-    return df
 
 
 # ============================================================
@@ -611,13 +732,8 @@ def candle_records_to_dataframe(
 
 def load_existing_csv(
     file_path: Path,
+    market: str,
 ) -> pd.DataFrame:
-    """
-    Load an existing Clean V001 OHLCV CSV.
-
-    This function never creates replacement history when the
-    existing file cannot be safely read.
-    """
 
     if not file_path.exists():
 
@@ -628,7 +744,7 @@ def load_existing_csv(
     if file_path.stat().st_size == 0:
 
         raise RuntimeError(
-            f"Existing CSV is empty: "
+            "Existing CSV is empty: "
             f"{file_path}"
         )
 
@@ -642,98 +758,39 @@ def load_existing_csv(
     except Exception as exc:
 
         raise RuntimeError(
-            f"Existing CSV read failed: "
-            f"{file_path} | "
-            f"{type(exc).__name__}: {exc}"
+            "Existing CSV read failed: "
+            f"{file_path} | {exc}"
         ) from exc
 
     if df.empty:
 
         raise RuntimeError(
-            f"Existing CSV contains zero rows: "
-            f"{file_path}"
+            "Existing CSV contains zero rows."
         )
 
-    missing_columns = [
-        column
-        for column in OHLCV_COLUMNS
-        if column not in df.columns
-    ]
-
-    if missing_columns:
-
-        raise RuntimeError(
-            "Existing CSV is missing required columns: "
-            f"{file_path} | "
-            f"{', '.join(missing_columns)}"
-        )
-
-    df = df[
-        OHLCV_COLUMNS
-    ].copy()
-
-    original_row_count = len(
+    original_rows = len(
         df
     )
 
-    df[
-        "candle_date_time_utc"
-    ] = pd.to_datetime(
-        df[
-            "candle_date_time_utc"
-        ],
-        utc=True,
-        errors="coerce",
+    normalized = (
+        normalize_ohlcv_dataframe(
+            df,
+            market,
+        )
     )
 
-    invalid_timestamp_count = int(
-        df[
-            "candle_date_time_utc"
-        ].isna().sum()
-    )
-
-    if invalid_timestamp_count > 0:
+    if len(
+        normalized
+    ) != original_rows:
 
         raise RuntimeError(
-            "Existing CSV contains invalid "
-            "candle timestamps: "
-            f"{file_path} | "
-            f"count={invalid_timestamp_count:,}"
+            "Existing CSV row count "
+            "changed during normalization: "
+            f"{original_rows:,} -> "
+            f"{len(normalized):,}"
         )
 
-    duplicate_count = int(
-        df[
-            "candle_date_time_utc"
-        ].duplicated(
-            keep=False
-        ).sum()
-    )
-
-    if duplicate_count > 0:
-
-        raise RuntimeError(
-            "Existing CSV contains duplicate "
-            "candle timestamps: "
-            f"{file_path} | "
-            f"count={duplicate_count:,}"
-        )
-
-    df = df.sort_values(
-        "candle_date_time_utc"
-    )
-
-    df = df.reset_index(
-        drop=True
-    )
-
-    if len(df) != original_row_count:
-
-        raise RuntimeError(
-            "Existing CSV row count changed "
-            "during safety loading."
-        )
-
-    return df
+    return normalized
 
 
 # ============================================================
@@ -745,13 +802,6 @@ def fetch_older_candle_batch(
     timeframe: str,
     oldest_timestamp: pd.Timestamp,
 ) -> pd.DataFrame:
-    """
-    Fetch candles strictly before the oldest currently stored
-    candle.
-
-    Upbit's 'to' parameter is moved one second before the
-    current oldest candle to reduce overlap.
-    """
 
     config = TIMEFRAMES[
         timeframe
@@ -787,7 +837,7 @@ def fetch_older_candle_batch(
     ):
 
         raise RuntimeError(
-            f"Unexpected candle response: "
+            "Unexpected candle response: "
             f"{market} {timeframe}"
         )
 
@@ -804,24 +854,13 @@ def fetch_older_candle_batch(
 def merge_older_history(
     existing_df: pd.DataFrame,
     older_df: pd.DataFrame,
-) -> tuple[
-    pd.DataFrame,
-    int,
-]:
-    """
-    Merge historical candles into the existing dataset.
-
-    Only candles strictly older than the current oldest stored
-    candle are accepted.
-
-    Returns:
-        (merged_dataframe, number_of_added_rows)
-    """
+    market: str,
+) -> tuple[pd.DataFrame, int]:
 
     if existing_df.empty:
 
         raise RuntimeError(
-            "Backfill requires an existing "
+            "Backfill requires existing "
             "OHLCV dataset."
         )
 
@@ -838,13 +877,11 @@ def merge_older_history(
         ].min()
     )
 
-    strictly_older = (
+    strictly_older = older_df[
         older_df[
-            older_df[
-                "candle_date_time_utc"
-            ] < current_oldest
-        ].copy()
-    )
+            "candle_date_time_utc"
+        ] < current_oldest
+    ].copy()
 
     if strictly_older.empty:
 
@@ -865,40 +902,12 @@ def merge_older_history(
         ignore_index=True,
     )
 
-    combined[
-        "candle_date_time_utc"
-    ] = pd.to_datetime(
-        combined[
-            "candle_date_time_utc"
-        ],
-        utc=True,
-        errors="coerce",
+    combined = (
+        normalize_ohlcv_dataframe(
+            combined,
+            market,
+        )
     )
-
-    combined = combined.dropna(
-        subset=[
-            "candle_date_time_utc"
-        ]
-    )
-
-    combined = combined.drop_duplicates(
-        subset=[
-            "candle_date_time_utc"
-        ],
-        keep="last",
-    )
-
-    combined = combined.sort_values(
-        "candle_date_time_utc"
-    )
-
-    combined = combined.reset_index(
-        drop=True
-    )
-
-    combined = combined[
-        OHLCV_COLUMNS
-    ]
 
     added_rows = max(
         0,
@@ -919,25 +928,22 @@ def merge_older_history(
 def save_dataframe_safely(
     df: pd.DataFrame,
     file_path: Path,
+    market: str,
 ) -> None:
-    """
-    Safely replace an existing OHLCV CSV.
-
-    Process:
-        1. Write complete merged data to .tmp.
-        2. Confirm the temporary file exists and is non-empty.
-        3. Atomically replace the existing CSV.
-
-    Existing source CSV is not touched until the temporary
-    write has completed successfully.
-    """
 
     if df.empty:
 
         raise RuntimeError(
-            "Refusing to save an empty "
+            "Refusing to save empty "
             "OHLCV dataframe."
         )
+
+    output_df = (
+        normalize_ohlcv_dataframe(
+            df,
+            market,
+        )
+    )
 
     file_path.parent.mkdir(
         parents=True,
@@ -950,7 +956,9 @@ def save_dataframe_safely(
         )
     )
 
-    output_df = df.copy()
+    output_df = (
+        output_df.copy()
+    )
 
     output_df[
         "candle_date_time_utc"
@@ -975,10 +983,14 @@ def save_dataframe_safely(
         if not temp_path.exists():
 
             raise RuntimeError(
-                "Temporary CSV was not created."
+                "Temporary CSV was "
+                "not created."
             )
 
-        if temp_path.stat().st_size == 0:
+        if (
+            temp_path.stat().st_size
+            == 0
+        ):
 
             raise RuntimeError(
                 "Temporary CSV is empty."
@@ -1016,11 +1028,6 @@ def append_backfill_status(
     oldest_after: pd.Timestamp | None,
     message: str = "",
 ) -> None:
-    """
-    Append one backfill job result.
-
-    This status file is separate from collector_status.csv.
-    """
 
     row = pd.DataFrame(
         [
@@ -1048,7 +1055,9 @@ def append_backfill_status(
                 "message": message,
             }
         ],
-        columns=BACKFILL_STATUS_COLUMNS,
+        columns=(
+            BACKFILL_STATUS_COLUMNS
+        ),
     )
 
     BACKFILL_STATUS_FILE.parent.mkdir(
@@ -1078,29 +1087,13 @@ def append_backfill_status(
 
 
 # ============================================================
-# SINGLE MARKET + TIMEFRAME BACKFILL
+# SINGLE JOB
 # ============================================================
 
 def backfill_market_timeframe(
     market: str,
     timeframe: str,
-) -> tuple[
-    bool,
-    int,
-    bool,
-]:
-    """
-    Backfill one market + timeframe.
-
-    Returns:
-        success
-        total_added_rows
-        reached_history_start
-
-    reached_history_start=True means the API returned no older
-    usable candles and this dataset appears to have reached the
-    available historical boundary.
-    """
+) -> tuple[bool, int, bool]:
 
     directory: Path = (
         TIMEFRAMES[
@@ -1113,22 +1106,11 @@ def backfill_market_timeframe(
         / f"{market}.csv"
     )
 
-    # --------------------------------------------------------
-    # BACKFILL DOES NOT CREATE A NEW MARKET DATASET
-    # --------------------------------------------------------
-    #
-    # collector.py remains responsible for initial/current
-    # dataset creation.
-    #
-    # This prevents Backfill from silently replacing the role
-    # of Collector.
-    # --------------------------------------------------------
-
     if not file_path.exists():
 
         message = (
-            "Existing OHLCV CSV not found. "
-            "Backfill skipped."
+            "Existing OHLCV CSV "
+            "not found. Backfill skipped."
         )
 
         print(
@@ -1158,7 +1140,8 @@ def backfill_market_timeframe(
 
         existing_df = (
             load_existing_csv(
-                file_path
+                file_path,
+                market,
             )
         )
 
@@ -1213,6 +1196,7 @@ def backfill_market_timeframe(
     fetched_this_run = 0
     batch_number = 0
     unsaved_batches = 0
+
     reached_history_start = False
 
     working_df = (
@@ -1248,8 +1232,8 @@ def backfill_market_timeframe(
                 print(
                     f"      batch "
                     f"{batch_number:,}: "
-                    f"API returned 0 candles "
-                    f"-> history start reached"
+                    "API returned 0 candles "
+                    "-> history start reached"
                 )
 
                 break
@@ -1276,6 +1260,7 @@ def backfill_market_timeframe(
             ) = merge_older_history(
                 existing_df=working_df,
                 older_df=older_df,
+                market=market,
             )
 
             if added_rows <= 0:
@@ -1287,9 +1272,8 @@ def backfill_market_timeframe(
                     f"{batch_number:,}: "
                     f"received="
                     f"{response_rows:,}, "
-                    f"added=0 "
-                    f"-> no older usable "
-                    f"candles"
+                    "added=0 "
+                    "-> no older usable candles"
                 )
 
                 break
@@ -1300,20 +1284,15 @@ def backfill_market_timeframe(
                 ].min()
             )
 
-            # ------------------------------------------------
-            # SAFETY:
-            # The oldest timestamp MUST move backward.
-            # ------------------------------------------------
-
             if (
                 new_oldest
                 >= current_oldest
             ):
 
                 raise RuntimeError(
-                    "Backfill safety check failed: "
-                    "oldest timestamp did not "
-                    "move backward."
+                    "Backfill safety check "
+                    "failed: oldest timestamp "
+                    "did not move backward."
                 )
 
             working_df = (
@@ -1342,22 +1321,18 @@ def backfill_market_timeframe(
             )
 
             print(
-                f"        API range : "
+                "        API range : "
                 f"{format_timestamp(response_oldest)} "
-                f"-> "
+                "-> "
                 f"{format_timestamp(response_newest)}"
             )
 
             print(
-                f"        Oldest    : "
+                "        Oldest    : "
                 f"{format_timestamp(current_oldest)} "
-                f"-> "
+                "-> "
                 f"{format_timestamp(new_oldest)}"
             )
-
-            # ------------------------------------------------
-            # SAVE CHECKPOINT
-            # ------------------------------------------------
 
             if (
                 unsaved_batches
@@ -1367,41 +1342,28 @@ def backfill_market_timeframe(
                 save_dataframe_safely(
                     working_df,
                     file_path,
+                    market,
                 )
 
                 unsaved_batches = 0
 
                 print(
-                    f"        [SAVE] "
+                    "        [SAVE] "
                     f"{len(working_df):,} rows"
                 )
 
-            # ------------------------------------------------
-            # API HISTORICAL BOUNDARY
-            # ------------------------------------------------
-            #
-            # If fewer than API_MAX_COUNT candles were returned,
-            # Upbit may have reached the beginning of available
-            # candle history.
-            #
-            # We intentionally allow the next request to verify
-            # whether additional older candles exist.
-            # ------------------------------------------------
-
-            if response_rows < API_MAX_COUNT:
+            if (
+                response_rows
+                < API_MAX_COUNT
+            ):
 
                 print(
-                    f"        [INFO] "
-                    f"Short API batch "
+                    "        [INFO] "
+                    "Short API batch "
                     f"({response_rows:,}/"
                     f"{API_MAX_COUNT:,}). "
-                    f"Checking one level "
-                    f"further back..."
+                    "Checking further back..."
                 )
-
-            # ------------------------------------------------
-            # PER-JOB SAFETY LIMIT
-            # ------------------------------------------------
 
             if (
                 fetched_this_run
@@ -1409,17 +1371,10 @@ def backfill_market_timeframe(
             ):
 
                 print(
-                    f"      [PAUSE] "
-                    f"Per-job safety limit "
+                    "      [PAUSE] "
+                    "Per-job safety limit "
                     f"reached: "
-                    f"{fetched_this_run:,} "
-                    f"candles"
-                )
-
-                print(
-                    "      [INFO] Run "
-                    "backfill_history.py again "
-                    "to continue."
+                    f"{fetched_this_run:,}"
                 )
 
                 break
@@ -1428,15 +1383,33 @@ def backfill_market_timeframe(
                 REQUEST_SLEEP_SECONDS
             )
 
-        # ----------------------------------------------------
-        # FINAL CHECKPOINT
-        # ----------------------------------------------------
-
         if unsaved_batches > 0:
 
             save_dataframe_safely(
                 working_df,
                 file_path,
+                market,
+            )
+
+        # ----------------------------------------------------
+        # IMPORTANT
+        #
+        # Backfill이 추가할 과거 candle이 하나도 없는 경우에도
+        # 기존 파일의 잘못된 timestamp를 V002 canonical
+        # timestamp로 복구하기 위해 반드시 한 번 저장한다.
+        # ----------------------------------------------------
+
+        if total_added_rows == 0:
+
+            save_dataframe_safely(
+                working_df,
+                file_path,
+                market,
+            )
+
+            print(
+                "        [REPAIR] Existing "
+                "timestamp column normalized."
             )
 
         rows_after_job = len(
@@ -1455,8 +1428,8 @@ def backfill_market_timeframe(
         ):
 
             raise RuntimeError(
-                "Backfill safety check failed: "
-                "final oldest timestamp became newer."
+                "Final oldest timestamp "
+                "became newer."
             )
 
         if (
@@ -1465,8 +1438,7 @@ def backfill_market_timeframe(
         ):
 
             raise RuntimeError(
-                "Backfill safety check failed: "
-                "row count decreased."
+                "OHLCV row count decreased."
             )
 
         if reached_history_start:
@@ -1476,8 +1448,8 @@ def backfill_market_timeframe(
             )
 
             message = (
-                "No additional older candles "
-                "were available."
+                "Historical boundary reached. "
+                "Canonical timestamps normalized."
             )
 
         else:
@@ -1487,8 +1459,8 @@ def backfill_market_timeframe(
             )
 
             message = (
-                "Backfill progressed backward "
-                "and can continue on a later run."
+                "Backfill progressed. "
+                "Canonical timestamps normalized."
             )
 
         append_backfill_status(
@@ -1508,35 +1480,12 @@ def backfill_market_timeframe(
         )
 
         print(
-            f"    [{timeframe}] "
-            f"OK "
+            f"    [{timeframe}] OK "
             f"{rows_before_job:,} "
             f"-> "
             f"{rows_after_job:,} "
             f"(+{total_added_rows:,})"
         )
-
-        print(
-            f"    [{timeframe}] "
-            f"oldest "
-            f"{format_timestamp(oldest_before_job)} "
-            f"-> "
-            f"{format_timestamp(oldest_after_job)}"
-        )
-
-        if reached_history_start:
-
-            print(
-                f"    [{timeframe}] "
-                f"HISTORY START REACHED"
-            )
-
-        else:
-
-            print(
-                f"    [{timeframe}] "
-                f"BACKFILL CAN CONTINUE"
-            )
 
         return (
             True,
@@ -1546,70 +1495,8 @@ def backfill_market_timeframe(
 
     except Exception as exc:
 
-        # ----------------------------------------------------
-        # IMPORTANT:
-        #
-        # Every completed batch has already been checkpointed.
-        #
-        # Therefore previously saved progress is preserved.
-        #
-        # Reload the actual on-disk CSV for accurate status.
-        # ----------------------------------------------------
-
         message = str(
             exc
-        )
-
-        try:
-
-            disk_df = (
-                load_existing_csv(
-                    file_path
-                )
-            )
-
-            rows_after_error = len(
-                disk_df
-            )
-
-            oldest_after_error = (
-                disk_df[
-                    "candle_date_time_utc"
-                ].min()
-            )
-
-            actual_added = max(
-                0,
-                rows_after_error
-                - rows_before_job,
-            )
-
-        except Exception:
-
-            rows_after_error = (
-                rows_before_job
-            )
-
-            oldest_after_error = (
-                oldest_before_job
-            )
-
-            actual_added = 0
-
-        append_backfill_status(
-            market=market,
-            timeframe=timeframe,
-            status="FAILED",
-            rows_before=rows_before_job,
-            rows_after=rows_after_error,
-            added_rows=actual_added,
-            oldest_before=(
-                oldest_before_job
-            ),
-            oldest_after=(
-                oldest_after_error
-            ),
-            message=message,
         )
 
         print(
@@ -1617,15 +1504,29 @@ def backfill_market_timeframe(
             f"FAILED: {message}"
         )
 
-        print(
-            f"    [{timeframe}] "
-            f"Saved progress before failure "
-            f"is preserved."
+        append_backfill_status(
+            market=market,
+            timeframe=timeframe,
+            status="FAILED",
+            rows_before=(
+                rows_before_job
+            ),
+            rows_after=(
+                rows_before_job
+            ),
+            added_rows=0,
+            oldest_before=(
+                oldest_before_job
+            ),
+            oldest_after=(
+                oldest_before_job
+            ),
+            message=message,
         )
 
         return (
             False,
-            actual_added,
+            0,
             False,
         )
 
@@ -1648,9 +1549,11 @@ def show_final_summary(
 
     print()
     print_line()
+
     print(
         "BACKFILL HISTORY SUMMARY"
     )
+
     print_line()
 
     print(
@@ -1668,7 +1571,7 @@ def show_final_summary(
         f"{execution_mode}"
     )
 
-    if selected_market is not None:
+    if selected_market:
 
         print(
             f"Selected market         : "
@@ -1713,29 +1616,22 @@ def show_final_summary(
     print()
 
     print(
-        "Output directories:"
+        "Timestamp policy:"
     )
 
     print(
-        f"  H1 : {H1_DIR}"
+        "  Source                : "
+        "candle_date_time_utc"
     )
 
     print(
-        f"  H4 : {H4_DIR}"
+        "  Unit                  : "
+        "Unix epoch milliseconds"
     )
 
     print(
-        f"  D1 : {D1_DIR}"
-    )
-
-    print()
-
-    print(
-        "Backfill status:"
-    )
-
-    print(
-        f"  {BACKFILL_STATUS_FILE}"
+        "  API timestamp         : "
+        "NOT USED"
     )
 
     print()
@@ -1745,19 +1641,23 @@ def show_final_summary(
     )
 
     print(
-        "  Existing OHLCV deletion : DISABLED"
+        "  Existing deletion     : "
+        "DISABLED"
     )
 
     print(
-        "  Existing history        : PRESERVED"
+        "  Existing history      : "
+        "PRESERVED"
     )
 
     print(
-        "  Batch checkpoint save   : ENABLED"
+        "  Timestamp repair      : "
+        "ENABLED"
     )
 
     print(
-        "  Resume on next run      : ENABLED"
+        "  Checkpoint save       : "
+        "ENABLED"
     )
 
     print_line()
@@ -1773,11 +1673,11 @@ def main() -> int:
 
     args = parse_arguments()
 
-    requested_market: str | None = (
+    requested_market = (
         args.market
     )
 
-    if requested_market is not None:
+    if requested_market:
 
         requested_market = (
             normalize_market_argument(
@@ -1811,75 +1711,24 @@ def main() -> int:
     print()
 
     print(
-        "Mode:"
+        "Clean V002:"
     )
 
     print(
-        "  Historical backfill only"
+        "  Canonical timestamp repair ENABLED"
     )
 
     print(
-        "  Existing CSV required"
+        "  API timestamp ignored"
     )
 
     print(
-        "  Existing data preserved"
+        "  Existing history preserved"
     )
-
-    print(
-        "  Automatic resume enabled"
-    )
-
-    print(
-        "  Pattern analysis disabled"
-    )
-
-    print(
-        "  Prediction disabled"
-    )
-
-    print(
-        "  Trading disabled"
-    )
-
-    print()
-
-    if requested_market is None:
-
-        execution_mode = (
-            "ALL KRW MARKETS"
-        )
-
-        print(
-            "Requested execution:"
-        )
-
-        print(
-            "  ALL CURRENT KRW MARKETS"
-        )
-
-    else:
-
-        execution_mode = (
-            "SINGLE MARKET"
-        )
-
-        print(
-            "Requested execution:"
-        )
-
-        print(
-            f"  SINGLE MARKET: "
-            f"{requested_market}"
-        )
 
     print()
 
     ensure_required_directories()
-
-    # --------------------------------------------------------
-    # LOAD CURRENT KRW MARKETS
-    # --------------------------------------------------------
 
     print(
         "[1/2] Loading Upbit "
@@ -1892,44 +1741,15 @@ def main() -> int:
             get_krw_markets()
         )
 
-    except Exception as exc:
-
-        print()
-
-        print(
-            f"[FATAL] Failed to load "
-            f"KRW markets: {exc}"
-        )
-
-        return 1
-
-    print(
-        f"      Current KRW markets found: "
-        f"{len(available_markets):,}"
-    )
-
-    # --------------------------------------------------------
-    # SELECT EXECUTION MARKET(S)
-    # --------------------------------------------------------
-
-    try:
-
         markets = select_markets(
-            available_markets=(
-                available_markets
-            ),
-            requested_market=(
-                requested_market
-            ),
+            available_markets,
+            requested_market,
         )
 
     except Exception as exc:
 
-        print()
-
         print(
-            f"[FATAL] Market selection "
-            f"failed: {exc}"
+            f"[FATAL] {exc}"
         )
 
         return 1
@@ -1939,31 +1759,15 @@ def main() -> int:
         f"{len(markets):,}"
     )
 
-    if len(markets) == 1:
-
-        print(
-            f"      Selected market: "
-            f"{markets[0]}"
-        )
-
     print()
-
-    # --------------------------------------------------------
-    # BACKFILL
-    # --------------------------------------------------------
 
     print(
-        "[2/2] Backfilling historical OHLCV..."
-    )
-
-    print()
-
-    total_markets = len(
-        markets
+        "[2/2] Backfilling "
+        "historical OHLCV..."
     )
 
     total_jobs = (
-        total_markets
+        len(markets)
         * len(TIMEFRAMES)
     )
 
@@ -1987,7 +1791,7 @@ def main() -> int:
 
         print(
             f"[{market_index:03d}/"
-            f"{total_markets:03d}] "
+            f"{len(markets):03d}] "
             f"{market}"
         )
 
@@ -2002,8 +1806,8 @@ def main() -> int:
                 added_rows,
                 reached_history_start,
             ) = backfill_market_timeframe(
-                market=market,
-                timeframe=timeframe,
+                market,
+                timeframe,
             )
 
             if success:
@@ -2015,7 +1819,6 @@ def main() -> int:
                 )
 
                 if reached_history_start:
-
                     history_start_jobs += 1
 
             else:
@@ -2030,23 +1833,25 @@ def main() -> int:
             MARKET_SLEEP_SECONDS
         )
 
-    # --------------------------------------------------------
-    # SUMMARY
-    # --------------------------------------------------------
-
     elapsed_seconds = (
         time.time()
         - start_time
     )
 
+    execution_mode = (
+        "SINGLE MARKET"
+        if requested_market
+        else "ALL KRW MARKETS"
+    )
+
     show_final_summary(
-        execution_mode=execution_mode,
-        selected_market=(
-            markets[0]
-            if len(markets) == 1
-            else None
+        execution_mode=(
+            execution_mode
         ),
-        market_count=total_markets,
+        selected_market=(
+            requested_market
+        ),
+        market_count=len(markets),
         total_jobs=total_jobs,
         success_jobs=success_jobs,
         failed_jobs=failed_jobs,
@@ -2065,12 +1870,7 @@ def main() -> int:
 
         print(
             "[RESULT] BACKFILL COMPLETED "
-            "WITH ONE OR MORE FAILED JOBS"
-        )
-
-        print(
-            "[INFO] Successfully checkpointed "
-            "historical data remains preserved."
+            "WITH FAILED JOBS"
         )
 
         return 1
@@ -2079,35 +1879,6 @@ def main() -> int:
         "[RESULT] BACKFILL COMPLETED "
         "SUCCESSFULLY"
     )
-
-    if (
-        history_start_jobs
-        == total_jobs
-    ):
-
-        print(
-            "[PASS] All selected "
-            "market/timeframe jobs reached "
-            "their available historical boundary."
-        )
-
-    else:
-
-        remaining_jobs = (
-            total_jobs
-            - history_start_jobs
-        )
-
-        print(
-            f"[INFO] Jobs that may still "
-            f"continue backward: "
-            f"{remaining_jobs:,}"
-        )
-
-        print(
-            "[INFO] Run this script again "
-            "to continue those datasets."
-        )
 
     return 0
 
@@ -2132,8 +1903,8 @@ if __name__ == "__main__":
         )
 
         print(
-            "[INFO] Previously checkpointed "
-            "batches remain saved."
+            "[INFO] Previously saved "
+            "data remains preserved."
         )
 
         exit_code = 130
