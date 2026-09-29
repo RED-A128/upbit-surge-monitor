@@ -290,6 +290,10 @@ outputs/
 
 !**/.gitkeep
 
+# 256 Detector generated runtime data
+data/signals/
+data/detect_256_status.csv
+
 
 # ============================================================
 # END
