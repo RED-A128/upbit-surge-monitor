@@ -1,23 +1,20 @@
-name: Feature Builder Test
+name: Feature Full Validation Clean V003
 
 on:
   workflow_dispatch:
 
-
 permissions:
   contents: read
 
-
 concurrency:
-  group: upbit-feature-builder-test
+  group: upbit-feature-full-validation
   cancel-in-progress: false
-
 
 jobs:
 
-  feature-test:
+  feature-validation:
 
-    name: KRW-BTC Feature Builder Test
+    name: Full KRW Feature Validation Clean V003
 
     runs-on:
       - self-hosted
@@ -33,18 +30,17 @@ jobs:
       PYTHONUTF8: "1"
       PYTHONIOENCODING: "utf-8"
 
-
     steps:
 
-
       # ============================================================
-      # 1. SHOW TEST INFORMATION
+      # 1. SHOW VALIDATION INFORMATION
       # ============================================================
 
-      - name: Show feature test information
+      - name: Show feature validation information
         run: |
           Write-Host "============================================================"
-          Write-Host "UPBIT SURGE MONITOR - FEATURE BUILDER TEST"
+          Write-Host "UPBIT SURGE MONITOR"
+          Write-Host "FEATURE FULL VALIDATION - CLEAN V003"
           Write-Host "============================================================"
           Write-Host ""
 
@@ -56,16 +52,25 @@ jobs:
           Write-Host "Clean V002"
           Write-Host ""
 
-          Write-Host "Research target:"
-          Write-Host "256 technique - first quantitative feature expansion"
+          Write-Host "Validator:"
+          Write-Host "Feature Full Validation Clean V003"
           Write-Host ""
 
-          Write-Host "Test market:"
-          Write-Host "KRW-BTC"
+          Write-Host "Scope:"
+          Write-Host "ALL KRW OHLCV / FEATURE CSV FILES"
           Write-Host ""
 
-          Write-Host "Test timeframes:"
+          Write-Host "Timeframes:"
           Write-Host "H1 / H4 / D1"
+          Write-Host ""
+
+          Write-Host "Expected:"
+          Write-Host "290 markets"
+          Write-Host "870 validation jobs"
+          Write-Host ""
+
+          Write-Host "Research target:"
+          Write-Host "256 technique - quantitative feature foundation"
           Write-Host ""
 
           Write-Host "Repository:"
@@ -85,10 +90,14 @@ jobs:
           Write-Host ""
 
           Write-Host "Safety:"
-          Write-Host "Source OHLCV write  : DISABLED"
-          Write-Host "Source OHLCV delete : DISABLED"
-          Write-Host "Future labels       : DISABLED"
-          Write-Host "Trading             : DISABLED"
+          Write-Host "Source OHLCV write     : DISABLED"
+          Write-Host "Source OHLCV delete    : DISABLED"
+          Write-Host "Feature delete         : DISABLED"
+          Write-Host "Git reset --hard       : DISABLED"
+          Write-Host "Git clean              : DISABLED"
+          Write-Host "Future labels          : DISABLED"
+          Write-Host "Prediction             : DISABLED"
+          Write-Host "Trading                : DISABLED"
           Write-Host ""
 
           Write-Host "============================================================"
@@ -100,6 +109,8 @@ jobs:
 
       - name: Verify local project repository
         run: |
+          $ErrorActionPreference = "Stop"
+
           $project = $env:PROJECT_DIR
 
           Write-Host "============================================================"
@@ -153,6 +164,8 @@ jobs:
 
       - name: Fetch origin safely
         run: |
+          $ErrorActionPreference = "Stop"
+
           $project = $env:PROJECT_DIR
           Set-Location $project
 
@@ -204,6 +217,8 @@ jobs:
 
       - name: Verify origin data protection rules
         run: |
+          $ErrorActionPreference = "Stop"
+
           $project = $env:PROJECT_DIR
           Set-Location $project
 
@@ -252,7 +267,7 @@ jobs:
               Write-Host ""
               Write-Host "[FAIL] Required data protection rules are missing."
               Write-Host ""
-              Write-Host "Feature test stopped before synchronization."
+              Write-Host "Validation stopped before synchronization."
               exit 1
           }
 
@@ -270,6 +285,8 @@ jobs:
 
       - name: Protect tracked local source changes
         run: |
+          $ErrorActionPreference = "Stop"
+
           $project = $env:PROJECT_DIR
           Set-Location $project
 
@@ -330,6 +347,8 @@ jobs:
 
       - name: Verify fast forward synchronization
         run: |
+          $ErrorActionPreference = "Stop"
+
           $project = $env:PROJECT_DIR
           Set-Location $project
 
@@ -380,6 +399,8 @@ jobs:
 
       - name: Synchronize local repository
         run: |
+          $ErrorActionPreference = "Stop"
+
           $project = $env:PROJECT_DIR
           Set-Location $project
 
@@ -454,66 +475,13 @@ jobs:
 
 
       # ============================================================
-      # 8. VERIFY REQUIRED FILES
-      # ============================================================
-
-      - name: Verify feature builder files
-        run: |
-          $project = $env:PROJECT_DIR
-          Set-Location $project
-
-          Write-Host "============================================================"
-          Write-Host "FEATURE BUILDER FILE CHECK"
-          Write-Host "============================================================"
-          Write-Host ""
-
-          $requiredFiles = @(
-              "build_features.py",
-              "data\ohlcv\h1\KRW-BTC.csv",
-              "data\ohlcv\h4\KRW-BTC.csv",
-              "data\ohlcv\d1\KRW-BTC.csv"
-          )
-
-          $failed = $false
-
-          foreach ($file in $requiredFiles) {
-
-              if (Test-Path $file) {
-
-                  $item = Get-Item $file
-
-                  Write-Host "[FOUND] $file"
-                  Write-Host "        Size: $($item.Length) bytes"
-
-              }
-              else {
-
-                  Write-Host "[MISSING] $file"
-                  $failed = $true
-              }
-          }
-
-          if ($failed) {
-
-              Write-Host ""
-              Write-Host "[FAIL] Required Feature Builder input files are missing."
-
-              exit 1
-          }
-
-          Write-Host ""
-          Write-Host "[PASS] Feature Builder and KRW-BTC source data are present."
-          Write-Host ""
-
-          Write-Host "============================================================"
-
-
-      # ============================================================
-      # 9. VERIFY PYTHON
+      # 8. VERIFY PYTHON
       # ============================================================
 
       - name: Verify Python
         run: |
+          $ErrorActionPreference = "Stop"
+
           Write-Host "============================================================"
           Write-Host "PYTHON CHECK"
           Write-Host "============================================================"
@@ -537,16 +505,18 @@ jobs:
 
 
       # ============================================================
-      # 10. VERIFY PYTHON DEPENDENCIES
+      # 9. VERIFY PYTHON DEPENDENCIES
       # ============================================================
 
-      - name: Verify feature dependencies
+      - name: Verify feature validation dependencies
         run: |
+          $ErrorActionPreference = "Stop"
+
           $project = $env:PROJECT_DIR
           Set-Location $project
 
           Write-Host "============================================================"
-          Write-Host "FEATURE DEPENDENCY CHECK"
+          Write-Host "FEATURE VALIDATION DEPENDENCY CHECK"
           Write-Host "============================================================"
           Write-Host ""
 
@@ -556,8 +526,6 @@ jobs:
 
               Write-Host ""
               Write-Host "[FAIL] pandas and/or numpy is unavailable."
-              Write-Host ""
-              Write-Host "Feature test stopped."
 
               exit 1
           }
@@ -570,382 +538,412 @@ jobs:
 
 
       # ============================================================
-      # 11. RECORD SOURCE OHLCV HASHES BEFORE TEST
+      # 10. VERIFY REQUIRED DIRECTORIES
       # ============================================================
 
-      - name: Record source hashes before feature build
+      - name: Verify full feature dataset directories
         run: |
+          $ErrorActionPreference = "Stop"
+
           $project = $env:PROJECT_DIR
           Set-Location $project
 
           Write-Host "============================================================"
-          Write-Host "SOURCE OHLCV HASH - BEFORE"
+          Write-Host "FULL DATASET DIRECTORY CHECK"
           Write-Host "============================================================"
           Write-Host ""
 
-          $files = @(
-              "data\ohlcv\h1\KRW-BTC.csv",
-              "data\ohlcv\h4\KRW-BTC.csv",
-              "data\ohlcv\d1\KRW-BTC.csv"
+          $requiredDirectories = @(
+              "data\ohlcv\h1",
+              "data\ohlcv\h4",
+              "data\ohlcv\d1",
+              "data\features\h1",
+              "data\features\h4",
+              "data\features\d1"
           )
 
-          $hashFile = Join-Path $env:RUNNER_TEMP "feature_test_source_hashes.txt"
+          $failed = $false
+
+          foreach ($directory in $requiredDirectories) {
+
+              if (Test-Path $directory -PathType Container) {
+
+                  $count = @(
+                      Get-ChildItem `
+                          -Path $directory `
+                          -Filter "KRW-*.csv" `
+                          -File
+                  ).Count
+
+                  Write-Host "[FOUND] $directory"
+                  Write-Host "        KRW CSV files: $count"
+
+              }
+              else {
+
+                  Write-Host "[MISSING] $directory"
+                  $failed = $true
+              }
+          }
+
+          if ($failed) {
+
+              Write-Host ""
+              Write-Host "[FAIL] One or more required directories are missing."
+              exit 1
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Required OHLCV and Feature directories exist."
+          Write-Host ""
+
+          Write-Host "============================================================"
+
+
+      # ============================================================
+      # 11. VERIFY FULL MARKET FILE SET
+      #
+      # The OHLCV dataset is the canonical discovery source.
+      #
+      # Every market must exist in:
+      #   OHLCV h1 / h4 / d1
+      #   Feature h1 / h4 / d1
+      #
+      # Expected current dataset:
+      #   290 markets
+      #   870 OHLCV files
+      #   870 Feature files
+      # ============================================================
+
+      - name: Verify full market file set
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $project = $env:PROJECT_DIR
+          Set-Location $project
+
+          Write-Host "============================================================"
+          Write-Host "FULL MARKET FILE SET CHECK"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          @'
+          from pathlib import Path
+          import sys
+
+          TIMEFRAMES = ("h1", "h4", "d1")
+          EXPECTED_MARKETS = 290
+          EXPECTED_JOBS = EXPECTED_MARKETS * len(TIMEFRAMES)
+
+          ohlcv_root = Path("data/ohlcv")
+          feature_root = Path("data/features")
+
+          failed = False
+
+          ohlcv_sets = {}
+          feature_sets = {}
+
+          for tf in TIMEFRAMES:
+              ohlcv_dir = ohlcv_root / tf
+              feature_dir = feature_root / tf
+
+              ohlcv_files = sorted(ohlcv_dir.glob("KRW-*.csv"))
+              feature_files = sorted(feature_dir.glob("KRW-*.csv"))
+
+              ohlcv_sets[tf] = {path.stem for path in ohlcv_files}
+              feature_sets[tf] = {path.stem for path in feature_files}
+
+              print(f"[{tf.upper()}]")
+              print(f"OHLCV files : {len(ohlcv_files):,}")
+              print(f"Feature files: {len(feature_files):,}")
+              print()
+
+          canonical_markets = sorted(ohlcv_sets["h1"])
+
+          print("Canonical markets from OHLCV H1:", len(canonical_markets))
+          print("Expected markets               :", EXPECTED_MARKETS)
+          print()
+
+          if len(canonical_markets) != EXPECTED_MARKETS:
+              print(
+                  "[FAIL] Canonical H1 OHLCV market count mismatch: "
+                  f"{len(canonical_markets)} != {EXPECTED_MARKETS}"
+              )
+              failed = True
+
+          canonical_set = set(canonical_markets)
+
+          for tf in TIMEFRAMES:
+
+              missing_ohlcv = sorted(
+                  canonical_set - ohlcv_sets[tf]
+              )
+
+              extra_ohlcv = sorted(
+                  ohlcv_sets[tf] - canonical_set
+              )
+
+              missing_feature = sorted(
+                  canonical_set - feature_sets[tf]
+              )
+
+              extra_feature = sorted(
+                  feature_sets[tf] - canonical_set
+              )
+
+              if missing_ohlcv:
+                  print(
+                      f"[FAIL] {tf.upper()} OHLCV missing markets: "
+                      f"{len(missing_ohlcv)}"
+                  )
+                  for market in missing_ohlcv[:20]:
+                      print("  ", market)
+                  failed = True
+
+              if extra_ohlcv:
+                  print(
+                      f"[FAIL] {tf.upper()} OHLCV unexpected markets: "
+                      f"{len(extra_ohlcv)}"
+                  )
+                  for market in extra_ohlcv[:20]:
+                      print("  ", market)
+                  failed = True
+
+              if missing_feature:
+                  print(
+                      f"[FAIL] {tf.upper()} Feature missing markets: "
+                      f"{len(missing_feature)}"
+                  )
+                  for market in missing_feature[:20]:
+                      print("  ", market)
+                  failed = True
+
+              if extra_feature:
+                  print(
+                      f"[FAIL] {tf.upper()} Feature unexpected markets: "
+                      f"{len(extra_feature)}"
+                  )
+                  for market in extra_feature[:20]:
+                      print("  ", market)
+                  failed = True
+
+              if (
+                  not missing_ohlcv
+                  and not extra_ohlcv
+                  and not missing_feature
+                  and not extra_feature
+              ):
+                  print(
+                      f"[PASS] {tf.upper()} market set matches "
+                      f"canonical {len(canonical_markets)} markets."
+                  )
+
+          total_ohlcv_files = sum(
+              len(ohlcv_sets[tf])
+              for tf in TIMEFRAMES
+          )
+
+          total_feature_files = sum(
+              len(feature_sets[tf])
+              for tf in TIMEFRAMES
+          )
+
+          print()
+          print("Total OHLCV files :", f"{total_ohlcv_files:,}")
+          print("Total Feature files:", f"{total_feature_files:,}")
+          print("Expected jobs      :", f"{EXPECTED_JOBS:,}")
+
+          if total_ohlcv_files != EXPECTED_JOBS:
+              print(
+                  "[FAIL] Total OHLCV file count mismatch."
+              )
+              failed = True
+
+          if total_feature_files != EXPECTED_JOBS:
+              print(
+                  "[FAIL] Total Feature file count mismatch."
+              )
+              failed = True
+
+          if failed:
+              print()
+              print("[RESULT] FULL MARKET FILE SET FAILED")
+              raise SystemExit(1)
+
+          print()
+          print("[PASS] 290 canonical KRW markets confirmed.")
+          print("[PASS] 870 OHLCV files confirmed.")
+          print("[PASS] 870 Feature files confirmed.")
+          print("[RESULT] FULL MARKET FILE SET PASSED")
+          '@ | py -
+
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host ""
+              Write-Host "[FAIL] Full market file set verification failed."
+              exit 1
+          }
+
+          Write-Host ""
+          Write-Host "============================================================"
+
+
+      # ============================================================
+      # 12. RECORD ALL SOURCE OHLCV HASHES BEFORE VALIDATION
+      #
+      # Feature validation must never modify OHLCV.
+      #
+      # All 870 source files are hashed once before validation.
+      # ============================================================
+
+      - name: Record all OHLCV hashes before validation
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $project = $env:PROJECT_DIR
+          Set-Location $project
+
+          Write-Host "============================================================"
+          Write-Host "ALL SOURCE OHLCV HASHES - BEFORE"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $hashFile = Join-Path `
+              $env:RUNNER_TEMP `
+              "feature_v003_ohlcv_hashes.txt"
 
           if (Test-Path $hashFile) {
               Remove-Item $hashFile -Force
           }
 
-          foreach ($file in $files) {
+          $timeframes = @(
+              "h1",
+              "h4",
+              "d1"
+          )
 
-              $hash = (Get-FileHash -Algorithm SHA256 $file).Hash
+          $count = 0
 
-              "$file|$hash" | Out-File `
-                  -FilePath $hashFile `
-                  -Append `
-                  -Encoding utf8
+          foreach ($tf in $timeframes) {
 
-              Write-Host "$file"
-              Write-Host "  SHA256: $hash"
-              Write-Host ""
+              $files = @(
+                  Get-ChildItem `
+                      -Path "data\ohlcv\$tf" `
+                      -Filter "KRW-*.csv" `
+                      -File |
+                  Sort-Object Name
+              )
+
+              foreach ($file in $files) {
+
+                  $relative = "data\ohlcv\$tf\$($file.Name)"
+                  $hash = (
+                      Get-FileHash `
+                          -Algorithm SHA256 `
+                          -Path $file.FullName
+                  ).Hash
+
+                  "$relative|$hash" |
+                      Out-File `
+                          -FilePath $hashFile `
+                          -Append `
+                          -Encoding utf8
+
+                  $count++
+
+                  if (
+                      ($count % 100) -eq 0
+                  ) {
+                      Write-Host "Hashed: $count files"
+                  }
+              }
+          }
+
+          Write-Host ""
+          Write-Host "Total source hashes:"
+          Write-Host $count
+          Write-Host ""
+
+          if ($count -ne 870) {
+              Write-Host "[FAIL] Expected 870 OHLCV source hashes."
+              Write-Host "[FAIL] Actual: $count"
+              exit 1
           }
 
           if (-not (Test-Path $hashFile)) {
-
               Write-Host "[FAIL] Source hash snapshot was not created."
               exit 1
           }
 
-          Write-Host "[PASS] Source hashes recorded."
+          Write-Host "[PASS] 870 OHLCV SHA256 hashes recorded."
           Write-Host ""
 
           Write-Host "============================================================"
 
 
       # ============================================================
-      # 12. RUN BUILD_FEATURES.PY
+      # 13. FULL FEATURE VALIDATION
+      #
+      # IMPORTANT:
+      #
+      # Each OHLCV / Feature pair is read only once in this stage.
+      #
+      # Validation:
+      #
+      # - 290 markets
+      # - 3 timeframes
+      # - 870 jobs
+      # - source / feature row equality
+      # - total row equality
+      # - required columns
+      # - Clean V002 21 features
+      # - timestamp validity
+      # - timestamp exact equality
+      # - duplicate timestamps
+      # - chronological order
+      # - market integrity
+      # - numeric feature sanity
+      # - infinite values
+      # - completely empty feature columns
+      #
+      # Rolling indicator warm-up NaN is allowed.
       # ============================================================
 
-      - name: Run KRW-BTC feature builder
+      - name: Validate all Clean V002 feature files
         run: |
+          $ErrorActionPreference = "Stop"
+
           $project = $env:PROJECT_DIR
           Set-Location $project
 
           Write-Host "============================================================"
-          Write-Host "KRW-BTC FEATURE BUILDER - CLEAN V002"
-          Write-Host "============================================================"
-          Write-Host ""
-
-          Write-Host "Command:"
-          Write-Host "py build_features.py"
-          Write-Host ""
-
-          py build_features.py
-
-          $exitCode = $LASTEXITCODE
-
-          Write-Host ""
-          Write-Host "Feature Builder exit code:"
-          Write-Host $exitCode
-          Write-Host ""
-
-          if ($exitCode -ne 0) {
-
-              Write-Host "[FAIL] build_features.py failed."
-              Write-Host ""
-              Write-Host "Feature test stopped."
-
-              exit $exitCode
-          }
-
-          Write-Host "[PASS] build_features.py completed normally."
-          Write-Host ""
-
-          Write-Host "============================================================"
-
-
-      # ============================================================
-      # 13. VERIFY SOURCE OHLCV HASHES AFTER TEST
-      # ============================================================
-
-      - name: Verify source OHLCV remained unchanged
-        run: |
-          $project = $env:PROJECT_DIR
-          Set-Location $project
-
-          Write-Host "============================================================"
-          Write-Host "SOURCE OHLCV IMMUTABILITY CHECK"
-          Write-Host "============================================================"
-          Write-Host ""
-
-          $hashFile = Join-Path $env:RUNNER_TEMP "feature_test_source_hashes.txt"
-
-          if (-not (Test-Path $hashFile)) {
-
-              Write-Host "[FAIL] Before-test hash snapshot not found."
-              exit 1
-          }
-
-          $failed = $false
-
-          $lines = Get-Content $hashFile
-
-          foreach ($line in $lines) {
-
-              if ([string]::IsNullOrWhiteSpace($line)) {
-                  continue
-              }
-
-              $parts = $line.Split("|", 2)
-
-              if ($parts.Count -ne 2) {
-
-                  Write-Host "[FAIL] Invalid hash snapshot line:"
-                  Write-Host $line
-
-                  $failed = $true
-                  continue
-              }
-
-              $file = $parts[0]
-              $beforeHash = $parts[1]
-
-              if (-not (Test-Path $file)) {
-
-                  Write-Host "[FAIL] Source file disappeared:"
-                  Write-Host $file
-
-                  $failed = $true
-                  continue
-              }
-
-              $afterHash = (Get-FileHash -Algorithm SHA256 $file).Hash
-
-              Write-Host "$file"
-              Write-Host "  Before: $beforeHash"
-              Write-Host "  After : $afterHash"
-
-              if ($beforeHash -ne $afterHash) {
-
-                  Write-Host "  [FAIL] SOURCE FILE CHANGED"
-                  $failed = $true
-
-              }
-              else {
-
-                  Write-Host "  [PASS] UNCHANGED"
-              }
-
-              Write-Host ""
-          }
-
-          if ($failed) {
-
-              Write-Host "[FAIL] One or more source OHLCV files changed."
-              Write-Host ""
-              Write-Host "This violates the Feature Builder safety policy."
-
-              exit 1
-          }
-
-          Write-Host "[PASS] All KRW-BTC source OHLCV files remained unchanged."
-          Write-Host ""
-
-          Write-Host "============================================================"
-
-
-      # ============================================================
-      # 14. VERIFY FEATURE OUTPUT FILES
-      # ============================================================
-
-      - name: Verify feature output files
-        run: |
-          $project = $env:PROJECT_DIR
-          Set-Location $project
-
-          Write-Host "============================================================"
-          Write-Host "FEATURE OUTPUT FILE CHECK"
-          Write-Host "============================================================"
-          Write-Host ""
-
-          $files = @(
-              "data\features\h1\KRW-BTC.csv",
-              "data\features\h4\KRW-BTC.csv",
-              "data\features\d1\KRW-BTC.csv"
-          )
-
-          $failed = $false
-
-          foreach ($file in $files) {
-
-              if (-not (Test-Path $file)) {
-
-                  Write-Host "[MISSING] $file"
-                  $failed = $true
-
-                  continue
-              }
-
-              $item = Get-Item $file
-              Write-Host "[FOUND] $file"
-              Write-Host "        Size: $($item.Length) bytes"
-
-              if ($item.Length -le 0) {
-
-                  Write-Host "        [FAIL] Feature file is empty."
-                  $failed = $true
-              }
-          }
-
-          if ($failed) {
-
-              Write-Host ""
-              Write-Host "[FAIL] Feature output verification failed."
-
-              exit 1
-          }
-
-          Write-Host ""
-          Write-Host "[PASS] KRW-BTC H1/H4/D1 feature files exist."
-          Write-Host ""
-
-          Write-Host "============================================================"
-
-
-      # ============================================================
-      # 15. VERIFY FEATURE CSV ROW COUNTS
-      # ============================================================
-
-      - name: Verify feature row counts
-        run: |
-          $project = $env:PROJECT_DIR
-          Set-Location $project
-
-          Write-Host "============================================================"
-          Write-Host "FEATURE ROW COUNT CHECK"
+          Write-Host "FULL CLEAN V002 FEATURE VALIDATION"
           Write-Host "============================================================"
           Write-Host ""
 
           @'
-          import pandas as pd
+          from __future__ import annotations
+
+          import math
+          import time
           from pathlib import Path
 
-          pairs = [
-              (
-                  Path("data/ohlcv/h1/KRW-BTC.csv"),
-                  Path("data/features/h1/KRW-BTC.csv"),
-                  "H1",
-              ),
-              (
-                  Path("data/ohlcv/h4/KRW-BTC.csv"),
-                  Path("data/features/h4/KRW-BTC.csv"),
-                  "H4",
-              ),
-              (
-                  Path("data/ohlcv/d1/KRW-BTC.csv"),
-                  Path("data/features/d1/KRW-BTC.csv"),
-                  "D1",
-              ),
-          ]
-
-          failed = False
-
-          for source_path, feature_path, timeframe in pairs:
-
-              source = pd.read_csv(
-                  source_path,
-                  encoding="utf-8-sig",
-              )
-
-              feature = pd.read_csv(
-                  feature_path,
-                  encoding="utf-8-sig",
-              )
-
-              source_rows = len(source)
-              feature_rows = len(feature)
-
-              print(
-                  f"{timeframe}: "
-                  f"source={source_rows:,}, "
-                  f"feature={feature_rows:,}"
-              )
-
-              if source_rows != feature_rows:
-
-                  print(
-                      f"[FAIL] {timeframe} row count mismatch."
-                  )
-
-                  failed = True
-
-              else:
-
-                  print(
-                      f"[PASS] {timeframe} row count matches."
-                  )
-
-          if failed:
-              raise SystemExit(1)
-
-          print()
-          print(
-              "[PASS] All feature row counts match source OHLCV."
-          )
-          '@ | py -
-
-          if ($LASTEXITCODE -ne 0) {
-
-              Write-Host ""
-              Write-Host "[FAIL] Feature row count verification failed."
-              exit 1
-          }
-
-          Write-Host ""
-
-          Write-Host "============================================================"
-
-
-      # ============================================================
-      # 16. VERIFY REQUIRED FEATURE COLUMNS
-      #
-      # Clean V002:
-      #
-      # Existing V001 columns
-      # +
-      # 21 first-stage quantitative features for 256 research
-      #
-      # ============================================================
-
-      - name: Verify required Clean V002 feature columns
-        run: |
-          $project = $env:PROJECT_DIR
-          Set-Location $project
-
-          Write-Host "============================================================"
-          Write-Host "CLEAN V002 FEATURE COLUMN CHECK"
-          Write-Host "============================================================"
-          Write-Host ""
-
-          @'
+          import numpy as np
           import pandas as pd
-          from pathlib import Path
 
-          files = [
-              (
-                  Path("data/features/h1/KRW-BTC.csv"),
-                  "H1",
-              ),
-              (
-                  Path("data/features/h4/KRW-BTC.csv"),
-                  "H4",
-              ),
-              (
-                  Path("data/features/d1/KRW-BTC.csv"),
-                  "D1",
-              ),
-          ]
 
-          base_required = [
+          PROJECT = "Upbit Surge Monitor"
+          VERSION = "Feature Full Validation Clean V003"
+
+          TIMEFRAMES = ("h1", "h4", "d1")
+
+          EXPECTED_MARKETS = 290
+          EXPECTED_JOBS = 870
+
+          OHLCV_ROOT = Path("data/ohlcv")
+          FEATURE_ROOT = Path("data/features")
+
+
+          BASE_REQUIRED = [
               "market",
               "candle_date_time_utc",
               "open",
@@ -993,7 +991,8 @@ jobs:
               "volume_ratio_20",
           ]
 
-          feature_256_required = [
+
+          FEATURE_256_REQUIRED = [
               "sma_112",
               "sma_224",
 
@@ -1024,500 +1023,845 @@ jobs:
               "sma_224_slope_3",
           ]
 
-          if len(feature_256_required) != 21:
 
+          if len(FEATURE_256_REQUIRED) != 21:
               print(
-                  "[FAIL] Internal test definition error: "
-                  f"expected 21 V002 features, "
-                  f"got {len(feature_256_required)}."
+                  "[FAIL] Internal validator definition error."
               )
-
+              print(
+                  "Expected Clean V002 256 feature count: 21"
+              )
+              print(
+                  "Actual:",
+                  len(FEATURE_256_REQUIRED),
+              )
               raise SystemExit(1)
 
-          required = (
-              base_required
-              + feature_256_required
+
+          REQUIRED_COLUMNS = (
+              BASE_REQUIRED
+              + FEATURE_256_REQUIRED
           )
 
-          failed = False
 
+          started = time.perf_counter()
+
+          failed_jobs = 0
+          passed_jobs = 0
+
+          source_rows_total = 0
+          feature_rows_total = 0
+
+          duplicate_timestamp_total = 0
+          invalid_timestamp_total = 0
+          timestamp_mismatch_total = 0
+          market_mismatch_total = 0
+          infinite_value_total = 0
+          empty_feature_column_total = 0
+
+          validation_errors = []
+
+          markets = sorted(
+              path.stem
+              for path in (
+                  OHLCV_ROOT / "h1"
+              ).glob("KRW-*.csv")
+          )
+
+          print("=" * 80)
+          print(PROJECT)
+          print(VERSION)
+          print("=" * 80)
+          print()
+          print("Markets discovered :", len(markets))
+          print("Timeframes         :", " / ".join(TIMEFRAMES))
           print(
-              "Base required columns :",
-              len(base_required),
+              "Expected jobs      :",
+              EXPECTED_JOBS,
           )
-
-          print(
-              "256 V002 columns      :",
-              len(feature_256_required),
-          )
-
-          print(
-              "Total required columns:",
-              len(required),
-          )
-
           print()
 
-          for path, timeframe in files:
+          if len(markets) != EXPECTED_MARKETS:
+              print(
+                  "[FAIL] Expected "
+                  f"{EXPECTED_MARKETS} markets, "
+                  f"found {len(markets)}."
+              )
+              raise SystemExit(1)
 
-              df = pd.read_csv(
-                  path,
-                  encoding="utf-8-sig",
-                  nrows=5,
+
+          def add_error(
+              timeframe: str,
+              market: str,
+              message: str,
+          ) -> None:
+              validation_errors.append(
+                  f"[{timeframe.upper()}] "
+                  f"{market}: {message}"
               )
 
-              missing_base = [
-                  column
-                  for column in base_required
-                  if column not in df.columns
-              ]
 
-              missing_256 = [
-                  column
-                  for column in feature_256_required
-                  if column not in df.columns
-              ]
+          for market_index, market in enumerate(
+              markets,
+              start=1,
+          ):
 
               print(
-                  f"{timeframe}: "
-                  f"{len(df.columns):,} columns"
+                  f"[{market_index:03d}/"
+                  f"{len(markets):03d}] "
+                  f"{market}"
               )
 
-              if missing_base:
+              for timeframe in TIMEFRAMES:
 
-                  print(
-                      "[FAIL] Missing existing/base columns:"
+                  job_started = time.perf_counter()
+
+                  source_path = (
+                      OHLCV_ROOT
+                      / timeframe
+                      / f"{market}.csv"
                   )
 
-                  for column in missing_base:
-                      print(
-                          f"  {column}"
+                  feature_path = (
+                      FEATURE_ROOT
+                      / timeframe
+                      / f"{market}.csv"
+                  )
+
+                  job_failed = False
+
+                  if not source_path.exists():
+
+                      add_error(
+                          timeframe,
+                          market,
+                          "OHLCV source file missing.",
                       )
 
-                  failed = True
+                      failed_jobs += 1
+                      job_failed = True
 
-              else:
-
-                  print(
-                      f"[PASS] {timeframe} "
-                      "existing/base columns present."
-                  )
-
-              if missing_256:
-
-                  print(
-                      "[FAIL] Missing Clean V002 "
-                      "256 research columns:"
-                  )
-
-                  for column in missing_256:
                       print(
-                          f"  {column}"
+                          f"  [{timeframe.upper()}] "
+                          "[FAIL] OHLCV missing"
                       )
 
-                  failed = True
+                      continue
 
-              else:
+                  if not feature_path.exists():
 
+                      add_error(
+                          timeframe,
+                          market,
+                          "Feature file missing.",
+                      )
+
+                      failed_jobs += 1
+                      job_failed = True
+
+                      print(
+                          f"  [{timeframe.upper()}] "
+                          "[FAIL] Feature missing"
+                      )
+
+                      continue
+
+                  try:
+
+                      source = pd.read_csv(
+                          source_path,
+                          encoding="utf-8-sig",
+                          low_memory=False,
+                      )
+
+                  except Exception as exc:
+
+                      add_error(
+                          timeframe,
+                          market,
+                          "Could not read OHLCV: "
+                          f"{exc}",
+                      )
+
+                      failed_jobs += 1
+
+                      print(
+                          f"  [{timeframe.upper()}] "
+                          "[FAIL] OHLCV read error"
+                      )
+
+                      continue
+
+                  try:
+
+                      feature = pd.read_csv(
+                          feature_path,
+                          encoding="utf-8-sig",
+                          low_memory=False,
+                      )
+
+                  except Exception as exc:
+
+                      add_error(
+                          timeframe,
+                          market,
+                          "Could not read Feature: "
+                          f"{exc}",
+                      )
+
+                      failed_jobs += 1
+
+                      print(
+                          f"  [{timeframe.upper()}] "
+                          "[FAIL] Feature read error"
+                      )
+
+                      continue
+
+
+                  source_rows = len(source)
+                  feature_rows = len(feature)
+
+                  source_rows_total += source_rows
+                  feature_rows_total += feature_rows
+
+
+                  # --------------------------------------------
+                  # ROW COUNT
+                  # --------------------------------------------
+
+                  if source_rows != feature_rows:
+
+                      add_error(
+                          timeframe,
+                          market,
+                          "Row count mismatch: "
+                          f"source={source_rows:,}, "
+                          f"feature={feature_rows:,}",
+                      )
+
+                      job_failed = True
+
+
+                  # --------------------------------------------
+                  # REQUIRED COLUMNS
+                  # --------------------------------------------
+
+                  missing_columns = [
+                      column
+                      for column in REQUIRED_COLUMNS
+                      if column not in feature.columns
+                  ]
+
+                  if missing_columns:
+
+                      add_error(
+                          timeframe,
+                          market,
+                          "Missing required columns: "
+                          + ", ".join(missing_columns),
+                      )
+
+                      job_failed = True
+
+
+                  # --------------------------------------------
+                  # SOURCE TIMESTAMP COLUMN
+                  # --------------------------------------------
+
+                  timestamp_column = (
+                      "candle_date_time_utc"
+                  )
+
+                  if (
+                      timestamp_column
+                      not in source.columns
+                  ):
+
+                      add_error(
+                          timeframe,
+                          market,
+                          "Source timestamp column missing.",
+                      )
+
+                      job_failed = True
+
+                  if (
+                      timestamp_column
+                      not in feature.columns
+                  ):
+
+                      add_error(
+                          timeframe,
+                          market,
+                          "Feature timestamp column missing.",
+                      )
+
+                      job_failed = True
+
+
+                  # --------------------------------------------
+                  # TIMESTAMP VALIDATION
+                  # --------------------------------------------
+
+                  if (
+                      timestamp_column
+                      in source.columns
+                      and timestamp_column
+                      in feature.columns
+                  ):
+
+                      source_ts = pd.to_datetime(
+                          source[timestamp_column],
+                          errors="coerce",
+                          utc=True,
+                      )
+
+                      feature_ts = pd.to_datetime(
+                          feature[timestamp_column],
+                          errors="coerce",
+                          utc=True,
+                      )
+
+                      source_invalid = int(
+                          source_ts.isna().sum()
+                      )
+
+                      feature_invalid = int(
+                          feature_ts.isna().sum()
+                      )
+
+                      invalid_count = (
+                          source_invalid
+                          + feature_invalid
+                      )
+
+                      invalid_timestamp_total += (
+                          invalid_count
+                      )
+
+                      if invalid_count > 0:
+
+                          add_error(
+                              timeframe,
+                              market,
+                              "Invalid timestamps: "
+                              f"source={source_invalid:,}, "
+                              f"feature={feature_invalid:,}",
+                          )
+
+                          job_failed = True
+
+
+                      duplicate_count = int(
+                          feature_ts.duplicated().sum()
+                      )
+
+                      duplicate_timestamp_total += (
+                          duplicate_count
+                      )
+
+                      if duplicate_count > 0:
+
+                          add_error(
+                              timeframe,
+                              market,
+                              "Duplicate feature timestamps: "
+                              f"{duplicate_count:,}",
+                          )
+
+                          job_failed = True
+
+
+                      if (
+                          not feature_ts
+                          .is_monotonic_increasing
+                      ):
+
+                          add_error(
+                              timeframe,
+                              market,
+                              "Feature timestamps "
+                              "not ascending.",
+                          )
+
+                          job_failed = True
+
+
+                      if (
+                          not source_ts
+                          .is_monotonic_increasing
+                      ):
+
+                          add_error(
+                              timeframe,
+                              market,
+                              "Source timestamps "
+                              "not ascending.",
+                          )
+
+                          job_failed = True
+
+
+                      if len(source_ts) == len(feature_ts):
+
+                          equal_mask = (
+                              source_ts
+                              .reset_index(drop=True)
+                              .eq(
+                                  feature_ts
+                                  .reset_index(drop=True)
+                              )
+                          )
+
+                          mismatch_count = int(
+                              (~equal_mask).sum()
+                          )
+
+                      else:
+
+                          mismatch_count = abs(
+                              len(source_ts)
+                              - len(feature_ts)
+                          )
+
+                          mismatch_count += min(
+                              len(source_ts),
+                              len(feature_ts),
+                          )
+
+                      timestamp_mismatch_total += (
+                          mismatch_count
+                      )
+
+                      if mismatch_count > 0:
+
+                          add_error(
+                              timeframe,
+                              market,
+                              "Source/Feature timestamp "
+                              "mismatch count: "
+                              f"{mismatch_count:,}",
+                          )
+
+                          job_failed = True
+
+
+                  # --------------------------------------------
+                  # MARKET COLUMN INTEGRITY
+                  # --------------------------------------------
+
+                  if "market" not in feature.columns:
+
+                      add_error(
+                          timeframe,
+                          market,
+                          "Feature market column missing.",
+                      )
+
+                      job_failed = True
+
+                  else:
+
+                      market_values = (
+                          feature["market"]
+                          .dropna()
+                          .astype(str)
+                      )
+
+                      wrong_market_count = int(
+                          (market_values != market).sum()
+                      )
+
+                      market_mismatch_total += (
+                          wrong_market_count
+                      )
+
+                      if wrong_market_count > 0:
+
+                          add_error(
+                              timeframe,
+                              market,
+                              "Feature market mismatch: "
+                              f"{wrong_market_count:,}",
+                          )
+
+                          job_failed = True
+
+
+                  # --------------------------------------------
+                  # CLEAN V002 FEATURE VALUES
+                  #
+                  # Warm-up NaN is valid.
+                  # Infinite values are invalid.
+                  # Entirely empty feature is invalid.
+                  # --------------------------------------------
+
+                  for column in FEATURE_256_REQUIRED:
+
+                      if column not in feature.columns:
+                          continue
+
+                      values = pd.to_numeric(
+                          feature[column],
+                          errors="coerce",
+                      )
+
+                      valid_values = values.dropna()
+
+                      valid_count = int(
+                          valid_values.shape[0]
+                      )
+
+                      if valid_count == 0:
+
+                          empty_feature_column_total += 1
+
+                          add_error(
+                              timeframe,
+                              market,
+                              "Feature column has no "
+                              "usable numeric values: "
+                              f"{column}",
+                          )
+
+                          job_failed = True
+
+                          continue
+
+                      array = valid_values.to_numpy(
+                          dtype=np.float64,
+                          copy=False,
+                      )
+
+                      infinite_count = int(
+                          np.isinf(array).sum()
+                      )
+
+                      infinite_value_total += (
+                          infinite_count
+                      )
+
+                      if infinite_count > 0:
+
+                          add_error(
+                              timeframe,
+                              market,
+                              "Infinite values in "
+                              f"{column}: "
+                              f"{infinite_count:,}",
+                          )
+
+                          job_failed = True
+
+
+                  elapsed = (
+                      time.perf_counter()
+                      - job_started
+                  )
+
+                  if job_failed:
+
+                      failed_jobs += 1
+
+                      print(
+                          f"  [{timeframe.upper()}] "
+                          f"FAIL "
+                          f"source={source_rows:,} "
+                          f"feature={feature_rows:,} "
+                          f"{elapsed:.2f}s"
+                      )
+
+                  else:
+
+                      passed_jobs += 1
+
+                      print(
+                          f"  [{timeframe.upper()}] "
+                          f"PASS "
+                          f"rows={feature_rows:,} "
+                          f"{elapsed:.2f}s"
+                      )
+
+
+          total_jobs = (
+              passed_jobs
+              + failed_jobs
+          )
+
+          elapsed_total = (
+              time.perf_counter()
+              - started
+          )
+
+
+          print()
+          print("=" * 80)
+          print("FEATURE FULL VALIDATION SUMMARY")
+          print("=" * 80)
+          print(f"Project                 : {PROJECT}")
+          print(f"Version                 : {VERSION}")
+          print(
+              f"Markets discovered      : "
+              f"{len(markets):,}"
+          )
+          print(
+              "Timeframes              : "
+              "h1 / h4 / d1"
+          )
+          print(
+              f"Total jobs              : "
+              f"{total_jobs:,}"
+          )
+          print(
+              f"Passed jobs             : "
+              f"{passed_jobs:,}"
+          )
+          print(
+              f"Failed jobs             : "
+              f"{failed_jobs:,}"
+          )
+          print(
+              f"Source rows             : "
+              f"{source_rows_total:,}"
+          )
+          print(
+              f"Feature rows            : "
+              f"{feature_rows_total:,}"
+          )
+          print(
+              f"Invalid timestamps      : "
+              f"{invalid_timestamp_total:,}"
+          )
+          print(
+              f"Duplicate timestamps    : "
+              f"{duplicate_timestamp_total:,}"
+          )
+          print(
+              f"Timestamp mismatches    : "
+              f"{timestamp_mismatch_total:,}"
+          )
+          print(
+              f"Market mismatches       : "
+              f"{market_mismatch_total:,}"
+          )
+          print(
+              f"Infinite values         : "
+              f"{infinite_value_total:,}"
+          )
+          print(
+              f"Empty V002 columns      : "
+              f"{empty_feature_column_total:,}"
+          )
+          print(
+              f"Validation errors       : "
+              f"{len(validation_errors):,}"
+          )
+          print(
+              f"Elapsed seconds         : "
+              f"{elapsed_total:.2f}"
+          )
+          print()
+
+          print("Clean V002:")
+          print(
+              "  SMA                    : "
+              "5 / 10 / 20 / 60 / 112 / 120 / 224"
+          )
+          print(
+              "  Price vs SMA           : "
+              "5 / 20 / 60 / 112 / 120 / 224"
+          )
+          print(
+              "  MA distance            : "
+              "6 pairs"
+          )
+          print(
+              "  MA slope               : "
+              "5 / 20 / 60 / 112 / 224 "
+              "(1, 3 candle)"
+          )
+          print(
+              "  V002 256 features      : "
+              f"{len(FEATURE_256_REQUIRED)}"
+          )
+          print()
+
+          print("Safety:")
+          print(
+              "  Feature write          : DISABLED"
+          )
+          print(
+              "  OHLCV write            : DISABLED"
+          )
+          print(
+              "  Future labels          : DISABLED"
+          )
+          print(
+              "  Prediction             : DISABLED"
+          )
+          print(
+              "  Trading                : DISABLED"
+          )
+          print("=" * 80)
+
+
+          expected_total_rows = 9_905_993
+
+
+          if total_jobs != EXPECTED_JOBS:
+
+              print(
+                  "[FAIL] Validation job count mismatch."
+              )
+
+              print(
+                  f"Expected: {EXPECTED_JOBS:,}"
+              )
+
+              print(
+                  f"Actual  : {total_jobs:,}"
+              )
+
+              raise SystemExit(1)
+
+
+          if source_rows_total != feature_rows_total:
+
+              print(
+                  "[FAIL] Total source/feature "
+                  "row count mismatch."
+              )
+
+              raise SystemExit(1)
+
+
+          if source_rows_total != expected_total_rows:
+
+              print(
+                  "[FAIL] Total source row count "
+                  "does not match validated "
+                  "OHLCV checkpoint."
+              )
+
+              print(
+                  f"Expected: {expected_total_rows:,}"
+              )
+
+              print(
+                  f"Actual  : {source_rows_total:,}"
+              )
+
+              raise SystemExit(1)
+
+
+          if failed_jobs > 0:
+
+              print()
+              print("=" * 80)
+              print("VALIDATION ERROR DETAILS")
+              print("=" * 80)
+
+              for error in validation_errors[:200]:
+                  print(error)
+
+              if len(validation_errors) > 200:
+
+                  print()
                   print(
-                      f"[PASS] {timeframe} "
-                      "all 21 Clean V002 "
-                      "256 research columns present."
+                      "... additional errors omitted: "
+                      f"{len(validation_errors) - 200:,}"
                   )
 
               print()
+              print(
+                  "[RESULT] FEATURE FULL "
+                  "VALIDATION FAILED"
+              )
 
-          if failed:
               raise SystemExit(1)
 
+
+          if passed_jobs != EXPECTED_JOBS:
+
+              print(
+                  "[FAIL] Expected all 870 jobs "
+                  "to pass."
+              )
+
+              raise SystemExit(1)
+
+
           print(
-              "[PASS] Existing Feature V001 columns preserved."
+              "[RESULT] FEATURE FULL "
+              "VALIDATION PASSED"
           )
 
           print(
-              "[PASS] All 21 Clean V002 "
-              "256 research features verified."
+              "[PASS] 290 / 290 markets passed."
           )
+
+          print(
+              "[PASS] 870 / 870 validation "
+              "jobs passed."
+          )
+
+          print(
+              "[PASS] 9,905,993 source rows "
+              "matched Feature rows."
+          )
+
+          print(
+              "[PASS] Clean V002 Feature "
+              "structure verified."
+          )
+
+          print(
+              "[PASS] All 21 V002 256 research "
+              "features verified."
+          )
+
+          print(
+              "[PASS] Timestamp integrity "
+              "verified."
+          )
+
+          print(
+              "[PASS] No infinite V002 values."
+          )
+
+          print(
+              "[PASS] No completely empty "
+              "V002 feature columns."
+          )
+
+          print(
+              "[NEXT] 256 Detector full-market "
+              "execution."
+          )
+
+          print("=" * 80)
           '@ | py -
 
           if ($LASTEXITCODE -ne 0) {
 
               Write-Host ""
-              Write-Host "[FAIL] Clean V002 feature column verification failed."
-
+              Write-Host "[FAIL] Full Clean V002 feature validation failed."
               exit 1
           }
 
           Write-Host ""
-
           Write-Host "============================================================"
 
 
       # ============================================================
-      # 17. VERIFY FEATURE TIMESTAMP INTEGRITY
-      #
-      # Confirm:
-      #
-      # - timestamp column exists
-      # - timestamps parse correctly
-      # - no duplicate candle timestamps
-      # - chronological ascending order
-      # - source and feature timestamps are identical
-      #
+      # 14. VERIFY FEATURE BUILD STATUS FILE
       # ============================================================
 
-      - name: Verify feature timestamp integrity
+      - name: Verify full feature build status
         run: |
-          $project = $env:PROJECT_DIR
-          Set-Location $project
+          $ErrorActionPreference = "Stop"
 
-          Write-Host "============================================================"
-          Write-Host "FEATURE TIMESTAMP INTEGRITY CHECK"
-          Write-Host "============================================================"
-          Write-Host ""
-
-          @'
-          import pandas as pd
-          from pathlib import Path
-
-          pairs = [
-              (
-                  Path("data/ohlcv/h1/KRW-BTC.csv"),
-                  Path("data/features/h1/KRW-BTC.csv"),
-                  "H1",
-              ),
-              (
-                  Path("data/ohlcv/h4/KRW-BTC.csv"),
-                  Path("data/features/h4/KRW-BTC.csv"),
-                  "H4",
-              ),
-              (
-                  Path("data/ohlcv/d1/KRW-BTC.csv"),
-                  Path("data/features/d1/KRW-BTC.csv"),
-                  "D1",
-              ),
-          ]
-
-          failed = False
-          timestamp_column = "candle_date_time_utc"
-
-          for source_path, feature_path, timeframe in pairs:
-
-              source = pd.read_csv(
-                  source_path,
-                  encoding="utf-8-sig",
-              )
-
-              feature = pd.read_csv(
-                  feature_path,
-                  encoding="utf-8-sig",
-              )
-
-              print(
-                  "------------------------------------------------------------"
-              )
-
-              print(
-                  f"{timeframe} timestamp validation"
-              )
-
-              if timestamp_column not in source.columns:
-
-                  print(
-                      "[FAIL] Source timestamp column missing."
-                  )
-
-                  failed = True
-                  continue
-
-              if timestamp_column not in feature.columns:
-
-                  print(
-                      "[FAIL] Feature timestamp column missing."
-                  )
-
-                  failed = True
-                  continue
-
-              source_ts = pd.to_datetime(
-                  source[timestamp_column],
-                  errors="coerce",
-                  utc=True,
-              )
-
-              feature_ts = pd.to_datetime(
-                  feature[timestamp_column],
-                  errors="coerce",
-                  utc=True,
-              )
-
-              if source_ts.isna().any():
-
-                  print(
-                      "[FAIL] Source contains invalid timestamps."
-                  )
-
-                  failed = True
-
-              if feature_ts.isna().any():
-
-                  print(
-                      "[FAIL] Feature contains invalid timestamps."
-                  )
-
-                  failed = True
-
-              if feature_ts.duplicated().any():
-
-                  duplicate_count = int(
-                      feature_ts.duplicated().sum()
-                  )
-
-                  print(
-                      "[FAIL] Duplicate feature timestamps:",
-                      duplicate_count,
-                  )
-
-                  failed = True
-
-              else:
-
-                  print(
-                      "[PASS] No duplicate feature timestamps."
-                  )
-
-              if not feature_ts.is_monotonic_increasing:
-
-                  print(
-                      "[FAIL] Feature timestamps are not "
-                      "chronologically ascending."
-                  )
-
-                  failed = True
-
-              else:
-
-                  print(
-                      "[PASS] Feature timestamps are ascending."
-                  )
-
-              if len(source_ts) != len(feature_ts):
-
-                  print(
-                      "[FAIL] Source/feature timestamp lengths differ."
-                  )
-
-                  failed = True
-
-              elif not source_ts.reset_index(
-                  drop=True
-              ).equals(
-                  feature_ts.reset_index(
-                      drop=True
-                  )
-              ):
-
-                  print(
-                      "[FAIL] Feature timestamps do not exactly "
-                      "match source OHLCV timestamps."
-                  )
-
-                  failed = True
-
-              else:
-
-                  print(
-                      "[PASS] Feature timestamps exactly match "
-                      "source OHLCV."
-                  )
-
-              print()
-
-          if failed:
-              raise SystemExit(1)
-
-          print(
-              "[PASS] H1/H4/D1 timestamp integrity verified."
-          )
-          '@ | py -
-
-          if ($LASTEXITCODE -ne 0) {
-
-              Write-Host ""
-              Write-Host "[FAIL] Feature timestamp integrity check failed."
-              exit 1
-          }
-
-          Write-Host ""
-
-          Write-Host "============================================================"
-
-
-      # ============================================================
-      # 18. VERIFY FEATURE VALUES
-      #
-      # This is intentionally a structural/sanity test.
-      #
-      # NaN values at the beginning of rolling indicators are valid.
-      #
-      # The test rejects:
-      #
-      # - completely empty V002 feature columns
-      # - infinite values
-      #
-      # ============================================================
-
-      - name: Verify Clean V002 feature values
-        run: |
-          $project = $env:PROJECT_DIR
-          Set-Location $project
-
-          Write-Host "============================================================"
-          Write-Host "CLEAN V002 FEATURE VALUE CHECK"
-          Write-Host "============================================================"
-          Write-Host ""
-
-          @'
-          import numpy as np
-          import pandas as pd
-          from pathlib import Path
-
-          files = [
-              (
-                  Path("data/features/h1/KRW-BTC.csv"),
-                  "H1",
-              ),
-              (
-                  Path("data/features/h4/KRW-BTC.csv"),
-                  "H4",
-              ),
-              (
-                  Path("data/features/d1/KRW-BTC.csv"),
-                  "D1",
-              ),
-          ]
-
-          feature_256_required = [
-              "sma_112",
-              "sma_224",
-              "close_to_sma_5",
-              "close_to_sma_112",
-              "close_to_sma_224",
-              "sma_5_to_20",
-              "sma_5_to_60",
-              "sma_20_to_60",
-              "sma_5_to_112",
-              "sma_5_to_224",
-              "sma_112_to_224",
-              "sma_5_slope_1",
-              "sma_5_slope_3",
-              "sma_20_slope_1",
-              "sma_20_slope_3",
-              "sma_60_slope_1",
-              "sma_60_slope_3",
-              "sma_112_slope_1",
-              "sma_112_slope_3",
-              "sma_224_slope_1",
-              "sma_224_slope_3",
-          ]
-
-          failed = False
-
-          for path, timeframe in files:
-
-              df = pd.read_csv(
-                  path,
-                  encoding="utf-8-sig",
-              )
-
-              print(
-                  "------------------------------------------------------------"
-              )
-
-              print(
-                  f"{timeframe} V002 value validation"
-              )
-
-              for column in feature_256_required:
-
-                  if column not in df.columns:
-
-                      print(
-                          f"[FAIL] Missing column: {column}"
-                      )
-
-                      failed = True
-                      continue
-
-                  values = pd.to_numeric(
-                      df[column],
-                      errors="coerce",
-                  )
-
-                  valid_count = int(
-                      values.notna().sum()
-                  )
-
-                  if valid_count == 0:
-
-                      print(
-                          f"[FAIL] {column}: "
-                          "no usable numeric values."
-                      )
-
-                      failed = True
-                      continue
-
-                  finite_mask = np.isfinite(
-                      values.dropna().to_numpy(
-                          dtype=float
-                      )
-                  )
-
-                  if not finite_mask.all():
-
-                      print(
-                          f"[FAIL] {column}: "
-                          "infinite value detected."
-                      )
-
-                      failed = True
-                      continue
-
-                  print(
-                      f"[PASS] {column}: "
-                      f"{valid_count:,} usable values"
-                  )
-
-              print()
-
-          if failed:
-              raise SystemExit(1)
-
-          print(
-              "[PASS] Clean V002 feature values passed "
-              "basic sanity validation."
-          )
-          '@ | py -
-
-          if ($LASTEXITCODE -ne 0) {
-
-              Write-Host ""
-              Write-Host "[FAIL] Clean V002 feature value check failed."
-              exit 1
-          }
-
-          Write-Host ""
-
-          Write-Host "============================================================"
-
-
-      # ============================================================
-      # 19. VERIFY FEATURE STATUS FILE
-      # ============================================================
-
-      - name: Verify feature build status
-        run: |
           $project = $env:PROJECT_DIR
           Set-Location $project
 
@@ -1550,18 +1894,179 @@ jobs:
               exit 1
           }
 
-          Write-Host "[PASS] Feature build status file exists."
+          @'
+          import pandas as pd
+          from pathlib import Path
+
+          path = Path("data/feature_build_status.csv")
+
+          try:
+              df = pd.read_csv(
+                  path,
+                  encoding="utf-8-sig",
+                  low_memory=False,
+              )
+          except Exception as exc:
+              print(
+                  "[FAIL] Could not read "
+                  "feature_build_status.csv:"
+              )
+              print(exc)
+              raise SystemExit(1)
+
+          print("Status rows   :", f"{len(df):,}")
+          print("Status columns:", f"{len(df.columns):,}")
+          print()
+
+          if len(df) == 0:
+              print(
+                  "[FAIL] Feature status CSV "
+                  "contains no rows."
+              )
+              raise SystemExit(1)
+
+          print("[PASS] Feature build status CSV is readable.")
+          '@ | py -
+
+          if ($LASTEXITCODE -ne 0) {
+
+              Write-Host ""
+              Write-Host "[FAIL] Feature build status verification failed."
+              exit 1
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Feature build status file exists and is readable."
           Write-Host ""
 
           Write-Host "============================================================"
 
 
       # ============================================================
-      # 20. FINAL GIT SAFETY CHECK
+      # 15. VERIFY ALL SOURCE OHLCV HASHES AFTER VALIDATION
+      # ============================================================
+
+      - name: Verify all OHLCV files remained unchanged
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $project = $env:PROJECT_DIR
+          Set-Location $project
+
+          Write-Host "============================================================"
+          Write-Host "ALL SOURCE OHLCV IMMUTABILITY CHECK"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $hashFile = Join-Path `
+              $env:RUNNER_TEMP `
+              "feature_v003_ohlcv_hashes.txt"
+
+          if (-not (Test-Path $hashFile)) {
+
+              Write-Host "[FAIL] Before-validation hash snapshot not found."
+              exit 1
+          }
+
+          $lines = @(
+              Get-Content $hashFile |
+              Where-Object {
+                  -not [string]::IsNullOrWhiteSpace($_)
+              }
+          )
+
+          if ($lines.Count -ne 870) {
+
+              Write-Host "[FAIL] Expected 870 stored source hashes."
+              Write-Host "[FAIL] Actual: $($lines.Count)"
+              exit 1
+          }
+
+          $failed = $false
+          $checked = 0
+
+          foreach ($line in $lines) {
+
+              $parts = $line.Split("|", 2)
+
+              if ($parts.Count -ne 2) {
+
+                  Write-Host "[FAIL] Invalid hash snapshot line:"
+                  Write-Host $line
+
+                  $failed = $true
+                  continue
+              }
+
+              $file = $parts[0]
+              $beforeHash = $parts[1]
+
+              if (-not (Test-Path $file)) {
+
+                  Write-Host "[FAIL] Source file disappeared:"
+                  Write-Host $file
+
+                  $failed = $true
+                  continue
+              }
+
+              $afterHash = (
+                  Get-FileHash `
+                      -Algorithm SHA256 `
+                      -Path $file
+              ).Hash
+
+              $checked++
+
+              if ($beforeHash -ne $afterHash) {
+
+                  Write-Host "[FAIL] SOURCE FILE CHANGED"
+                  Write-Host "       $file"
+                  Write-Host "Before: $beforeHash"
+                  Write-Host "After : $afterHash"
+
+                  $failed = $true
+              }
+
+              if (($checked % 100) -eq 0) {
+                  Write-Host "Verified: $checked / 870"
+              }
+          }
+
+          Write-Host ""
+          Write-Host "Files checked:"
+          Write-Host $checked
+          Write-Host ""
+
+          if ($checked -ne 870) {
+
+              Write-Host "[FAIL] Source hash verification count mismatch."
+              exit 1
+          }
+
+          if ($failed) {
+
+              Write-Host "[FAIL] One or more OHLCV source files changed."
+              Write-Host ""
+              Write-Host "This violates the Feature validation safety policy."
+
+              exit 1
+          }
+
+          Write-Host "[PASS] 870 / 870 OHLCV files remained unchanged."
+          Write-Host ""
+
+          Write-Host "============================================================"
+
+
+      # ============================================================
+      # 16. FINAL GIT SAFETY CHECK
       # ============================================================
 
       - name: Verify generated data remains ignored
         run: |
+          $ErrorActionPreference = "Stop"
+
           $project = $env:PROJECT_DIR
           Set-Location $project
 
@@ -1582,7 +2087,7 @@ jobs:
 
           if ($trackedChanges.Count -gt 0) {
 
-              Write-Host "[FAIL] Feature test created unexpected Git-visible changes."
+              Write-Host "[FAIL] Validation created unexpected Git-visible changes."
               Write-Host ""
 
               git status --short
@@ -1594,70 +2099,79 @@ jobs:
           }
 
           Write-Host "[PASS] Git working tree remains clean."
-          Write-Host "[PASS] Generated feature data is not tracked."
+          Write-Host "[PASS] Runtime OHLCV/Feature data remains ignored."
           Write-Host ""
 
           Write-Host "============================================================"
 
 
       # ============================================================
-      # 21. COMPLETED
+      # 17. COMPLETED
       # ============================================================
 
-      - name: Feature Builder test completed
+      - name: Feature full validation completed
         run: |
+          $ErrorActionPreference = "Stop"
+
           Write-Host ""
           Write-Host "============================================================"
-          Write-Host "FEATURE BUILDER TEST COMPLETED"
+          Write-Host "FEATURE FULL VALIDATION COMPLETED"
+          Write-Host "CLEAN V003"
           Write-Host "============================================================"
+          Write-Host ""
+
+          Write-Host "Project:"
+          Write-Host "Upbit Surge Monitor"
           Write-Host ""
 
           Write-Host "Feature Builder:"
           Write-Host "Clean V002"
           Write-Host ""
 
-          Write-Host "Research:"
-          Write-Host "256 technique - quantitative feature foundation"
+          Write-Host "Validation:"
+          Write-Host "Clean V003 - Full KRW Market"
           Write-Host ""
 
-          Write-Host "Market:"
-          Write-Host "KRW-BTC"
-          Write-Host ""
-
-          Write-Host "Timeframes:"
-          Write-Host "H1 / H4 / D1"
+          Write-Host "Validated scope:"
+          Write-Host "Markets       : 290"
+          Write-Host "Timeframes    : 3"
+          Write-Host "Jobs          : 870"
+          Write-Host "Source rows   : 9,905,993"
+          Write-Host "Feature rows  : 9,905,993"
           Write-Host ""
 
           Write-Host "[PASS] Git synchronization completed safely."
-          Write-Host "[PASS] Existing OHLCV data was preserved."
-          Write-Host "[PASS] Source SHA256 remained unchanged."
-          Write-Host "[PASS] KRW-BTC H1 feature file generated."
-          Write-Host "[PASS] KRW-BTC H4 feature file generated."
-          Write-Host "[PASS] KRW-BTC D1 feature file generated."
-          Write-Host "[PASS] Feature row counts match source rows."
-          Write-Host "[PASS] Existing Feature V001 columns preserved."
+          Write-Host "[PASS] 290 KRW markets verified."
+          Write-Host "[PASS] 870 OHLCV source files verified."
+          Write-Host "[PASS] 870 Feature files verified."
+          Write-Host "[PASS] Source/Feature row counts match."
+          Write-Host "[PASS] Existing Feature foundation columns preserved."
           Write-Host "[PASS] All 21 Clean V002 256 research features exist."
           Write-Host "[PASS] Feature timestamps match source OHLCV."
-          Write-Host "[PASS] No duplicate feature timestamps detected."
+          Write-Host "[PASS] No duplicate Feature timestamps detected."
           Write-Host "[PASS] Feature chronological order verified."
-          Write-Host "[PASS] Clean V002 feature values passed sanity checks."
-          Write-Host "[PASS] Generated feature data remains ignored by Git."
-          Write-Host ""
-
-          Write-Host "Feature output:"
-          Write-Host "$env:PROJECT_DIR\data\features"
+          Write-Host "[PASS] Feature market values verified."
+          Write-Host "[PASS] No infinite Clean V002 feature values."
+          Write-Host "[PASS] No empty Clean V002 feature columns."
+          Write-Host "[PASS] 870 OHLCV SHA256 hashes remained unchanged."
+          Write-Host "[PASS] Generated runtime data remains ignored by Git."
           Write-Host ""
 
           Write-Host "Safety:"
-          Write-Host "Source OHLCV write    : DISABLED"
-          Write-Host "Source OHLCV delete   : DISABLED"
-          Write-Host "Git reset --hard      : DISABLED"
-          Write-Host "Git clean             : DISABLED"
-          Write-Host "Forced synchronization: DISABLED"
-          Write-Host "Automatic Git commit  : DISABLED"
-          Write-Host "Automatic Git push    : DISABLED"
-          Write-Host "Future labels         : DISABLED"
-          Write-Host "Trading               : DISABLED"
+          Write-Host "Source OHLCV write     : DISABLED"
+          Write-Host "Source OHLCV delete    : DISABLED"
+          Write-Host "Feature delete         : DISABLED"
+          Write-Host "Git reset --hard       : DISABLED"
+          Write-Host "Git clean              : DISABLED"
+          Write-Host "Forced synchronization : DISABLED"
+          Write-Host "Automatic Git commit   : DISABLED"
+          Write-Host "Automatic Git push     : DISABLED"
+          Write-Host "Future labels          : DISABLED"
+          Write-Host "Prediction             : DISABLED"
+          Write-Host "Trading                : DISABLED"
           Write-Host ""
 
+          Write-Host "============================================================"
+          Write-Host "[RESULT] FEATURE FULL VALIDATION PASSED"
+          Write-Host "[NEXT] 256 Detector full-market execution."
           Write-Host "============================================================"
