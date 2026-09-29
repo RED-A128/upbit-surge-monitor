@@ -1,4 +1,4 @@
-name: Feature Full Validation Clean V003
+name: Feature Full Validation Clean V004
 
 on:
   workflow_dispatch:
@@ -11,10 +11,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-
   feature-validation:
 
-    name: Full KRW Feature Validation Clean V003
+    name: Full KRW Feature Validation Clean V004
 
     runs-on:
       - self-hosted
@@ -40,55 +39,48 @@ jobs:
         run: |
           Write-Host "============================================================"
           Write-Host "UPBIT SURGE MONITOR"
-          Write-Host "FEATURE FULL VALIDATION - CLEAN V003"
+          Write-Host "FEATURE FULL VALIDATION - CLEAN V004"
           Write-Host "============================================================"
           Write-Host ""
-
           Write-Host "Project:"
           Write-Host "Upbit Surge Monitor"
           Write-Host ""
-
           Write-Host "Feature Builder:"
           Write-Host "Clean V002"
           Write-Host ""
-
           Write-Host "Validator:"
-          Write-Host "Feature Full Validation Clean V003"
+          Write-Host "Feature Full Validation Clean V004"
           Write-Host ""
-
           Write-Host "Scope:"
           Write-Host "ALL KRW OHLCV / FEATURE CSV FILES"
           Write-Host ""
-
           Write-Host "Timeframes:"
           Write-Host "H1 / H4 / D1"
           Write-Host ""
-
           Write-Host "Expected:"
           Write-Host "290 markets"
           Write-Host "870 validation jobs"
           Write-Host ""
-
           Write-Host "Research target:"
           Write-Host "256 technique - quantitative feature foundation"
           Write-Host ""
-
+          Write-Host "Clean V004:"
+          Write-Host "Rolling warm-up validation corrected"
+          Write-Host "Short-history markets are handled safely"
+          Write-Host "Calculable-but-empty features still FAIL"
+          Write-Host ""
           Write-Host "Repository:"
           Write-Host "${{ github.repository }}"
           Write-Host ""
-
           Write-Host "Runner:"
           Write-Host "${{ runner.name }}"
           Write-Host ""
-
           Write-Host "Runner OS:"
           Write-Host "${{ runner.os }}"
           Write-Host ""
-
           Write-Host "Local project:"
           Write-Host "$env:PROJECT_DIR"
           Write-Host ""
-
           Write-Host "Safety:"
           Write-Host "Source OHLCV write     : DISABLED"
           Write-Host "Source OHLCV delete    : DISABLED"
@@ -99,9 +91,7 @@ jobs:
           Write-Host "Prediction             : DISABLED"
           Write-Host "Trading                : DISABLED"
           Write-Host ""
-
           Write-Host "============================================================"
-
 
       # ============================================================
       # 2. VERIFY LOCAL PROJECT
@@ -120,15 +110,12 @@ jobs:
 
           if (-not (Test-Path $project)) {
               Write-Host "[FAIL] Local project directory not found."
-              Write-Host ""
               Write-Host $project
               exit 1
           }
 
           if (-not (Test-Path "$project\.git")) {
               Write-Host "[FAIL] .git directory not found."
-              Write-Host ""
-              Write-Host "Expected:"
               Write-Host "$project\.git"
               exit 1
           }
@@ -142,9 +129,7 @@ jobs:
               exit 1
           }
 
-          Write-Host "Current branch:"
-          Write-Host $branch
-          Write-Host ""
+          Write-Host "Current branch: $branch"
 
           if ($branch -ne "main") {
               Write-Host "[FAIL] Local repository must be on main."
@@ -153,10 +138,7 @@ jobs:
 
           Write-Host "[PASS] Local repository found."
           Write-Host "[PASS] Current branch is main."
-          Write-Host ""
-
           Write-Host "============================================================"
-
 
       # ============================================================
       # 3. FETCH ORIGIN
@@ -166,66 +148,42 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          $project = $env:PROJECT_DIR
-          Set-Location $project
+          Set-Location $env:PROJECT_DIR
 
           Write-Host "============================================================"
           Write-Host "SAFE ORIGIN FETCH"
           Write-Host "============================================================"
-          Write-Host ""
 
           git fetch origin
 
           if ($LASTEXITCODE -ne 0) {
-              Write-Host ""
               Write-Host "[FAIL] git fetch origin failed."
               exit 1
           }
 
           $local = git rev-parse HEAD
-
-          if ($LASTEXITCODE -ne 0) {
-              Write-Host "[FAIL] Could not read local HEAD."
-              exit 1
-          }
-
           $remote = git rev-parse origin/main
 
-          if ($LASTEXITCODE -ne 0) {
-              Write-Host "[FAIL] Could not read origin/main."
-              exit 1
-          }
-
-          Write-Host "Local HEAD:"
-          Write-Host $local
-          Write-Host ""
-
-          Write-Host "Origin/main:"
-          Write-Host $remote
-          Write-Host ""
+          Write-Host "Local HEAD  : $local"
+          Write-Host "Origin/main : $remote"
 
           Write-Host "[PASS] Origin fetched."
           Write-Host "[PASS] Local files have not been modified."
-          Write-Host ""
-
           Write-Host "============================================================"
 
-
       # ============================================================
-      # 4. VERIFY REMOTE DATA PROTECTION
+      # 4. VERIFY DATA PROTECTION RULES
       # ============================================================
 
       - name: Verify origin data protection rules
         run: |
           $ErrorActionPreference = "Stop"
 
-          $project = $env:PROJECT_DIR
-          Set-Location $project
+          Set-Location $env:PROJECT_DIR
 
           Write-Host "============================================================"
           Write-Host "DATA PROTECTION CHECK"
           Write-Host "============================================================"
-          Write-Host ""
 
           $remoteGitignore = git show origin/main:.gitignore
 
@@ -247,7 +205,6 @@ jobs:
               $found = $false
 
               foreach ($line in $remoteGitignore) {
-
                   if ($line.Trim() -eq $rule) {
                       $found = $true
                       break
@@ -264,20 +221,12 @@ jobs:
           }
 
           if ($failed) {
-              Write-Host ""
               Write-Host "[FAIL] Required data protection rules are missing."
-              Write-Host ""
-              Write-Host "Validation stopped before synchronization."
               exit 1
           }
 
-          Write-Host ""
-          Write-Host "[PASS] OHLCV data is ignored by Git."
-          Write-Host "[PASS] Feature runtime data is ignored by Git."
-          Write-Host ""
-
+          Write-Host "[PASS] Runtime data protection rules confirmed."
           Write-Host "============================================================"
-
 
       # ============================================================
       # 5. PROTECT TRACKED LOCAL CHANGES
@@ -287,41 +236,27 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          $project = $env:PROJECT_DIR
-          Set-Location $project
+          Set-Location $env:PROJECT_DIR
 
           Write-Host "============================================================"
           Write-Host "TRACKED LOCAL SOURCE SAFETY CHECK"
           Write-Host "============================================================"
-          Write-Host ""
 
           $unstaged = @(git diff --name-only)
-
-          if ($LASTEXITCODE -ne 0) {
-              Write-Host "[FAIL] Could not inspect unstaged changes."
-              exit 1
-          }
-
           $staged = @(git diff --cached --name-only)
-
-          if ($LASTEXITCODE -ne 0) {
-              Write-Host "[FAIL] Could not inspect staged changes."
-              exit 1
-          }
 
           $trackedChanges = @(
               $unstaged
               $staged
           ) |
-              Where-Object {
-                  -not [string]::IsNullOrWhiteSpace($_)
-              } |
-              Sort-Object -Unique
+          Where-Object {
+              -not [string]::IsNullOrWhiteSpace($_)
+          } |
+          Sort-Object -Unique
 
           if ($trackedChanges.Count -gt 0) {
 
               Write-Host "[FAIL] Tracked local changes detected."
-              Write-Host ""
 
               foreach ($file in $trackedChanges) {
                   Write-Host "  $file"
@@ -336,10 +271,7 @@ jobs:
           }
 
           Write-Host "[PASS] No tracked local source changes detected."
-          Write-Host ""
-
           Write-Host "============================================================"
-
 
       # ============================================================
       # 6. VERIFY FAST-FORWARD
@@ -349,49 +281,30 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          $project = $env:PROJECT_DIR
-          Set-Location $project
+          Set-Location $env:PROJECT_DIR
 
           Write-Host "============================================================"
           Write-Host "FAST-FORWARD SAFETY CHECK"
           Write-Host "============================================================"
-          Write-Host ""
 
           $local = git rev-parse HEAD
           $remote = git rev-parse origin/main
 
-          if ($LASTEXITCODE -ne 0) {
-              Write-Host "[FAIL] Could not determine repository revisions."
-              exit 1
-          }
-
           if ($local -eq $remote) {
-
               Write-Host "[PASS] Local main already matches origin/main."
-              Write-Host ""
-              Write-Host "============================================================"
-
               exit 0
           }
 
           git merge-base --is-ancestor HEAD origin/main
 
           if ($LASTEXITCODE -ne 0) {
-
               Write-Host "[FAIL] Local main cannot be safely fast-forwarded."
-              Write-Host ""
-              Write-Host "Local and remote history may have diverged."
-              Write-Host ""
               Write-Host "No reset or forced synchronization will be used."
-
               exit 1
           }
 
           Write-Host "[PASS] Fast-forward synchronization is safe."
-          Write-Host ""
-
           Write-Host "============================================================"
-
 
       # ============================================================
       # 7. SYNCHRONIZE LOCAL REPOSITORY
@@ -401,78 +314,41 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          $project = $env:PROJECT_DIR
-          Set-Location $project
+          Set-Location $env:PROJECT_DIR
 
           Write-Host "============================================================"
           Write-Host "LOCAL REPOSITORY SYNCHRONIZATION"
           Write-Host "============================================================"
-          Write-Host ""
 
           $localBefore = git rev-parse HEAD
           $remote = git rev-parse origin/main
 
-          if ($LASTEXITCODE -ne 0) {
-              Write-Host "[FAIL] Could not determine Git revisions."
-              exit 1
-          }
+          Write-Host "Local before : $localBefore"
+          Write-Host "Origin/main  : $remote"
 
-          Write-Host "Local before:"
-          Write-Host $localBefore
-          Write-Host ""
-
-          Write-Host "Origin/main:"
-          Write-Host $remote
-          Write-Host ""
-
-          if ($localBefore -eq $remote) {
-
-              Write-Host "[INFO] Local main is already synchronized."
-
-          }
-          else {
-
-              Write-Host "Fast-forwarding local main..."
-              Write-Host ""
+          if ($localBefore -ne $remote) {
 
               git merge --ff-only origin/main
 
               if ($LASTEXITCODE -ne 0) {
-
-                  Write-Host ""
                   Write-Host "[FAIL] Fast-forward synchronization failed."
-                  Write-Host ""
                   Write-Host "No reset was attempted."
                   Write-Host "No forced checkout was attempted."
-                  Write-Host "No local OHLCV data was deleted."
-
+                  Write-Host "No OHLCV data was deleted."
                   exit 1
               }
           }
 
           $localAfter = git rev-parse HEAD
 
-          if ($LASTEXITCODE -ne 0) {
-              Write-Host "[FAIL] Could not read synchronized local commit."
-              exit 1
-          }
-
           if ($localAfter -ne $remote) {
-
               Write-Host "[FAIL] Local main does not match origin/main."
               exit 1
           }
 
-          Write-Host ""
-          Write-Host "Local after:"
-          Write-Host $localAfter
-          Write-Host ""
-
+          Write-Host "Local after  : $localAfter"
           Write-Host "[PASS] Local repository synchronized safely."
-          Write-Host ""
-
           Write-Host "============================================================"
-
 
       # ============================================================
       # 8. VERIFY PYTHON
@@ -482,76 +358,42 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
+          Set-Location $env:PROJECT_DIR
+
           Write-Host "============================================================"
           Write-Host "PYTHON CHECK"
           Write-Host "============================================================"
-          Write-Host ""
 
           py --version
 
           if ($LASTEXITCODE -ne 0) {
-
-              Write-Host ""
-              Write-Host "[FAIL] Windows Python launcher 'py' is unavailable."
-
+              Write-Host "[FAIL] Windows Python launcher 'py' unavailable."
               exit 1
           }
-
-          Write-Host ""
-          Write-Host "[PASS] Python is available."
-          Write-Host ""
-
-          Write-Host "============================================================"
-
-
-      # ============================================================
-      # 9. VERIFY PYTHON DEPENDENCIES
-      # ============================================================
-
-      - name: Verify feature validation dependencies
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          $project = $env:PROJECT_DIR
-          Set-Location $project
-
-          Write-Host "============================================================"
-          Write-Host "FEATURE VALIDATION DEPENDENCY CHECK"
-          Write-Host "============================================================"
-          Write-Host ""
 
           py -c "import pandas; import numpy; print('pandas:', pandas.__version__); print('numpy :', numpy.__version__)"
 
           if ($LASTEXITCODE -ne 0) {
-
-              Write-Host ""
-              Write-Host "[FAIL] pandas and/or numpy is unavailable."
-
+              Write-Host "[FAIL] pandas and/or numpy unavailable."
               exit 1
           }
 
-          Write-Host ""
-          Write-Host "[PASS] Required Python dependencies are available."
-          Write-Host ""
-
+          Write-Host "[PASS] Python dependencies available."
           Write-Host "============================================================"
 
-
       # ============================================================
-      # 10. VERIFY REQUIRED DIRECTORIES
+      # 9. VERIFY DATA DIRECTORIES
       # ============================================================
 
       - name: Verify full feature dataset directories
         run: |
           $ErrorActionPreference = "Stop"
 
-          $project = $env:PROJECT_DIR
-          Set-Location $project
+          Set-Location $env:PROJECT_DIR
 
           Write-Host "============================================================"
           Write-Host "FULL DATASET DIRECTORY CHECK"
           Write-Host "============================================================"
-          Write-Host ""
 
           $requiredDirectories = @(
               "data\ohlcv\h1",
@@ -577,63 +419,41 @@ jobs:
 
                   Write-Host "[FOUND] $directory"
                   Write-Host "        KRW CSV files: $count"
-
               }
               else {
-
                   Write-Host "[MISSING] $directory"
                   $failed = $true
               }
           }
 
           if ($failed) {
-
-              Write-Host ""
-              Write-Host "[FAIL] One or more required directories are missing."
+              Write-Host "[FAIL] Required directories missing."
               exit 1
           }
 
-          Write-Host ""
-          Write-Host "[PASS] Required OHLCV and Feature directories exist."
-          Write-Host ""
-
+          Write-Host "[PASS] Required directories exist."
           Write-Host "============================================================"
 
-
       # ============================================================
-      # 11. VERIFY FULL MARKET FILE SET
-      #
-      # The OHLCV dataset is the canonical discovery source.
-      #
-      # Every market must exist in:
-      #   OHLCV h1 / h4 / d1
-      #   Feature h1 / h4 / d1
-      #
-      # Expected current dataset:
-      #   290 markets
-      #   870 OHLCV files
-      #   870 Feature files
+      # 10. VERIFY FULL MARKET FILE SET
       # ============================================================
 
       - name: Verify full market file set
         run: |
           $ErrorActionPreference = "Stop"
 
-          $project = $env:PROJECT_DIR
-          Set-Location $project
+          Set-Location $env:PROJECT_DIR
 
           Write-Host "============================================================"
           Write-Host "FULL MARKET FILE SET CHECK"
           Write-Host "============================================================"
-          Write-Host ""
 
           @'
           from pathlib import Path
-          import sys
 
           TIMEFRAMES = ("h1", "h4", "d1")
           EXPECTED_MARKETS = 290
-          EXPECTED_JOBS = EXPECTED_MARKETS * len(TIMEFRAMES)
+          EXPECTED_JOBS = 870
 
           ohlcv_root = Path("data/ohlcv")
           feature_root = Path("data/features")
@@ -644,133 +464,104 @@ jobs:
           feature_sets = {}
 
           for tf in TIMEFRAMES:
-              ohlcv_dir = ohlcv_root / tf
-              feature_dir = feature_root / tf
+              ohlcv_files = sorted(
+                  (ohlcv_root / tf).glob("KRW-*.csv")
+              )
 
-              ohlcv_files = sorted(ohlcv_dir.glob("KRW-*.csv"))
-              feature_files = sorted(feature_dir.glob("KRW-*.csv"))
+              feature_files = sorted(
+                  (feature_root / tf).glob("KRW-*.csv")
+              )
 
-              ohlcv_sets[tf] = {path.stem for path in ohlcv_files}
-              feature_sets[tf] = {path.stem for path in feature_files}
+              ohlcv_sets[tf] = {
+                  path.stem for path in ohlcv_files
+              }
 
-              print(f"[{tf.upper()}]")
-              print(f"OHLCV files : {len(ohlcv_files):,}")
-              print(f"Feature files: {len(feature_files):,}")
-              print()
+              feature_sets[tf] = {
+                  path.stem for path in feature_files
+              }
 
-          canonical_markets = sorted(ohlcv_sets["h1"])
-
-          print("Canonical markets from OHLCV H1:", len(canonical_markets))
-          print("Expected markets               :", EXPECTED_MARKETS)
-          print()
-
-          if len(canonical_markets) != EXPECTED_MARKETS:
               print(
-                  "[FAIL] Canonical H1 OHLCV market count mismatch: "
-                  f"{len(canonical_markets)} != {EXPECTED_MARKETS}"
+                  f"[{tf.upper()}] "
+                  f"OHLCV={len(ohlcv_files):,} "
+                  f"FEATURE={len(feature_files):,}"
+              )
+
+          canonical = set(ohlcv_sets["h1"])
+
+          print()
+          print("Canonical markets:", len(canonical))
+
+          if len(canonical) != EXPECTED_MARKETS:
+              print(
+                  "[FAIL] Canonical market count mismatch."
               )
               failed = True
 
-          canonical_set = set(canonical_markets)
-
           for tf in TIMEFRAMES:
 
-              missing_ohlcv = sorted(
-                  canonical_set - ohlcv_sets[tf]
-              )
-
-              extra_ohlcv = sorted(
-                  ohlcv_sets[tf] - canonical_set
-              )
-
-              missing_feature = sorted(
-                  canonical_set - feature_sets[tf]
-              )
-
-              extra_feature = sorted(
-                  feature_sets[tf] - canonical_set
-              )
-
-              if missing_ohlcv:
+              if ohlcv_sets[tf] != canonical:
                   print(
-                      f"[FAIL] {tf.upper()} OHLCV missing markets: "
-                      f"{len(missing_ohlcv)}"
+                      f"[FAIL] {tf.upper()} "
+                      "OHLCV market set mismatch."
                   )
-                  for market in missing_ohlcv[:20]:
-                      print("  ", market)
                   failed = True
-
-              if extra_ohlcv:
+              else:
                   print(
-                      f"[FAIL] {tf.upper()} OHLCV unexpected markets: "
-                      f"{len(extra_ohlcv)}"
+                      f"[PASS] {tf.upper()} "
+                      "OHLCV market set."
                   )
-                  for market in extra_ohlcv[:20]:
-                      print("  ", market)
+
+              if feature_sets[tf] != canonical:
+                  print(
+                      f"[FAIL] {tf.upper()} "
+                      "Feature market set mismatch."
+                  )
+
+                  missing = sorted(
+                      canonical - feature_sets[tf]
+                  )
+
+                  extra = sorted(
+                      feature_sets[tf] - canonical
+                  )
+
+                  for market in missing[:20]:
+                      print("  Missing:", market)
+
+                  for market in extra[:20]:
+                      print("  Extra:", market)
+
                   failed = True
-
-              if missing_feature:
+              else:
                   print(
-                      f"[FAIL] {tf.upper()} Feature missing markets: "
-                      f"{len(missing_feature)}"
-                  )
-                  for market in missing_feature[:20]:
-                      print("  ", market)
-                  failed = True
-
-              if extra_feature:
-                  print(
-                      f"[FAIL] {tf.upper()} Feature unexpected markets: "
-                      f"{len(extra_feature)}"
-                  )
-                  for market in extra_feature[:20]:
-                      print("  ", market)
-                  failed = True
-
-              if (
-                  not missing_ohlcv
-                  and not extra_ohlcv
-                  and not missing_feature
-                  and not extra_feature
-              ):
-                  print(
-                      f"[PASS] {tf.upper()} market set matches "
-                      f"canonical {len(canonical_markets)} markets."
+                      f"[PASS] {tf.upper()} "
+                      "Feature market set."
                   )
 
-          total_ohlcv_files = sum(
+          total_ohlcv = sum(
               len(ohlcv_sets[tf])
               for tf in TIMEFRAMES
           )
 
-          total_feature_files = sum(
+          total_features = sum(
               len(feature_sets[tf])
               for tf in TIMEFRAMES
           )
 
           print()
-          print("Total OHLCV files :", f"{total_ohlcv_files:,}")
-          print("Total Feature files:", f"{total_feature_files:,}")
-          print("Expected jobs      :", f"{EXPECTED_JOBS:,}")
+          print("Total OHLCV   :", total_ohlcv)
+          print("Total Feature :", total_features)
 
-          if total_ohlcv_files != EXPECTED_JOBS:
-              print(
-                  "[FAIL] Total OHLCV file count mismatch."
-              )
+          if total_ohlcv != EXPECTED_JOBS:
               failed = True
 
-          if total_feature_files != EXPECTED_JOBS:
-              print(
-                  "[FAIL] Total Feature file count mismatch."
-              )
+          if total_features != EXPECTED_JOBS:
               failed = True
 
           if failed:
-              print()
               print("[RESULT] FULL MARKET FILE SET FAILED")
               raise SystemExit(1)
 
-          print()
           print("[PASS] 290 canonical KRW markets confirmed.")
           print("[PASS] 870 OHLCV files confirmed.")
           print("[PASS] 870 Feature files confirmed.")
@@ -778,49 +569,33 @@ jobs:
           '@ | py -
 
           if ($LASTEXITCODE -ne 0) {
-              Write-Host ""
               Write-Host "[FAIL] Full market file set verification failed."
               exit 1
           }
 
-          Write-Host ""
-          Write-Host "============================================================"
-
-
       # ============================================================
-      # 12. RECORD ALL SOURCE OHLCV HASHES BEFORE VALIDATION
-      #
-      # Feature validation must never modify OHLCV.
-      #
-      # All 870 source files are hashed once before validation.
+      # 11. RECORD OHLCV HASHES
       # ============================================================
 
       - name: Record all OHLCV hashes before validation
         run: |
           $ErrorActionPreference = "Stop"
 
-          $project = $env:PROJECT_DIR
-          Set-Location $project
+          Set-Location $env:PROJECT_DIR
 
           Write-Host "============================================================"
           Write-Host "ALL SOURCE OHLCV HASHES - BEFORE"
           Write-Host "============================================================"
-          Write-Host ""
 
           $hashFile = Join-Path `
               $env:RUNNER_TEMP `
-              "feature_v003_ohlcv_hashes.txt"
+              "feature_v004_ohlcv_hashes.txt"
 
           if (Test-Path $hashFile) {
               Remove-Item $hashFile -Force
           }
 
-          $timeframes = @(
-              "h1",
-              "h4",
-              "d1"
-          )
-
+          $timeframes = @("h1", "h4", "d1")
           $count = 0
 
           foreach ($tf in $timeframes) {
@@ -836,6 +611,7 @@ jobs:
               foreach ($file in $files) {
 
                   $relative = "data\ohlcv\$tf\$($file.Name)"
+
                   $hash = (
                       Get-FileHash `
                           -Algorithm SHA256 `
@@ -850,80 +626,50 @@ jobs:
 
                   $count++
 
-                  if (
-                      ($count % 100) -eq 0
-                  ) {
-                      Write-Host "Hashed: $count files"
+                  if (($count % 100) -eq 0) {
+                      Write-Host "Hashed: $count / 870"
                   }
               }
           }
 
-          Write-Host ""
-          Write-Host "Total source hashes:"
-          Write-Host $count
-          Write-Host ""
-
           if ($count -ne 870) {
-              Write-Host "[FAIL] Expected 870 OHLCV source hashes."
-              Write-Host "[FAIL] Actual: $count"
-              exit 1
-          }
-
-          if (-not (Test-Path $hashFile)) {
-              Write-Host "[FAIL] Source hash snapshot was not created."
+              Write-Host "[FAIL] Expected 870 OHLCV hashes."
+              Write-Host "Actual: $count"
               exit 1
           }
 
           Write-Host "[PASS] 870 OHLCV SHA256 hashes recorded."
-          Write-Host ""
-
-          Write-Host "============================================================"
-
 
       # ============================================================
-      # 13. FULL FEATURE VALIDATION
+      # 12. FULL FEATURE VALIDATION
       #
-      # IMPORTANT:
+      # Clean V004 correction:
       #
-      # Each OHLCV / Feature pair is read only once in this stage.
+      # A feature is only required to contain usable numeric values
+      # once enough source rows exist for that feature to be
+      # mathematically calculable.
       #
-      # Validation:
+      # Short-history rolling warm-up NaN is valid.
       #
-      # - 290 markets
-      # - 3 timeframes
-      # - 870 jobs
-      # - source / feature row equality
-      # - total row equality
-      # - required columns
-      # - Clean V002 21 features
-      # - timestamp validity
-      # - timestamp exact equality
-      # - duplicate timestamps
-      # - chronological order
-      # - market integrity
-      # - numeric feature sanity
-      # - infinite values
-      # - completely empty feature columns
-      #
-      # Rolling indicator warm-up NaN is allowed.
+      # Enough history + entirely empty column = FAIL.
+      # Infinite numeric value = FAIL.
+      # Missing required column = FAIL.
       # ============================================================
 
       - name: Validate all Clean V002 feature files
         run: |
           $ErrorActionPreference = "Stop"
 
-          $project = $env:PROJECT_DIR
-          Set-Location $project
+          Set-Location $env:PROJECT_DIR
 
           Write-Host "============================================================"
           Write-Host "FULL CLEAN V002 FEATURE VALIDATION"
+          Write-Host "VALIDATOR CLEAN V004"
           Write-Host "============================================================"
-          Write-Host ""
 
           @'
           from __future__ import annotations
 
-          import math
           import time
           from pathlib import Path
 
@@ -932,12 +678,13 @@ jobs:
 
 
           PROJECT = "Upbit Surge Monitor"
-          VERSION = "Feature Full Validation Clean V003"
+          VERSION = "Feature Full Validation Clean V004"
 
           TIMEFRAMES = ("h1", "h4", "d1")
 
           EXPECTED_MARKETS = 290
           EXPECTED_JOBS = 870
+          EXPECTED_TOTAL_ROWS = 9_905_993
 
           OHLCV_ROOT = Path("data/ohlcv")
           FEATURE_ROOT = Path("data/features")
@@ -1024,6 +771,52 @@ jobs:
           ]
 
 
+          # --------------------------------------------------------
+          # Minimum source-row count required before each V002
+          # feature must contain at least one usable numeric value.
+          #
+          # Rolling mean N:
+          #   first usable value at row N
+          #
+          # slope_1:
+          #   first usable value one row after SMA becomes usable
+          #
+          # slope_3:
+          #   first usable value three rows after SMA becomes usable
+          # --------------------------------------------------------
+
+          FEATURE_MIN_ROWS = {
+              "sma_112": 112,
+              "sma_224": 224,
+
+              "close_to_sma_5": 5,
+              "close_to_sma_112": 112,
+              "close_to_sma_224": 224,
+
+              "sma_5_to_20": 20,
+              "sma_5_to_60": 60,
+              "sma_20_to_60": 60,
+              "sma_5_to_112": 112,
+              "sma_5_to_224": 224,
+              "sma_112_to_224": 224,
+
+              "sma_5_slope_1": 6,
+              "sma_5_slope_3": 8,
+
+              "sma_20_slope_1": 21,
+              "sma_20_slope_3": 23,
+
+              "sma_60_slope_1": 61,
+              "sma_60_slope_3": 63,
+
+              "sma_112_slope_1": 113,
+              "sma_112_slope_3": 115,
+
+              "sma_224_slope_1": 225,
+              "sma_224_slope_3": 227,
+          }
+
+
           if len(FEATURE_256_REQUIRED) != 21:
               print(
                   "[FAIL] Internal validator definition error."
@@ -1035,6 +828,37 @@ jobs:
                   "Actual:",
                   len(FEATURE_256_REQUIRED),
               )
+              raise SystemExit(1)
+
+
+          if set(FEATURE_MIN_ROWS) != set(FEATURE_256_REQUIRED):
+
+              missing = sorted(
+                  set(FEATURE_256_REQUIRED)
+                  - set(FEATURE_MIN_ROWS)
+              )
+
+              extra = sorted(
+                  set(FEATURE_MIN_ROWS)
+                  - set(FEATURE_256_REQUIRED)
+              )
+
+              print(
+                  "[FAIL] FEATURE_MIN_ROWS definition mismatch."
+              )
+
+              if missing:
+                  print(
+                      "Missing minimum-row definitions:",
+                      missing,
+                  )
+
+              if extra:
+                  print(
+                      "Unexpected minimum-row definitions:",
+                      extra,
+                  )
+
               raise SystemExit(1)
 
 
@@ -1057,9 +881,12 @@ jobs:
           timestamp_mismatch_total = 0
           market_mismatch_total = 0
           infinite_value_total = 0
+
           empty_feature_column_total = 0
+          warmup_empty_allowed_total = 0
 
           validation_errors = []
+
 
           markets = sorted(
               path.stem
@@ -1068,25 +895,48 @@ jobs:
               ).glob("KRW-*.csv")
           )
 
+
           print("=" * 80)
           print(PROJECT)
           print(VERSION)
           print("=" * 80)
           print()
-          print("Markets discovered :", len(markets))
-          print("Timeframes         :", " / ".join(TIMEFRAMES))
+          print(
+              "Markets discovered :",
+              len(markets),
+          )
+          print(
+              "Timeframes         :",
+              " / ".join(TIMEFRAMES),
+          )
           print(
               "Expected jobs      :",
               EXPECTED_JOBS,
           )
           print()
+          print(
+              "Warm-up policy     : "
+              "SOURCE-ROW-AWARE"
+          )
+          print(
+              "Short history      : "
+              "EMPTY ROLLING FEATURE ALLOWED"
+          )
+          print(
+              "Enough history     : "
+              "EMPTY FEATURE FAILS"
+          )
+          print()
+
 
           if len(markets) != EXPECTED_MARKETS:
+
               print(
                   "[FAIL] Expected "
                   f"{EXPECTED_MARKETS} markets, "
                   f"found {len(markets)}."
               )
+
               raise SystemExit(1)
 
 
@@ -1095,6 +945,7 @@ jobs:
               market: str,
               message: str,
           ) -> None:
+
               validation_errors.append(
                   f"[{timeframe.upper()}] "
                   f"{market}: {message}"
@@ -1130,6 +981,7 @@ jobs:
 
                   job_failed = False
 
+
                   if not source_path.exists():
 
                       add_error(
@@ -1139,7 +991,6 @@ jobs:
                       )
 
                       failed_jobs += 1
-                      job_failed = True
 
                       print(
                           f"  [{timeframe.upper()}] "
@@ -1147,6 +998,7 @@ jobs:
                       )
 
                       continue
+
 
                   if not feature_path.exists():
 
@@ -1157,7 +1009,6 @@ jobs:
                       )
 
                       failed_jobs += 1
-                      job_failed = True
 
                       print(
                           f"  [{timeframe.upper()}] "
@@ -1165,6 +1016,7 @@ jobs:
                       )
 
                       continue
+
 
                   try:
 
@@ -1191,6 +1043,7 @@ jobs:
                       )
 
                       continue
+
 
                   try:
 
@@ -1226,9 +1079,9 @@ jobs:
                   feature_rows_total += feature_rows
 
 
-                  # --------------------------------------------
+                  # ------------------------------------------------
                   # ROW COUNT
-                  # --------------------------------------------
+                  # ------------------------------------------------
 
                   if source_rows != feature_rows:
 
@@ -1243,9 +1096,9 @@ jobs:
                       job_failed = True
 
 
-                  # --------------------------------------------
+                  # ------------------------------------------------
                   # REQUIRED COLUMNS
-                  # --------------------------------------------
+                  # ------------------------------------------------
 
                   missing_columns = [
                       column
@@ -1265,18 +1118,16 @@ jobs:
                       job_failed = True
 
 
-                  # --------------------------------------------
-                  # SOURCE TIMESTAMP COLUMN
-                  # --------------------------------------------
+                  # ------------------------------------------------
+                  # TIMESTAMP VALIDATION
+                  # ------------------------------------------------
 
                   timestamp_column = (
                       "candle_date_time_utc"
                   )
 
-                  if (
-                      timestamp_column
-                      not in source.columns
-                  ):
+
+                  if timestamp_column not in source.columns:
 
                       add_error(
                           timeframe,
@@ -1286,10 +1137,8 @@ jobs:
 
                       job_failed = True
 
-                  if (
-                      timestamp_column
-                      not in feature.columns
-                  ):
+
+                  if timestamp_column not in feature.columns:
 
                       add_error(
                           timeframe,
@@ -1300,15 +1149,9 @@ jobs:
                       job_failed = True
 
 
-                  # --------------------------------------------
-                  # TIMESTAMP VALIDATION
-                  # --------------------------------------------
-
                   if (
-                      timestamp_column
-                      in source.columns
-                      and timestamp_column
-                      in feature.columns
+                      timestamp_column in source.columns
+                      and timestamp_column in feature.columns
                   ):
 
                       source_ts = pd.to_datetime(
@@ -1322,6 +1165,7 @@ jobs:
                           errors="coerce",
                           utc=True,
                       )
+
 
                       source_invalid = int(
                           source_ts.isna().sum()
@@ -1339,6 +1183,7 @@ jobs:
                       invalid_timestamp_total += (
                           invalid_count
                       )
+
 
                       if invalid_count > 0:
 
@@ -1360,6 +1205,7 @@ jobs:
                       duplicate_timestamp_total += (
                           duplicate_count
                       )
+
 
                       if duplicate_count > 0:
 
@@ -1420,19 +1266,42 @@ jobs:
 
                       else:
 
-                          mismatch_count = abs(
-                              len(source_ts)
-                              - len(feature_ts)
-                          )
-
-                          mismatch_count += min(
+                          common = min(
                               len(source_ts),
                               len(feature_ts),
                           )
 
+                          if common > 0:
+
+                              equal_mask = (
+                                  source_ts
+                                  .iloc[:common]
+                                  .reset_index(drop=True)
+                                  .eq(
+                                      feature_ts
+                                      .iloc[:common]
+                                      .reset_index(drop=True)
+                                  )
+                              )
+
+                              mismatch_count = int(
+                                  (~equal_mask).sum()
+                              )
+
+                          else:
+
+                              mismatch_count = 0
+
+                          mismatch_count += abs(
+                              len(source_ts)
+                              - len(feature_ts)
+                          )
+
+
                       timestamp_mismatch_total += (
                           mismatch_count
                       )
+
 
                       if mismatch_count > 0:
 
@@ -1447,9 +1316,9 @@ jobs:
                           job_failed = True
 
 
-                  # --------------------------------------------
+                  # ------------------------------------------------
                   # MARKET COLUMN INTEGRITY
-                  # --------------------------------------------
+                  # ------------------------------------------------
 
                   if "market" not in feature.columns:
 
@@ -1463,49 +1332,73 @@ jobs:
 
                   else:
 
-                      market_values = (
+                      market_series = (
                           feature["market"]
-                          .dropna()
-                          .astype(str)
+                          .astype("string")
+                      )
+
+                      missing_market_count = int(
+                          market_series.isna().sum()
                       )
 
                       wrong_market_count = int(
-                          (market_values != market).sum()
+                          (
+                              market_series.dropna()
+                              != market
+                          ).sum()
+                      )
+
+                      total_market_errors = (
+                          missing_market_count
+                          + wrong_market_count
                       )
 
                       market_mismatch_total += (
-                          wrong_market_count
+                          total_market_errors
                       )
 
-                      if wrong_market_count > 0:
+
+                      if total_market_errors > 0:
 
                           add_error(
                               timeframe,
                               market,
                               "Feature market mismatch: "
-                              f"{wrong_market_count:,}",
+                              f"missing={missing_market_count:,}, "
+                              f"wrong={wrong_market_count:,}",
                           )
 
                           job_failed = True
 
 
-                  # --------------------------------------------
-                  # CLEAN V002 FEATURE VALUES
+                  # ------------------------------------------------
+                  # CLEAN V002 256 FEATURE VALIDATION
                   #
-                  # Warm-up NaN is valid.
-                  # Infinite values are invalid.
-                  # Entirely empty feature is invalid.
-                  # --------------------------------------------
+                  # IMPORTANT:
+                  #
+                  # 1. Column must always exist.
+                  #
+                  # 2. If source history is shorter than the minimum
+                  #    mathematical requirement, an entirely NaN
+                  #    feature column is legitimate rolling warm-up.
+                  #
+                  # 3. If source history is long enough, the feature
+                  #    must contain at least one usable numeric value.
+                  #
+                  # 4. Any +/- infinity is invalid.
+                  # ------------------------------------------------
 
                   for column in FEATURE_256_REQUIRED:
 
                       if column not in feature.columns:
                           continue
 
+
                       values = pd.to_numeric(
                           feature[column],
                           errors="coerce",
                       )
+
 
                       valid_values = values.dropna()
 
@@ -1513,7 +1406,18 @@ jobs:
                           valid_values.shape[0]
                       )
 
+
+                      min_rows = FEATURE_MIN_ROWS[column]
+
+
                       if valid_count == 0:
+
+                          if source_rows < min_rows:
+
+                              warmup_empty_allowed_total += 1
+
+                              continue
+
 
                           empty_feature_column_total += 1
 
@@ -1521,18 +1425,23 @@ jobs:
                               timeframe,
                               market,
                               "Feature column has no "
-                              "usable numeric values: "
-                              f"{column}",
+                              "usable numeric values "
+                              "despite sufficient history: "
+                              f"{column} "
+                              f"(rows={source_rows:,}, "
+                              f"required={min_rows:,})",
                           )
 
                           job_failed = True
 
                           continue
 
+
                       array = valid_values.to_numpy(
                           dtype=np.float64,
                           copy=False,
                       )
+
 
                       infinite_count = int(
                           np.isinf(array).sum()
@@ -1541,6 +1450,7 @@ jobs:
                       infinite_value_total += (
                           infinite_count
                       )
+
 
                       if infinite_count > 0:
 
@@ -1559,6 +1469,7 @@ jobs:
                       time.perf_counter()
                       - job_started
                   )
+
 
                   if job_failed:
 
@@ -1599,8 +1510,12 @@ jobs:
           print("=" * 80)
           print("FEATURE FULL VALIDATION SUMMARY")
           print("=" * 80)
-          print(f"Project                 : {PROJECT}")
-          print(f"Version                 : {VERSION}")
+          print(
+              f"Project                 : {PROJECT}"
+          )
+          print(
+              f"Version                 : {VERSION}"
+          )
           print(
               f"Markets discovered      : "
               f"{len(markets):,}"
@@ -1650,8 +1565,12 @@ jobs:
               f"{infinite_value_total:,}"
           )
           print(
-              f"Empty V002 columns      : "
+              f"Invalid empty V002 cols : "
               f"{empty_feature_column_total:,}"
+          )
+          print(
+              f"Warm-up empties allowed : "
+              f"{warmup_empty_allowed_total:,}"
           )
           print(
               f"Validation errors       : "
@@ -1687,6 +1606,20 @@ jobs:
           )
           print()
 
+          print("Clean V004 warm-up policy:")
+          print(
+              "  Insufficient history   : "
+              "empty rolling feature allowed"
+          )
+          print(
+              "  Sufficient history     : "
+              "usable numeric value required"
+          )
+          print(
+              "  Infinite values        : FAIL"
+          )
+          print()
+
           print("Safety:")
           print(
               "  Feature write          : DISABLED"
@@ -1704,9 +1637,6 @@ jobs:
               "  Trading                : DISABLED"
           )
           print("=" * 80)
-
-
-          expected_total_rows = 9_905_993
 
 
           if total_jobs != EXPECTED_JOBS:
@@ -1736,7 +1666,7 @@ jobs:
               raise SystemExit(1)
 
 
-          if source_rows_total != expected_total_rows:
+          if source_rows_total != EXPECTED_TOTAL_ROWS:
 
               print(
                   "[FAIL] Total source row count "
@@ -1745,7 +1675,7 @@ jobs:
               )
 
               print(
-                  f"Expected: {expected_total_rows:,}"
+                  f"Expected: {EXPECTED_TOTAL_ROWS:,}"
               )
 
               print(
@@ -1792,6 +1722,7 @@ jobs:
               raise SystemExit(1)
 
 
+          print()
           print(
               "[RESULT] FEATURE FULL "
               "VALIDATION PASSED"
@@ -1818,7 +1749,17 @@ jobs:
 
           print(
               "[PASS] All 21 V002 256 research "
-              "features verified."
+              "feature definitions verified."
+          )
+
+          print(
+              "[PASS] Short-history rolling "
+              "warm-up handled correctly."
+          )
+
+          print(
+              "[PASS] Calculable features contain "
+              "usable numeric values."
           )
 
           print(
@@ -1831,7 +1772,7 @@ jobs:
           )
 
           print(
-              "[PASS] No completely empty "
+              "[PASS] No invalid empty "
               "V002 feature columns."
           )
 
@@ -1844,41 +1785,30 @@ jobs:
           '@ | py -
 
           if ($LASTEXITCODE -ne 0) {
-
               Write-Host ""
               Write-Host "[FAIL] Full Clean V002 feature validation failed."
               exit 1
           }
 
-          Write-Host ""
-          Write-Host "============================================================"
-
-
       # ============================================================
-      # 14. VERIFY FEATURE BUILD STATUS FILE
+      # 13. VERIFY FEATURE BUILD STATUS FILE
       # ============================================================
 
       - name: Verify full feature build status
         run: |
           $ErrorActionPreference = "Stop"
 
-          $project = $env:PROJECT_DIR
-          Set-Location $project
+          Set-Location $env:PROJECT_DIR
 
           Write-Host "============================================================"
           Write-Host "FEATURE BUILD STATUS CHECK"
           Write-Host "============================================================"
-          Write-Host ""
 
           $statusFile = "data\feature_build_status.csv"
 
           if (-not (Test-Path $statusFile)) {
-
               Write-Host "[FAIL] Feature build status file not found."
-              Write-Host ""
-              Write-Host "Expected:"
-              Write-Host $statusFile
-
+              Write-Host "Expected: $statusFile"
               exit 1
           }
 
@@ -1886,10 +1816,8 @@ jobs:
 
           Write-Host "[FOUND] $statusFile"
           Write-Host "Size: $($item.Length) bytes"
-          Write-Host ""
 
           if ($item.Length -le 0) {
-
               Write-Host "[FAIL] Feature status file is empty."
               exit 1
           }
@@ -1916,7 +1844,6 @@ jobs:
 
           print("Status rows   :", f"{len(df):,}")
           print("Status columns:", f"{len(df.columns):,}")
-          print()
 
           if len(df) == 0:
               print(
@@ -1925,45 +1852,38 @@ jobs:
               )
               raise SystemExit(1)
 
-          print("[PASS] Feature build status CSV is readable.")
+          print(
+              "[PASS] Feature build status CSV is readable."
+          )
           '@ | py -
 
           if ($LASTEXITCODE -ne 0) {
-
-              Write-Host ""
               Write-Host "[FAIL] Feature build status verification failed."
               exit 1
           }
 
-          Write-Host ""
-          Write-Host "[PASS] Feature build status file exists and is readable."
-          Write-Host ""
-
+          Write-Host "[PASS] Feature build status file verified."
           Write-Host "============================================================"
 
-
       # ============================================================
-      # 15. VERIFY ALL SOURCE OHLCV HASHES AFTER VALIDATION
+      # 14. VERIFY OHLCV HASHES AFTER VALIDATION
       # ============================================================
 
       - name: Verify all OHLCV files remained unchanged
         run: |
           $ErrorActionPreference = "Stop"
 
-          $project = $env:PROJECT_DIR
-          Set-Location $project
+          Set-Location $env:PROJECT_DIR
 
           Write-Host "============================================================"
           Write-Host "ALL SOURCE OHLCV IMMUTABILITY CHECK"
           Write-Host "============================================================"
-          Write-Host ""
 
           $hashFile = Join-Path `
               $env:RUNNER_TEMP `
-              "feature_v003_ohlcv_hashes.txt"
+              "feature_v004_ohlcv_hashes.txt"
 
           if (-not (Test-Path $hashFile)) {
-
               Write-Host "[FAIL] Before-validation hash snapshot not found."
               exit 1
           }
@@ -1976,9 +1896,8 @@ jobs:
           )
 
           if ($lines.Count -ne 870) {
-
               Write-Host "[FAIL] Expected 870 stored source hashes."
-              Write-Host "[FAIL] Actual: $($lines.Count)"
+              Write-Host "Actual: $($lines.Count)"
               exit 1
           }
 
@@ -1990,10 +1909,8 @@ jobs:
               $parts = $line.Split("|", 2)
 
               if ($parts.Count -ne 2) {
-
                   Write-Host "[FAIL] Invalid hash snapshot line:"
                   Write-Host $line
-
                   $failed = $true
                   continue
               }
@@ -2002,10 +1919,8 @@ jobs:
               $beforeHash = $parts[1]
 
               if (-not (Test-Path $file)) {
-
                   Write-Host "[FAIL] Source file disappeared:"
                   Write-Host $file
-
                   $failed = $true
                   continue
               }
@@ -2021,9 +1936,9 @@ jobs:
               if ($beforeHash -ne $afterHash) {
 
                   Write-Host "[FAIL] SOURCE FILE CHANGED"
-                  Write-Host "       $file"
-                  Write-Host "Before: $beforeHash"
-                  Write-Host "After : $afterHash"
+                  Write-Host "File   : $file"
+                  Write-Host "Before : $beforeHash"
+                  Write-Host "After  : $afterHash"
 
                   $failed = $true
               }
@@ -2033,54 +1948,40 @@ jobs:
               }
           }
 
-          Write-Host ""
-          Write-Host "Files checked:"
-          Write-Host $checked
-          Write-Host ""
+          Write-Host "Files checked: $checked"
 
           if ($checked -ne 870) {
-
               Write-Host "[FAIL] Source hash verification count mismatch."
               exit 1
           }
 
           if ($failed) {
-
               Write-Host "[FAIL] One or more OHLCV source files changed."
-              Write-Host ""
-              Write-Host "This violates the Feature validation safety policy."
-
               exit 1
           }
 
           Write-Host "[PASS] 870 / 870 OHLCV files remained unchanged."
-          Write-Host ""
-
           Write-Host "============================================================"
 
-
       # ============================================================
-      # 16. FINAL GIT SAFETY CHECK
+      # 15. FINAL GIT SAFETY CHECK
       # ============================================================
 
       - name: Verify generated data remains ignored
         run: |
           $ErrorActionPreference = "Stop"
 
-          $project = $env:PROJECT_DIR
-          Set-Location $project
+          Set-Location $env:PROJECT_DIR
 
           Write-Host "============================================================"
           Write-Host "FINAL GIT SAFETY CHECK"
           Write-Host "============================================================"
-          Write-Host ""
 
           $trackedChanges = @(
               git status --porcelain
           )
 
           if ($LASTEXITCODE -ne 0) {
-
               Write-Host "[FAIL] Could not inspect Git status."
               exit 1
           }
@@ -2088,7 +1989,6 @@ jobs:
           if ($trackedChanges.Count -gt 0) {
 
               Write-Host "[FAIL] Validation created unexpected Git-visible changes."
-              Write-Host ""
 
               git status --short
 
@@ -2100,13 +2000,10 @@ jobs:
 
           Write-Host "[PASS] Git working tree remains clean."
           Write-Host "[PASS] Runtime OHLCV/Feature data remains ignored."
-          Write-Host ""
-
           Write-Host "============================================================"
 
-
       # ============================================================
-      # 17. COMPLETED
+      # 16. COMPLETED
       # ============================================================
 
       - name: Feature full validation completed
@@ -2116,22 +2013,18 @@ jobs:
           Write-Host ""
           Write-Host "============================================================"
           Write-Host "FEATURE FULL VALIDATION COMPLETED"
-          Write-Host "CLEAN V003"
+          Write-Host "CLEAN V004"
           Write-Host "============================================================"
           Write-Host ""
-
           Write-Host "Project:"
           Write-Host "Upbit Surge Monitor"
           Write-Host ""
-
           Write-Host "Feature Builder:"
           Write-Host "Clean V002"
           Write-Host ""
-
-          Write-Host "Validation:"
-          Write-Host "Clean V003 - Full KRW Market"
+          Write-Host "Validator:"
+          Write-Host "Clean V004 - Full KRW Market"
           Write-Host ""
-
           Write-Host "Validated scope:"
           Write-Host "Markets       : 290"
           Write-Host "Timeframes    : 3"
@@ -2139,24 +2032,23 @@ jobs:
           Write-Host "Source rows   : 9,905,993"
           Write-Host "Feature rows  : 9,905,993"
           Write-Host ""
-
           Write-Host "[PASS] Git synchronization completed safely."
           Write-Host "[PASS] 290 KRW markets verified."
           Write-Host "[PASS] 870 OHLCV source files verified."
           Write-Host "[PASS] 870 Feature files verified."
           Write-Host "[PASS] Source/Feature row counts match."
           Write-Host "[PASS] Existing Feature foundation columns preserved."
-          Write-Host "[PASS] All 21 Clean V002 256 research features exist."
+          Write-Host "[PASS] All 21 Clean V002 256 research feature definitions exist."
           Write-Host "[PASS] Feature timestamps match source OHLCV."
           Write-Host "[PASS] No duplicate Feature timestamps detected."
           Write-Host "[PASS] Feature chronological order verified."
           Write-Host "[PASS] Feature market values verified."
+          Write-Host "[PASS] Short-history rolling warm-up handled correctly."
+          Write-Host "[PASS] Calculable V002 features contain usable values."
           Write-Host "[PASS] No infinite Clean V002 feature values."
-          Write-Host "[PASS] No empty Clean V002 feature columns."
           Write-Host "[PASS] 870 OHLCV SHA256 hashes remained unchanged."
           Write-Host "[PASS] Generated runtime data remains ignored by Git."
           Write-Host ""
-
           Write-Host "Safety:"
           Write-Host "Source OHLCV write     : DISABLED"
           Write-Host "Source OHLCV delete    : DISABLED"
@@ -2170,7 +2062,6 @@ jobs:
           Write-Host "Prediction             : DISABLED"
           Write-Host "Trading                : DISABLED"
           Write-Host ""
-
           Write-Host "============================================================"
           Write-Host "[RESULT] FEATURE FULL VALIDATION PASSED"
           Write-Host "[NEXT] 256 Detector full-market execution."
