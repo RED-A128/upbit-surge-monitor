@@ -11,7 +11,7 @@ Purpose:
     Feature CSV를 별도 생성한다.
 
 Clean V002 scope:
-    - data/ohlcv 기준 전체 KRW 마켓 자동 발견 및 처리
+    - 전체 KRW 마켓 자동 발견
     - h1 / h4 / d1 처리
     - 원본 OHLCV는 READ ONLY
     - Feature 데이터는 data/features/ 아래에 별도 저장
@@ -25,7 +25,7 @@ Clean V002 changes:
     - SMA 간 상대 이격도 Feature 추가
     - SMA 1봉 / 3봉 정규화 slope Feature 추가
     - 전체 KRW 마켓 자동 발견
-    - h1 / h4 / d1 마켓 집합 사전 일치 검증
+    - h1 / h4 / d1 마켓 집합 일치 검증
     - 256 신호 판정은 수행하지 않음
     - 미래 급등 결과 Label은 생성하지 않음
 
@@ -64,6 +64,7 @@ PROJECT_NAME = "Upbit Surge Monitor"
 VERSION = "Clean V002"
 
 BASE_DIR = Path(__file__).resolve().parent
+
 DATA_DIR = BASE_DIR / "data"
 
 OHLCV_DIR = DATA_DIR / "ohlcv"
@@ -79,13 +80,16 @@ D1_FEATURE_DIR = FEATURE_DIR / "d1"
 
 STATUS_FILE = DATA_DIR / "feature_build_status.csv"
 
-TARGET_MARKETS: list[str] = []
-
 TARGET_TIMEFRAMES = (
     "h1",
     "h4",
     "d1",
 )
+
+
+# ============================================================
+# TIMEFRAME CONFIG
+# ============================================================
 
 TIMEFRAMES = {
     "h1": {
@@ -104,7 +108,7 @@ TIMEFRAMES = {
 
 
 # ============================================================
-# SOURCE COLUMNS
+# SOURCE OHLCV COLUMNS
 # ============================================================
 
 SOURCE_COLUMNS = [
@@ -119,6 +123,11 @@ SOURCE_COLUMNS = [
     "volume",
     "trade_value",
 ]
+
+
+# ============================================================
+# NUMERIC SOURCE COLUMNS
+# ============================================================
 
 NUMERIC_SOURCE_COLUMNS = [
     "timestamp",
@@ -176,6 +185,11 @@ ATR_PERIOD = 14
 BB_PERIOD = 20
 BB_STD_MULTIPLIER = 2.0
 
+
+# ============================================================
+# 256 RESEARCH FEATURE CONFIG
+# ============================================================
+
 PRICE_POSITION_SMA_PERIODS = (
     5,
     20,
@@ -209,7 +223,7 @@ MA_SLOPE_LOOKBACKS = (
 
 
 # ============================================================
-# STATUS
+# STATUS COLUMNS
 # ============================================================
 
 STATUS_COLUMNS = [
@@ -245,10 +259,11 @@ def utc_now_iso() -> str:
 
 def ensure_directories() -> None:
     """
-    Feature 출력용 디렉터리만 생성한다.
+    Feature 출력 디렉터리만 생성한다.
 
-    OHLCV 원본 디렉터리는 생성하거나 수정하지 않는다.
+    OHLCV 원본 디렉터리를 생성하거나 수정하지 않는다.
     """
+
     directories = [
         DATA_DIR,
         FEATURE_DIR,
@@ -268,14 +283,24 @@ def safe_divide(
     numerator: pd.Series,
     denominator: pd.Series,
 ) -> pd.Series:
-    denominator_safe = denominator.replace(
-        0,
-        np.nan,
+    """
+    0으로 나누는 상황에서 inf가 발생하지 않도록
+    안전하게 나눈다.
+    """
+
+    denominator_safe = (
+        denominator.replace(
+            0,
+            np.nan,
+        )
     )
 
-    result = numerator / denominator_safe
+    result = (
+        numerator
+        / denominator_safe
+    )
 
-    return result.replace(
+    result = result.replace(
         [
             np.inf,
             -np.inf,
@@ -283,10 +308,19 @@ def safe_divide(
         np.nan,
     )
 
+    return result
+
 
 def calculate_file_sha256(
     file_path: Path,
 ) -> str:
+    """
+    파일 SHA256을 계산한다.
+
+    Feature 생성 전/후 원본 OHLCV 파일이
+    변경되지 않았는지 확인하기 위해 사용한다.
+    """
+
     sha256 = hashlib.sha256()
 
     with file_path.open("rb") as file:
@@ -298,9 +332,7 @@ def calculate_file_sha256(
             if not chunk:
                 break
 
-            sha256.update(
-                chunk
-            )
+            sha256.update(chunk)
 
     return sha256.hexdigest()
 
@@ -309,110 +341,155 @@ def calculate_file_sha256(
 # MARKET DISCOVERY
 # ============================================================
 
+def discover_markets_for_timeframe(
+    timeframe: str,
+) -> set[str]:
+
+    source_directory = (
+        TIMEFRAMES[
+            timeframe
+        ][
+            "source_directory"
+        ]
+    )
+
+    if not source_directory.exists():
+        raise RuntimeError(
+            "Source OHLCV directory does not exist: "
+            f"{source_directory}"
+        )
+
+    markets = {
+        path.stem
+        for path in source_directory.glob(
+            "KRW-*.csv"
+        )
+        if path.is_file()
+    }
+
+    if not markets:
+        raise RuntimeError(
+            "No KRW OHLCV CSV files found: "
+            f"{source_directory}"
+        )
+
+    return markets
+
+
 def discover_target_markets() -> list[str]:
     """
-    h1 / h4 / d1 OHLCV 폴더에서 전체 KRW 마켓을 발견한다.
+    h1 / h4 / d1의 KRW OHLCV 파일을 자동 발견한다.
 
-    세 타임프레임의 마켓 집합이 완전히 같지 않으면
-    Feature 생성을 시작하지 않는다.
+    세 타임프레임의 마켓 집합이 완전히 동일해야 한다.
+
+    하나라도 누락된 경우 전체 Feature 생성을 시작하지 않는다.
     """
 
-    market_sets: dict[
+    timeframe_markets: dict[
         str,
         set[str],
     ] = {}
 
     for timeframe in TARGET_TIMEFRAMES:
 
-        source_directory = TIMEFRAMES[
+        timeframe_markets[
             timeframe
-        ]["source_directory"]
-
-        if not source_directory.exists():
-            raise RuntimeError(
-                "Source OHLCV directory not found: "
-                f"{source_directory}"
+        ] = (
+            discover_markets_for_timeframe(
+                timeframe
             )
-
-        markets = {
-            file_path.stem
-            for file_path
-            in source_directory.glob(
-                "KRW-*.csv"
-            )
-            if file_path.is_file()
-        }
-
-        if not markets:
-            raise RuntimeError(
-                "No KRW OHLCV CSV files found: "
-                f"{source_directory}"
-            )
-
-        market_sets[
-            timeframe
-        ] = markets
-
-    reference_timeframe = TARGET_TIMEFRAMES[0]
-
-    reference_markets = market_sets[
-        reference_timeframe
-    ]
-
-    mismatch_messages: list[str] = []
-
-    for timeframe in TARGET_TIMEFRAMES[1:]:
-
-        current_markets = market_sets[
-            timeframe
-        ]
-
-        missing = sorted(
-            reference_markets
-            - current_markets
         )
 
-        extra = sorted(
-            current_markets
-            - reference_markets
+    h1_markets = timeframe_markets["h1"]
+    h4_markets = timeframe_markets["h4"]
+    d1_markets = timeframe_markets["d1"]
+
+    print(
+        "OHLCV market discovery:"
+    )
+
+    print(
+        f"  h1 : "
+        f"{len(h1_markets):,}"
+    )
+
+    print(
+        f"  h4 : "
+        f"{len(h4_markets):,}"
+    )
+
+    print(
+        f"  d1 : "
+        f"{len(d1_markets):,}"
+    )
+
+    if not (
+        h1_markets
+        == h4_markets
+        == d1_markets
+    ):
+
+        all_markets = (
+            h1_markets
+            | h4_markets
+            | d1_markets
         )
 
-        if missing or extra:
+        mismatch_lines: list[str] = []
 
-            mismatch_messages.append(
-                f"{timeframe}: "
-                f"missing={len(missing):,}, "
-                f"extra={len(extra):,}"
-            )
+        for market in sorted(
+            all_markets
+        ):
+
+            missing = []
+
+            if market not in h1_markets:
+                missing.append("h1")
+
+            if market not in h4_markets:
+                missing.append("h4")
+
+            if market not in d1_markets:
+                missing.append("d1")
 
             if missing:
-                mismatch_messages.append(
-                    "  missing sample: "
+                mismatch_lines.append(
+                    f"{market}: missing "
                     + ", ".join(
-                        missing[:10]
+                        missing
                     )
                 )
 
-            if extra:
-                mismatch_messages.append(
-                    "  extra sample: "
-                    + ", ".join(
-                        extra[:10]
-                    )
-                )
-
-    if mismatch_messages:
-        raise RuntimeError(
-            "KRW market sets differ between "
-            "h1 / h4 / d1.\n"
-            + "\n".join(
-                mismatch_messages
-            )
+        preview = "\n".join(
+            mismatch_lines[:30]
         )
 
-    return sorted(
-        reference_markets
+        if len(
+            mismatch_lines
+        ) > 30:
+
+            preview += (
+                "\n..."
+                f"\nAdditional mismatches: "
+                f"{len(mismatch_lines) - 30:,}"
+            )
+
+        raise RuntimeError(
+            "OHLCV market sets do not match "
+            "between h1 / h4 / d1.\n"
+            f"{preview}"
+        )
+
+    markets = sorted(
+        h1_markets
     )
+
+    if not markets:
+        raise RuntimeError(
+            "No common KRW markets discovered."
+        )
+
+    return markets
 
 
 # ============================================================
@@ -423,26 +500,36 @@ def load_source_ohlcv(
     file_path: Path,
     expected_market: str,
 ) -> pd.DataFrame:
+    """
+    원본 OHLCV CSV를 읽고 기본 무결성을 검사한다.
+
+    중요:
+        이 함수는 원본 파일을 수정하지 않는다.
+    """
 
     if not file_path.exists():
+
         raise FileNotFoundError(
             f"Source OHLCV CSV not found: "
             f"{file_path}"
         )
 
     try:
+
         df = pd.read_csv(
             file_path,
             encoding="utf-8-sig",
         )
 
     except pd.errors.EmptyDataError as exc:
+
         raise RuntimeError(
             f"Source OHLCV CSV is empty: "
             f"{file_path}"
         ) from exc
 
     if df.empty:
+
         raise RuntimeError(
             f"Source OHLCV contains no rows: "
             f"{file_path}"
@@ -455,11 +542,10 @@ def load_source_ohlcv(
     ]
 
     if missing_columns:
+
         raise RuntimeError(
             "Source OHLCV is missing required columns: "
-            + ", ".join(
-                missing_columns
-            )
+            + ", ".join(missing_columns)
         )
 
     df = df[
@@ -476,6 +562,7 @@ def load_source_ohlcv(
     )
 
     if not market_values:
+
         raise RuntimeError(
             "Source OHLCV contains no market value."
         )
@@ -487,6 +574,7 @@ def load_source_ohlcv(
     ]
 
     if unexpected_markets:
+
         raise RuntimeError(
             f"Unexpected market values in "
             f"{file_path.name}: "
@@ -496,9 +584,7 @@ def load_source_ohlcv(
     df[
         "candle_date_time_utc"
     ] = pd.to_datetime(
-        df[
-            "candle_date_time_utc"
-        ],
+        df["candle_date_time_utc"],
         utc=True,
         errors="coerce",
     )
@@ -510,8 +596,9 @@ def load_source_ohlcv(
     )
 
     if invalid_time_rows > 0:
+
         raise RuntimeError(
-            "Invalid candle_date_time_utc rows: "
+            f"Invalid candle_date_time_utc rows: "
             f"{invalid_time_rows:,}"
         )
 
@@ -534,35 +621,53 @@ def load_source_ohlcv(
     for column in critical_numeric_columns:
 
         invalid_count = int(
-            df[column]
-            .isna()
-            .sum()
+            df[column].isna().sum()
         )
 
         if invalid_count > 0:
+
             raise RuntimeError(
                 f"Invalid numeric values in "
                 f"{column}: "
                 f"{invalid_count:,}"
             )
 
-    for column in (
-        "open",
-        "high",
-        "low",
-        "close",
-    ):
-        if (
-            df[column] <= 0
-        ).any():
-            raise RuntimeError(
-                f"Source OHLCV contains "
-                f"{column} <= 0."
-            )
+    if (
+        df["open"] <= 0
+    ).any():
+
+        raise RuntimeError(
+            "Source OHLCV contains open <= 0."
+        )
+
+    if (
+        df["high"] <= 0
+    ).any():
+
+        raise RuntimeError(
+            "Source OHLCV contains high <= 0."
+        )
+
+    if (
+        df["low"] <= 0
+    ).any():
+
+        raise RuntimeError(
+            "Source OHLCV contains low <= 0."
+        )
+
+    if (
+        df["close"] <= 0
+    ).any():
+
+        raise RuntimeError(
+            "Source OHLCV contains close <= 0."
+        )
 
     if (
         df["volume"] < 0
     ).any():
+
         raise RuntimeError(
             "Source OHLCV contains volume < 0."
         )
@@ -570,6 +675,7 @@ def load_source_ohlcv(
     if (
         df["trade_value"] < 0
     ).any():
+
         raise RuntimeError(
             "Source OHLCV contains trade_value < 0."
         )
@@ -580,13 +686,12 @@ def load_source_ohlcv(
             "close",
             "low",
         ]
-    ].max(
-        axis=1
-    )
+    ].max(axis=1)
 
     if (
         df["high"] < price_max
     ).any():
+
         raise RuntimeError(
             "Source OHLCV contains invalid "
             "high price relationship."
@@ -598,13 +703,12 @@ def load_source_ohlcv(
             "close",
             "high",
         ]
-    ].min(
-        axis=1
-    )
+    ].min(axis=1)
 
     if (
         df["low"] > price_min
     ).any():
+
         raise RuntimeError(
             "Source OHLCV contains invalid "
             "low price relationship."
@@ -620,23 +724,25 @@ def load_source_ohlcv(
     )
 
     if duplicate_count > 0:
+
         raise RuntimeError(
-            "Duplicate UTC candle timestamps detected: "
+            f"Duplicate UTC candle timestamps "
+            f"detected: "
             f"{duplicate_count:,}"
         )
 
-    df = (
-        df.sort_values(
-            "candle_date_time_utc"
-        )
-        .reset_index(
-            drop=True
-        )
+    df = df.sort_values(
+        "candle_date_time_utc"
+    )
+
+    df = df.reset_index(
+        drop=True
     )
 
     if not df[
         "candle_date_time_utc"
     ].is_monotonic_increasing:
+
         raise RuntimeError(
             "Source OHLCV time order is invalid."
         )
@@ -645,7 +751,7 @@ def load_source_ohlcv(
 
 
 # ============================================================
-# RETURN
+# RETURN FEATURES
 # ============================================================
 
 def add_return_features(
@@ -667,7 +773,7 @@ def add_return_features(
 
 
 # ============================================================
-# MOVING AVERAGE
+# MOVING AVERAGE FEATURES
 # ============================================================
 
 def add_moving_average_features(
@@ -705,6 +811,12 @@ def add_moving_average_features(
 def add_rsi_feature(
     df: pd.DataFrame,
 ) -> pd.DataFrame:
+    """
+    Wilder-style RSI 14.
+
+    현재 및 과거 close만 사용한다.
+    미래 데이터는 사용하지 않는다.
+    """
 
     delta = df[
         "close"
@@ -714,8 +826,10 @@ def add_rsi_feature(
         lower=0.0
     )
 
-    loss = -delta.clip(
-        upper=0.0
+    loss = (
+        -delta.clip(
+            upper=0.0
+        )
     )
 
     alpha = (
@@ -855,9 +969,7 @@ def add_atr_feature(
             true_range_3,
         ],
         axis=1,
-    ).max(
-        axis=1
-    )
+    ).max(axis=1)
 
     atr = true_range.ewm(
         alpha=(
@@ -940,16 +1052,14 @@ def add_bollinger_features(
 
 
 # ============================================================
-# VOLUME
+# VOLUME FEATURES
 # ============================================================
 
 def add_volume_features(
     df: pd.DataFrame,
 ) -> pd.DataFrame:
 
-    volume = df[
-        "volume"
-    ]
+    volume = df["volume"]
 
     for period in VOLUME_SMA_PERIODS:
 
@@ -973,7 +1083,7 @@ def add_volume_features(
 
 
 # ============================================================
-# CANDLE
+# CANDLE FEATURES
 # ============================================================
 
 def add_candle_features(
@@ -1005,9 +1115,7 @@ def add_candle_features(
             close_price,
         ],
         axis=1,
-    ).max(
-        axis=1
-    )
+    ).max(axis=1)
 
     lower_body_price = pd.concat(
         [
@@ -1015,9 +1123,7 @@ def add_candle_features(
             close_price,
         ],
         axis=1,
-    ).min(
-        axis=1
-    )
+    ).min(axis=1)
 
     upper_wick = (
         high_price
@@ -1083,24 +1189,20 @@ def add_candle_features(
     ] = (
         close_price
         > open_price
-    ).astype(
-        "int8"
-    )
+    ).astype("int8")
 
     df[
         "is_bearish"
     ] = (
         close_price
         < open_price
-    ).astype(
-        "int8"
-    )
+    ).astype("int8")
 
     return df
 
 
 # ============================================================
-# TRADE VALUE
+# TRADE VALUE FEATURES
 # ============================================================
 
 def add_trade_value_features(
@@ -1151,16 +1253,14 @@ def add_trade_value_features(
 
 
 # ============================================================
-# PRICE POSITION
+# PRICE POSITION FEATURES
 # ============================================================
 
 def add_price_position_features(
     df: pd.DataFrame,
 ) -> pd.DataFrame:
 
-    close = df[
-        "close"
-    ]
+    close = df["close"]
 
     for period in PRICE_POSITION_SMA_PERIODS:
 
@@ -1169,6 +1269,7 @@ def add_price_position_features(
         )
 
         if column_name not in df.columns:
+
             raise RuntimeError(
                 "Required SMA column does not exist "
                 "for price-position feature: "
@@ -1189,7 +1290,7 @@ def add_price_position_features(
 
 
 # ============================================================
-# 256 RESEARCH - MA DISTANCE
+# 256 RESEARCH - MOVING AVERAGE DISTANCE
 # ============================================================
 
 def add_ma_distance_features(
@@ -1210,12 +1311,14 @@ def add_ma_distance_features(
         )
 
         if short_column not in df.columns:
+
             raise RuntimeError(
                 "Required SMA column does not exist: "
                 f"{short_column}"
             )
 
         if long_column not in df.columns:
+
             raise RuntimeError(
                 "Required SMA column does not exist: "
                 f"{long_column}"
@@ -1240,7 +1343,7 @@ def add_ma_distance_features(
 
 
 # ============================================================
-# 256 RESEARCH - MA SLOPE
+# 256 RESEARCH - MOVING AVERAGE SLOPE
 # ============================================================
 
 def add_ma_slope_features(
@@ -1254,6 +1357,7 @@ def add_ma_slope_features(
         )
 
         if sma_column not in df.columns:
+
             raise RuntimeError(
                 "Required SMA column does not exist "
                 "for slope feature: "
@@ -1291,16 +1395,14 @@ def add_ma_slope_features(
 
 
 # ============================================================
-# RECENT HIGH / LOW
+# RECENT HIGH / LOW FEATURES
 # ============================================================
 
 def add_recent_range_features(
     df: pd.DataFrame,
 ) -> pd.DataFrame:
 
-    close = df[
-        "close"
-    ]
+    close = df["close"]
 
     for period in (
         20,
@@ -1308,21 +1410,17 @@ def add_recent_range_features(
     ):
 
         rolling_high = (
-            df["high"]
-            .rolling(
+            df["high"].rolling(
                 window=period,
                 min_periods=period,
-            )
-            .max()
+            ).max()
         )
 
         rolling_low = (
-            df["low"]
-            .rolling(
+            df["low"].rolling(
                 window=period,
                 min_periods=period,
-            )
-            .min()
+            ).min()
         )
 
         df[
@@ -1453,8 +1551,8 @@ def get_required_feature_columns() -> list[str]:
         "sma_10",
         "sma_20",
         "sma_60",
-        "sma_112",
         "sma_120",
+        "sma_112",
         "sma_224",
 
         "ema_5",
@@ -1547,15 +1645,13 @@ def validate_feature_dataframe(
 ) -> None:
 
     if feature_df.empty:
+
         raise RuntimeError(
             "Generated feature DataFrame is empty."
         )
 
-    if len(
-        feature_df
-    ) != len(
-        source_df
-    ):
+    if len(feature_df) != len(source_df):
+
         raise RuntimeError(
             "Feature row count changed unexpectedly: "
             f"source={len(source_df):,}, "
@@ -1569,6 +1665,7 @@ def validate_feature_dataframe(
     ]
 
     if missing_source_columns:
+
         raise RuntimeError(
             "Generated feature data is missing "
             "source columns: "
@@ -1588,6 +1685,7 @@ def validate_feature_dataframe(
     ]
 
     if missing_features:
+
         raise RuntimeError(
             "Generated feature data is missing "
             "required features: "
@@ -1608,6 +1706,7 @@ def validate_feature_dataframe(
     if market_values != [
         expected_market
     ]:
+
         raise RuntimeError(
             "Generated feature data contains "
             "unexpected market values: "
@@ -1624,6 +1723,7 @@ def validate_feature_dataframe(
     )
 
     if duplicate_count > 0:
+
         raise RuntimeError(
             "Generated feature data contains "
             "duplicate UTC timestamps: "
@@ -1633,6 +1733,7 @@ def validate_feature_dataframe(
     if not feature_df[
         "candle_date_time_utc"
     ].is_monotonic_increasing:
+
         raise RuntimeError(
             "Generated feature data is not "
             "sorted by UTC timestamp."
@@ -1642,16 +1743,12 @@ def validate_feature_dataframe(
 
         source_series = (
             source_df[column]
-            .reset_index(
-                drop=True
-            )
+            .reset_index(drop=True)
         )
 
         feature_series = (
             feature_df[column]
-            .reset_index(
-                drop=True
-            )
+            .reset_index(drop=True)
         )
 
         if column == "candle_date_time_utc":
@@ -1671,6 +1768,7 @@ def validate_feature_dataframe(
             if not source_values.equals(
                 feature_values
             ):
+
                 raise RuntimeError(
                     "Source UTC timestamps changed "
                     "during feature generation."
@@ -1697,6 +1795,7 @@ def validate_feature_dataframe(
                 feature_values,
                 equal_nan=True,
             ):
+
                 raise RuntimeError(
                     "Source numeric column changed "
                     "during feature generation: "
@@ -1721,6 +1820,7 @@ def validate_feature_dataframe(
                 source_values
                 != feature_values
             ):
+
                 raise RuntimeError(
                     "Source column changed during "
                     "feature generation: "
@@ -1744,6 +1844,7 @@ def validate_feature_dataframe(
     if np.isinf(
         numeric_values
     ).any():
+
         raise RuntimeError(
             "Generated feature data contains "
             "infinite numeric values."
@@ -1803,6 +1904,7 @@ def save_feature_dataframe(
     finally:
 
         if temporary_file.exists():
+
             temporary_file.unlink(
                 missing_ok=True
             )
@@ -1837,8 +1939,12 @@ def append_feature_status(
         "status": status,
         "source_rows": source_rows,
         "feature_rows": feature_rows,
-        "source_sha256_before": source_sha256_before,
-        "source_sha256_after": source_sha256_after,
+        "source_sha256_before": (
+            source_sha256_before
+        ),
+        "source_sha256_after": (
+            source_sha256_after
+        ),
         "message": message,
     }
 
@@ -1863,7 +1969,7 @@ def append_feature_status(
 
 
 # ============================================================
-# SINGLE FEATURE JOB
+# SINGLE JOB
 # ============================================================
 
 def build_single_feature_file(
@@ -1872,22 +1978,29 @@ def build_single_feature_file(
 ) -> dict[str, Any]:
 
     if timeframe not in TIMEFRAMES:
+
         raise ValueError(
             f"Unsupported timeframe: "
             f"{timeframe}"
         )
 
-    timeframe_config = TIMEFRAMES[
-        timeframe
-    ]
+    timeframe_config = (
+        TIMEFRAMES[
+            timeframe
+        ]
+    )
 
-    source_directory = timeframe_config[
-        "source_directory"
-    ]
+    source_directory = (
+        timeframe_config[
+            "source_directory"
+        ]
+    )
 
-    feature_directory = timeframe_config[
-        "feature_directory"
-    ]
+    feature_directory = (
+        timeframe_config[
+            "feature_directory"
+        ]
+    )
 
     source_file = (
         source_directory
@@ -1925,9 +2038,7 @@ def build_single_feature_file(
     source_sha256_before = ""
     source_sha256_after = ""
 
-    started = (
-        time.perf_counter()
-    )
+    started = time.perf_counter()
 
     try:
 
@@ -1979,6 +2090,7 @@ def build_single_feature_file(
             source_sha256_mid
             != source_sha256_before
         ):
+
             raise RuntimeError(
                 "Source OHLCV changed while "
                 "features were being built."
@@ -1997,6 +2109,7 @@ def build_single_feature_file(
         if len(
             saved_df
         ) != feature_rows:
+
             raise RuntimeError(
                 "Saved feature row count mismatch: "
                 f"expected={feature_rows:,}, "
@@ -2013,6 +2126,7 @@ def build_single_feature_file(
             source_sha256_after
             != source_sha256_before
         ):
+
             raise RuntimeError(
                 "Source OHLCV file was modified "
                 "during feature generation."
@@ -2034,8 +2148,12 @@ def build_single_feature_file(
             status="PASSED",
             source_rows=source_rows,
             feature_rows=feature_rows,
-            source_sha256_before=source_sha256_before,
-            source_sha256_after=source_sha256_after,
+            source_sha256_before=(
+                source_sha256_before
+            ),
+            source_sha256_after=(
+                source_sha256_after
+            ),
             message=message,
         )
 
@@ -2070,6 +2188,7 @@ def build_single_feature_file(
         try:
 
             if source_file.exists():
+
                 source_sha256_after = (
                     calculate_file_sha256(
                         source_file
@@ -2077,6 +2196,7 @@ def build_single_feature_file(
                 )
 
         except Exception:
+
             source_sha256_after = (
                 "HASH_CHECK_FAILED"
             )
@@ -2091,8 +2211,12 @@ def build_single_feature_file(
             status="FAILED",
             source_rows=source_rows,
             feature_rows=feature_rows,
-            source_sha256_before=source_sha256_before,
-            source_sha256_after=source_sha256_after,
+            source_sha256_before=(
+                source_sha256_before
+            ),
+            source_sha256_after=(
+                source_sha256_after
+            ),
             message=message,
         )
 
@@ -2119,9 +2243,8 @@ def build_single_feature_file(
 # ============================================================
 
 def print_summary(
-    results: list[
-        dict[str, Any]
-    ],
+    results: list[dict[str, Any]],
+    target_markets: list[str],
 ) -> None:
 
     print()
@@ -2183,7 +2306,7 @@ def print_summary(
 
     print(
         f"Markets       : "
-        f"{len(TARGET_MARKETS):,}"
+        f"{len(target_markets):,}"
     )
 
     print(
@@ -2262,17 +2385,27 @@ def print_summary(
 
     print()
 
-    for result in results:
+    if failed_jobs > 0:
 
         print(
-            f"[{result['status']}] "
-            f"{result['market']} "
-            f"{result['timeframe']} "
-            f"source="
-            f"{result['source_rows']:,} "
-            f"feature="
-            f"{result['feature_rows']:,}"
+            "Failed jobs:"
         )
+
+        for result in results:
+
+            if result[
+                "status"
+            ] != "FAILED":
+                continue
+
+            print(
+                f"  [FAILED] "
+                f"{result['market']} "
+                f"{result['timeframe']} "
+                f"- {result['message']}"
+            )
+
+        print()
 
     print_line()
 
@@ -2378,20 +2511,20 @@ def main() -> int:
 
     ensure_directories()
 
-    global TARGET_MARKETS
-
-    TARGET_MARKETS = (
+    target_markets = (
         discover_target_markets()
     )
 
     planned_jobs = (
-        len(TARGET_MARKETS)
+        len(target_markets)
         * len(TARGET_TIMEFRAMES)
     )
 
+    print()
+
     print(
         f"Discovered KRW markets : "
-        f"{len(TARGET_MARKETS):,}"
+        f"{len(target_markets):,}"
     )
 
     print(
@@ -2401,46 +2534,32 @@ def main() -> int:
 
     print()
 
-    if len(
-        TARGET_MARKETS
-    ) == 0:
-        raise RuntimeError(
-            "No target markets discovered."
-        )
-
     results: list[
         dict[str, Any]
     ] = []
 
-    total_market_count = len(
-        TARGET_MARKETS
+    total_markets = len(
+        target_markets
     )
 
     current_job = 0
 
     for market_index, market in enumerate(
-        TARGET_MARKETS,
+        target_markets,
         start=1,
     ):
 
-        print()
-        print_line(
-            "=",
-            72,
-        )
+        print_line()
 
         print(
             f"MARKET "
             f"{market_index:,}"
             f"/"
-            f"{total_market_count:,} "
+            f"{total_markets:,} "
             f"{market}"
         )
 
-        print_line(
-            "=",
-            72,
-        )
+        print_line()
 
         for timeframe in TARGET_TIMEFRAMES:
 
@@ -2464,8 +2583,11 @@ def main() -> int:
                 result
             )
 
+        print()
+
     print_summary(
-        results
+        results=results,
+        target_markets=target_markets,
     )
 
     failed_jobs = [
@@ -2476,33 +2598,17 @@ def main() -> int:
         ] != "PASSED"
     ]
 
-    total_elapsed = (
+    elapsed = (
         time.perf_counter()
         - total_started
     )
 
     print(
-        f"Total elapsed : "
-        f"{total_elapsed:.2f}s"
+        f"Elapsed total : "
+        f"{elapsed:.2f}s"
     )
 
     if failed_jobs:
-
-        print()
-
-        print(
-            "[FAILED JOBS]"
-        )
-
-        for result in failed_jobs:
-
-            print(
-                f"  {result['market']} "
-                f"{result['timeframe']} : "
-                f"{result['message']}"
-            )
-
-        print()
 
         print(
             "[RESULT] FEATURE BUILD FAILED"
@@ -2511,12 +2617,35 @@ def main() -> int:
         print(
             f"[FAIL] "
             f"{len(failed_jobs):,} / "
-            f"{len(results):,} jobs failed."
+            f"{planned_jobs:,} jobs failed."
         )
 
         return 1
 
-    print()
+    if len(
+        results
+    ) != planned_jobs:
+
+        print(
+            "[RESULT] FEATURE BUILD FAILED"
+        )
+
+        print(
+            "[FAIL] Unexpected completed "
+            "job count."
+        )
+
+        print(
+            f"Expected : "
+            f"{planned_jobs:,}"
+        )
+
+        print(
+            f"Actual   : "
+            f"{len(results):,}"
+        )
+
+        return 1
 
     print(
         "[RESULT] FEATURE BUILD PASSED"
@@ -2535,7 +2664,7 @@ def main() -> int:
     print(
         f"[PASS] "
         f"{len(results):,} / "
-        f"{len(results):,} jobs passed."
+        f"{planned_jobs:,} jobs passed."
     )
 
     print(
