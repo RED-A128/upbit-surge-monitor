@@ -1,53 +1,44 @@
 # ============================================================
 # Upbit Surge Monitor
-# Clean V001
+# 256 Detector Full KRW Market Test - Clean V002
 #
-# detect_256_test.yml
+# File:
+#   .github/workflows/detect_256_test.yml
 #
-# Purpose
-# ------------------------------------------------------------
-# Test detect_256.py safely against the existing local
-# KRW-BTC OHLCV history stored on the self-hosted Windows PC.
+# Purpose:
+#   Run detect_256.py Clean V002 against the COMPLETE
+#   KRW feature dataset already generated and validated.
 #
-# IMPORTANT
-# ------------------------------------------------------------
-# Actual local data structure:
+# Current validated foundation:
 #
-#   data/
-#     ohlcv/
-#       h1/
-#         KRW-BTC.csv
-#       h4/
-#         KRW-BTC.csv
-#       d1/
-#         KRW-BTC.csv
+#   KRW markets : 290
+#   Timeframes  : h1 / h4 / d1
+#   Feature jobs: 870
 #
-#     features/
-#       h1/
-#         KRW-BTC.csv
-#       h4/
-#         KRW-BTC.csv
-#       d1/
-#         KRW-BTC.csv
+# IMPORTANT:
 #
-# This workflow:
+#   - Does NOT rebuild features.
+#   - Does NOT modify OHLCV.
+#   - Does NOT modify Feature CSV files.
+#   - Does NOT create future-result labels.
+#   - Does NOT perform prediction.
+#   - Does NOT perform trading.
+#   - Does NOT run git reset.
+#   - Does NOT run git clean.
+#   - Does NOT commit.
+#   - Does NOT push.
 #
-#   1. Uses the existing local OHLCV data.
-#   2. Does NOT delete existing OHLCV data.
-#   3. Does NOT move existing OHLCV data.
-#   4. Does NOT reset the Git repository.
-#   5. Does NOT run git clean.
-#   6. Does NOT automatically commit or push.
-#   7. Verifies OHLCV SHA256 before/after the test.
-#   8. Builds Clean V002 features.
-#   9. Runs the Clean V001 256 detector.
-#  10. Verifies detector outputs.
+# Expected detector output:
 #
-# Trading is NOT performed.
+#   data/signals/256/h1/*.csv
+#   data/signals/256/h4/*.csv
+#   data/signals/256/d1/*.csv
+#
+#   data/detect_256_status.csv
 #
 # ============================================================
 
-name: 256 Detector Test
+name: Full KRW 256 Detector Clean V002
 
 
 # ============================================================
@@ -67,11 +58,11 @@ permissions:
 
 
 # ============================================================
-# 3. Prevent duplicate test execution
+# 3. Prevent duplicate detector execution
 # ============================================================
 
 concurrency:
-  group: detect-256-test
+  group: full-krw-detect-256-v002
   cancel-in-progress: false
 
 
@@ -81,7 +72,9 @@ concurrency:
 
 env:
   PROJECT_DIR: C:\Users\USER\Documents\upbit-surge-monitor
-  TEST_MARKET: KRW-BTC
+  EXPECTED_MARKETS: "290"
+  EXPECTED_TIMEFRAMES: "3"
+  EXPECTED_JOBS: "870"
 
 
 # ============================================================
@@ -90,65 +83,66 @@ env:
 
 jobs:
 
-  detect-256-test:
+  detect-256-full:
 
-    name: KRW-BTC 256 Detector Test
+    name: Full KRW 256 Detector Clean V002
 
     runs-on:
       - self-hosted
       - Windows
 
-    timeout-minutes: 30
+    timeout-minutes: 120
 
-
-    # ========================================================
-    # Steps
-    # ========================================================
 
     steps:
 
 
       # ======================================================
       # STEP 1
-      # Show environment
+      # Show execution environment
       # ======================================================
 
-      - name: Show test environment
+      - name: Show detector environment
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
           Write-Host ""
           Write-Host "============================================================"
-          Write-Host "UPBIT SURGE MONITOR - 256 DETECTOR TEST"
+          Write-Host "UPBIT SURGE MONITOR"
+          Write-Host "FULL KRW 256 DETECTOR - CLEAN V002"
           Write-Host "============================================================"
           Write-Host ""
 
-          Write-Host "Project directory:"
-          Write-Host "${{ env.PROJECT_DIR }}"
-
+          Write-Host "Project directory : ${{ env.PROJECT_DIR }}"
+          Write-Host "Expected markets  : ${{ env.EXPECTED_MARKETS }}"
+          Write-Host "Timeframes        : h1 / h4 / d1"
+          Write-Host "Expected jobs     : ${{ env.EXPECTED_JOBS }}"
           Write-Host ""
-          Write-Host "Test market:"
-          Write-Host "${{ env.TEST_MARKET }}"
 
+          Write-Host "Runner            : $env:RUNNER_NAME"
+          Write-Host "OS                : $env:RUNNER_OS"
           Write-Host ""
-          Write-Host "Runner:"
-          Write-Host "$env:RUNNER_NAME"
 
+          Write-Host "Execution mode:"
+          Write-Host "  Full KRW market detector"
+          Write-Host "  Existing Feature CSV READ ONLY"
+          Write-Host "  h1 / h4 / d1"
           Write-Host ""
-          Write-Host "OS:"
-          Write-Host "$env:RUNNER_OS"
 
-          Write-Host ""
           Write-Host "Safety:"
-          Write-Host "Existing OHLCV deletion : DISABLED"
-          Write-Host "Git reset --hard        : DISABLED"
-          Write-Host "Git clean               : DISABLED"
-          Write-Host "Automatic Git commit    : DISABLED"
-          Write-Host "Automatic Git push      : DISABLED"
-          Write-Host "Trading                 : DISABLED"
-
+          Write-Host "  Feature regeneration : DISABLED"
+          Write-Host "  OHLCV modification   : DISABLED"
+          Write-Host "  Feature modification : DISABLED"
+          Write-Host "  Future labels        : DISABLED"
+          Write-Host "  Prediction           : DISABLED"
+          Write-Host "  Trading              : DISABLED"
+          Write-Host "  Git reset --hard     : DISABLED"
+          Write-Host "  Git clean            : DISABLED"
+          Write-Host "  Automatic commit     : DISABLED"
+          Write-Host "  Automatic push       : DISABLED"
           Write-Host ""
+
           Write-Host "============================================================"
 
 
@@ -164,28 +158,62 @@ jobs:
 
           $project = "${{ env.PROJECT_DIR }}"
 
-          Write-Host ""
-          Write-Host "Checking project directory..."
-          Write-Host $project
-          Write-Host ""
-
           if (-not (Test-Path $project)) {
+
+              Write-Host ""
               Write-Host "[FAIL] Project directory does not exist:"
-              Write-Host $project
+              Write-Host "       $project"
+
               exit 1
           }
 
           Set-Location $project
 
+          Write-Host ""
           Write-Host "[PASS] Project directory exists."
           Write-Host ""
 
-          Write-Host "Current directory:"
           Get-Location
 
 
       # ======================================================
       # STEP 3
+      # Synchronize repository
+      #
+      # Runtime data is ignored by Git.
+      # No reset / clean is used.
+      # ======================================================
+
+      - name: Synchronize local repository
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Set-Location "${{ env.PROJECT_DIR }}"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "SYNCHRONIZE LOCAL REPOSITORY"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          git pull --ff-only origin main
+
+          if ($LASTEXITCODE -ne 0) {
+
+              Write-Host ""
+              Write-Host "[FAIL] git pull failed."
+              Write-Host "[STOP] Detector will not run."
+
+              exit 1
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Local repository synchronized."
+
+
+      # ======================================================
+      # STEP 4
       # Verify Python
       # ======================================================
 
@@ -203,7 +231,10 @@ jobs:
           py --version
 
           if ($LASTEXITCODE -ne 0) {
-              Write-Host "[FAIL] Python launcher 'py' is not available."
+
+              Write-Host ""
+              Write-Host "[FAIL] Python launcher 'py' is unavailable."
+
               exit 1
           }
 
@@ -212,11 +243,11 @@ jobs:
 
 
       # ======================================================
-      # STEP 4
-      # Verify required source files
+      # STEP 5
+      # Verify detector source
       # ======================================================
 
-      - name: Verify required project files
+      - name: Verify detect_256.py
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
@@ -224,63 +255,59 @@ jobs:
           $project = "${{ env.PROJECT_DIR }}"
           Set-Location $project
 
+          $detector = Join-Path $project "detect_256.py"
+
           Write-Host ""
-          Write-Host "Checking required project files..."
+          Write-Host "============================================================"
+          Write-Host "VERIFY DETECTOR SOURCE"
+          Write-Host "============================================================"
           Write-Host ""
 
-          $requiredFiles = @(
-              "build_features.py",
-              "detect_256.py",
-              "requirements.txt"
-          )
+          if (-not (Test-Path $detector)) {
 
-          $failed = $false
-
-          foreach ($file in $requiredFiles) {
-
-              $path = Join-Path $project $file
-
-              if (Test-Path $path) {
-
-                  Write-Host "[PASS] $file"
-
-              }
-              else {
-
-                  Write-Host "[FAIL] Missing required file:"
-                  Write-Host "       $path"
-
-                  $failed = $true
-              }
-          }
-
-          if ($failed) {
+              Write-Host "[FAIL] detect_256.py does not exist."
               exit 1
           }
 
-          Write-Host ""
-          Write-Host "[PASS] Required project files verified."
+          $info = Get-Item $detector
+
+          if ($info.Length -le 0) {
+
+              Write-Host "[FAIL] detect_256.py is empty."
+              exit 1
+          }
+
+          Write-Host "[PASS] detect_256.py exists."
+          Write-Host "       Size: $($info.Length) bytes"
 
 
       # ======================================================
-      # STEP 5
-      # Install dependencies
+      # STEP 6
+      # Install / verify dependencies
       # ======================================================
 
-      - name: Install dependencies
+      - name: Verify Python dependencies
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
           Set-Location "${{ env.PROJECT_DIR }}"
 
+          if (-not (Test-Path "requirements.txt")) {
+
+              Write-Host ""
+              Write-Host "[FAIL] requirements.txt is missing."
+              exit 1
+          }
+
           Write-Host ""
-          Write-Host "Installing/verifying Python dependencies..."
+          Write-Host "Installing/verifying dependencies..."
           Write-Host ""
 
           py -m pip install -r requirements.txt
 
           if ($LASTEXITCODE -ne 0) {
+
               Write-Host ""
               Write-Host "[FAIL] Dependency installation failed."
               exit 1
@@ -291,206 +318,338 @@ jobs:
 
 
       # ======================================================
-      # STEP 6
-      # Verify actual local OHLCV directories
-      #
-      # Actual local structure:
-      #
-      #   data/ohlcv/h1/
-      #   data/ohlcv/h4/
-      #   data/ohlcv/d1/
-      #
-      # ======================================================
-
-      - name: Verify local OHLCV directories
-        shell: powershell
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          $project = "${{ env.PROJECT_DIR }}"
-          Set-Location $project
-
-          Write-Host ""
-          Write-Host "============================================================"
-          Write-Host "VERIFY ACTUAL LOCAL OHLCV DIRECTORY STRUCTURE"
-          Write-Host "============================================================"
-          Write-Host ""
-
-          $directories = @(
-              "data\ohlcv\h1",
-              "data\ohlcv\h4",
-              "data\ohlcv\d1"
-          )
-
-          $failed = $false
-
-          foreach ($relativePath in $directories) {
-
-              $fullPath = Join-Path $project $relativePath
-
-              if (Test-Path $fullPath) {
-
-                  Write-Host "[PASS] Directory exists:"
-                  Write-Host "       $relativePath"
-
-              }
-              else {
-
-                  Write-Host "[FAIL] Missing directory:"
-                  Write-Host "       $relativePath"
-
-                  $failed = $true
-              }
-          }
-
-          if ($failed) {
-
-              Write-Host ""
-              Write-Host "[FAIL] Required OHLCV directory structure is incomplete."
-              exit 1
-          }
-
-          Write-Host ""
-          Write-Host "[PASS] Actual local OHLCV directory structure verified."
-
-
-      # ======================================================
       # STEP 7
-      # Verify KRW-BTC OHLCV input files
+      # Verify complete Feature directory structure
       # ======================================================
 
-      - name: Verify KRW-BTC OHLCV input files
+      - name: Verify full feature directories
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
           $project = "${{ env.PROJECT_DIR }}"
-          $market = "${{ env.TEST_MARKET }}"
-
           Set-Location $project
 
           Write-Host ""
           Write-Host "============================================================"
-          Write-Host "VERIFY KRW-BTC OHLCV INPUT FILES"
+          Write-Host "VERIFY FULL FEATURE DIRECTORY STRUCTURE"
           Write-Host "============================================================"
           Write-Host ""
 
-          $files = @(
-              "data\ohlcv\h1\$market.csv",
-              "data\ohlcv\h4\$market.csv",
-              "data\ohlcv\d1\$market.csv"
+          $timeframes = @(
+              "h1",
+              "h4",
+              "d1"
           )
 
           $failed = $false
 
-          foreach ($relativePath in $files) {
+          foreach ($tf in $timeframes) {
 
-              $fullPath = Join-Path $project $relativePath
+              $path = Join-Path $project "data\features\$tf"
 
-              if (-not (Test-Path $fullPath)) {
+              if (-not (Test-Path $path)) {
 
-                  Write-Host "[FAIL] Missing OHLCV file:"
-                  Write-Host "       $relativePath"
-
-                  $failed = $true
-                  continue
-              }
-
-              $fileInfo = Get-Item $fullPath
-
-              if ($fileInfo.Length -le 0) {
-
-                  Write-Host "[FAIL] OHLCV file is empty:"
-                  Write-Host "       $relativePath"
+                  Write-Host "[FAIL] Missing feature directory:"
+                  Write-Host "       data\features\$tf"
 
                   $failed = $true
                   continue
               }
 
-              Write-Host "[PASS] $relativePath"
-              Write-Host "       Size: $($fileInfo.Length) bytes"
-              Write-Host "       LastWriteTime: $($fileInfo.LastWriteTime)"
+              Write-Host "[PASS] data\features\$tf"
           }
 
           if ($failed) {
 
               Write-Host ""
-              Write-Host "[FAIL] KRW-BTC OHLCV verification failed."
+              Write-Host "[FAIL] Feature directory verification failed."
               exit 1
           }
 
           Write-Host ""
-          Write-Host "[PASS] KRW-BTC OHLCV files verified."
+          Write-Host "[PASS] Feature directory structure verified."
 
 
       # ======================================================
       # STEP 8
-      # Save OHLCV SHA256 before feature/detector test
+      # Verify full market file set
       #
-      # This protects the original accumulated OHLCV data.
+      # Requirements:
+      #
+      #   h1 = 290
+      #   h4 = 290
+      #   d1 = 290
+      #
+      # Market names must match exactly across all TFs.
       # ======================================================
 
-      - name: Save OHLCV SHA256 before detector test
+      - name: Verify full feature market set
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
           $project = "${{ env.PROJECT_DIR }}"
-          $market = "${{ env.TEST_MARKET }}"
+          $expectedMarkets = [int]"${{ env.EXPECTED_MARKETS }}"
 
           Set-Location $project
 
           Write-Host ""
           Write-Host "============================================================"
-          Write-Host "SAVE ORIGINAL OHLCV SHA256"
+          Write-Host "VERIFY FULL FEATURE MARKET SET"
           Write-Host "============================================================"
           Write-Host ""
 
-          $files = @(
-              "data\ohlcv\h1\$market.csv",
-              "data\ohlcv\h4\$market.csv",
-              "data\ohlcv\d1\$market.csv"
-          )
+          $sets = @{}
 
-          $hashLines = @()
+          foreach ($tf in @("h1", "h4", "d1")) {
 
-          foreach ($relativePath in $files) {
+              $dir = Join-Path $project "data\features\$tf"
 
-              $fullPath = Join-Path $project $relativePath
+              $files = @(
+                  Get-ChildItem `
+                      -Path $dir `
+                      -Filter "KRW-*.csv" `
+                      -File `
+                      -ErrorAction Stop
+              )
 
-              $hash = (Get-FileHash `
-                  -Path $fullPath `
-                  -Algorithm SHA256).Hash
+              $markets = @(
+                  $files |
+                  ForEach-Object {
+                      $_.BaseName
+                  } |
+                  Sort-Object -Unique
+              )
 
-              $hashLines += "$relativePath|$hash"
+              $sets[$tf] = $markets
 
-              Write-Host "$relativePath"
-              Write-Host "SHA256: $hash"
+              Write-Host "[$($tf.ToUpper())]"
+              Write-Host "Files   : $($files.Count)"
+              Write-Host "Markets : $($markets.Count)"
               Write-Host ""
+
+              if ($files.Count -ne $expectedMarkets) {
+
+                  Write-Host "[FAIL] $tf file count mismatch."
+                  Write-Host "       Expected: $expectedMarkets"
+                  Write-Host "       Actual  : $($files.Count)"
+                  exit 1
+              }
+
+              if ($markets.Count -ne $expectedMarkets) {
+
+                  Write-Host "[FAIL] $tf unique market count mismatch."
+                  Write-Host "       Expected: $expectedMarkets"
+                  Write-Host "       Actual  : $($markets.Count)"
+                  exit 1
+              }
           }
 
-          $hashFile = Join-Path $env:RUNNER_TEMP "detect_256_ohlcv_before.sha256"
+          $h1 = @($sets["h1"])
+          $h4 = @($sets["h4"])
+          $d1 = @($sets["d1"])
 
-          $hashLines | Set-Content `
-              -Path $hashFile `
-              -Encoding UTF8
+          $h1VsH4 = @(
+              Compare-Object $h1 $h4
+          )
 
-          Write-Host "[PASS] Original OHLCV hashes saved."
-          Write-Host "Temporary hash file:"
-          Write-Host $hashFile
+          $h1VsD1 = @(
+              Compare-Object $h1 $d1
+          )
+
+          if ($h1VsH4.Count -ne 0) {
+
+              Write-Host ""
+              Write-Host "[FAIL] H1/H4 market sets differ."
+
+              $h1VsH4 | Format-Table -AutoSize
+
+              exit 1
+          }
+
+          if ($h1VsD1.Count -ne 0) {
+
+              Write-Host ""
+              Write-Host "[FAIL] H1/D1 market sets differ."
+
+              $h1VsD1 | Format-Table -AutoSize
+
+              exit 1
+          }
+
+          Write-Host "[PASS] H1/H4/D1 contain the same $expectedMarkets markets."
+          Write-Host "[PASS] Expected detector jobs: $($expectedMarkets * 3)"
 
 
       # ======================================================
       # STEP 9
-      # Build KRW-BTC Clean V002 features
+      # Save complete Feature SHA256 snapshot
       #
-      # build_features.py reads:
+      # Detector must never modify Feature CSVs.
+      # ======================================================
+
+      - name: Record all feature hashes before detector
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $project = "${{ env.PROJECT_DIR }}"
+          Set-Location $project
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "FEATURE SHA256 SNAPSHOT"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $hashFile = Join-Path `
+              $env:RUNNER_TEMP `
+              "detect_256_all_features_before.sha256"
+
+          $lines = New-Object System.Collections.Generic.List[string]
+
+          $count = 0
+
+          foreach ($tf in @("h1", "h4", "d1")) {
+
+              $dir = Join-Path $project "data\features\$tf"
+
+              $files = @(
+                  Get-ChildItem `
+                      -Path $dir `
+                      -Filter "KRW-*.csv" `
+                      -File |
+                  Sort-Object Name
+              )
+
+              foreach ($file in $files) {
+
+                  $hash = (
+                      Get-FileHash `
+                          -Path $file.FullName `
+                          -Algorithm SHA256
+                  ).Hash
+
+                  $relative = "data\features\$tf\$($file.Name)"
+
+                  $lines.Add("$relative|$hash")
+
+                  $count++
+              }
+          }
+
+          $lines |
+              Set-Content `
+                  -Path $hashFile `
+                  -Encoding UTF8
+
+          Write-Host "Feature files hashed : $count"
+          Write-Host "Expected             : ${{ env.EXPECTED_JOBS }}"
+          Write-Host ""
+
+          if ($count -ne [int]"${{ env.EXPECTED_JOBS }}") {
+
+              Write-Host "[FAIL] Feature hash count mismatch."
+              exit 1
+          }
+
+          Write-Host "[PASS] Full Feature SHA256 snapshot saved."
+
+
+      # ======================================================
+      # STEP 10
+      # Save complete OHLCV SHA256 snapshot
       #
-      #   data/ohlcv/h1
-      #   data/ohlcv/h4
-      #   data/ohlcv/d1
+      # Detector must never modify accumulated OHLCV.
+      # ======================================================
+
+      - name: Record all OHLCV hashes before detector
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $project = "${{ env.PROJECT_DIR }}"
+          Set-Location $project
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "OHLCV SHA256 SNAPSHOT"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $hashFile = Join-Path `
+              $env:RUNNER_TEMP `
+              "detect_256_all_ohlcv_before.sha256"
+
+          $lines = New-Object System.Collections.Generic.List[string]
+
+          $count = 0
+
+          foreach ($tf in @("h1", "h4", "d1")) {
+
+              $dir = Join-Path $project "data\ohlcv\$tf"
+
+              if (-not (Test-Path $dir)) {
+
+                  Write-Host "[FAIL] Missing OHLCV directory:"
+                  Write-Host "       data\ohlcv\$tf"
+
+                  exit 1
+              }
+
+              $files = @(
+                  Get-ChildItem `
+                      -Path $dir `
+                      -Filter "KRW-*.csv" `
+                      -File |
+                  Sort-Object Name
+              )
+
+              foreach ($file in $files) {
+
+                  $hash = (
+                      Get-FileHash `
+                          -Path $file.FullName `
+                          -Algorithm SHA256
+                  ).Hash
+
+                  $relative = "data\ohlcv\$tf\$($file.Name)"
+
+                  $lines.Add("$relative|$hash")
+
+                  $count++
+              }
+          }
+
+          $lines |
+              Set-Content `
+                  -Path $hashFile `
+                  -Encoding UTF8
+
+          Write-Host "OHLCV files hashed : $count"
+          Write-Host "Expected           : ${{ env.EXPECTED_JOBS }}"
+          Write-Host ""
+
+          if ($count -ne [int]"${{ env.EXPECTED_JOBS }}") {
+
+              Write-Host "[FAIL] OHLCV hash count mismatch."
+              exit 1
+          }
+
+          Write-Host "[PASS] Full OHLCV SHA256 snapshot saved."
+
+
+      # ======================================================
+      # STEP 11
+      # Run full KRW 256 Detector Clean V002
       #
-      # and writes:
+      # IMPORTANT:
+      #
+      # No --market argument.
+      #
+      # Clean V002 detector discovers the complete common
+      # KRW market set from:
       #
       #   data/features/h1
       #   data/features/h4
@@ -498,7 +657,7 @@ jobs:
       #
       # ======================================================
 
-      - name: Build KRW-BTC Clean V002 features
+      - name: Run full KRW 256 Detector Clean V002
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
@@ -508,152 +667,84 @@ jobs:
 
           Write-Host ""
           Write-Host "============================================================"
-          Write-Host "BUILD CLEAN V002 FEATURES"
+          Write-Host "RUN FULL KRW 256 DETECTOR CLEAN V002"
           Write-Host "============================================================"
           Write-Host ""
 
-          py build_features.py --market "${{ env.TEST_MARKET }}"
+          py detect_256.py
 
-          if ($LASTEXITCODE -ne 0) {
+          $detectorExitCode = $LASTEXITCODE
 
-              Write-Host ""
-              Write-Host "[FAIL] build_features.py failed."
-              exit 1
+          Write-Host ""
+          Write-Host "Detector exit code: $detectorExitCode"
+          Write-Host ""
+
+          if ($detectorExitCode -ne 0) {
+
+              Write-Host "[FAIL] detect_256.py returned a failure."
+              Write-Host "[STOP] Do NOT proceed to 256 Validator."
+
+              exit $detectorExitCode
           }
 
-          Write-Host ""
-          Write-Host "[PASS] Clean V002 feature build completed."
-
-
-      # ======================================================
-      # STEP 10
-      # Verify detector feature input files
-      # ======================================================
-
-      - name: Verify detector feature input files
-        shell: powershell
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          $project = "${{ env.PROJECT_DIR }}"
-          $market = "${{ env.TEST_MARKET }}"
-
-          Set-Location $project
-
-          Write-Host ""
-          Write-Host "============================================================"
-          Write-Host "VERIFY DETECTOR FEATURE INPUT"
-          Write-Host "============================================================"
-          Write-Host ""
-
-          $featureCandidates = @(
-              "data\features\h1\$market.csv",
-              "data\features\h4\$market.csv",
-              "data\features\d1\$market.csv"
-          )
-
-          $failed = $false
-
-          foreach ($relativePath in $featureCandidates) {
-
-              $fullPath = Join-Path $project $relativePath
-
-              if (-not (Test-Path $fullPath)) {
-
-                  Write-Host "[FAIL] Missing feature file:"
-                  Write-Host "       $relativePath"
-
-                  $failed = $true
-                  continue
-              }
-
-              $fileInfo = Get-Item $fullPath
-
-              if ($fileInfo.Length -le 0) {
-
-                  Write-Host "[FAIL] Feature file is empty:"
-                  Write-Host "       $relativePath"
-
-                  $failed = $true
-                  continue
-              }
-
-              Write-Host "[PASS] $relativePath"
-              Write-Host "       Size: $($fileInfo.Length) bytes"
-          }
-
-          if ($failed) {
-
-              Write-Host ""
-              Write-Host "[FAIL] Detector feature input verification failed."
-              exit 1
-          }
-
-          Write-Host ""
-          Write-Host "[PASS] Detector feature input files verified."
-
-
-      # ======================================================
-      # STEP 11
-      # Save feature SHA256 before detector
-      #
-      # Detector should READ features, not mutate them.
-      # ======================================================
-
-      - name: Save feature SHA256 before detector
-        shell: powershell
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          $project = "${{ env.PROJECT_DIR }}"
-          $market = "${{ env.TEST_MARKET }}"
-
-          Set-Location $project
-
-          Write-Host ""
-          Write-Host "============================================================"
-          Write-Host "SAVE FEATURE SHA256 BEFORE DETECTOR"
-          Write-Host "============================================================"
-          Write-Host ""
-
-          $files = @(
-              "data\features\h1\$market.csv",
-              "data\features\h4\$market.csv",
-              "data\features\d1\$market.csv"
-          )
-
-          $hashLines = @()
-
-          foreach ($relativePath in $files) {
-
-              $fullPath = Join-Path $project $relativePath
-
-              $hash = (Get-FileHash `
-                  -Path $fullPath `
-                  -Algorithm SHA256).Hash
-
-              $hashLines += "$relativePath|$hash"
-
-              Write-Host "$relativePath"
-              Write-Host "SHA256: $hash"
-              Write-Host ""
-          }
-
-          $hashFile = Join-Path $env:RUNNER_TEMP "detect_256_features_before.sha256"
-
-          $hashLines | Set-Content `
-              -Path $hashFile `
-              -Encoding UTF8
-
-          Write-Host "[PASS] Feature hashes saved."
+          Write-Host "[PASS] Full KRW detector execution completed."
 
 
       # ======================================================
       # STEP 12
-      # Run 256 Detector Clean V001
+      # Verify detector status file
       # ======================================================
 
-      - name: Run 256 Detector Clean V001
+      - name: Verify detector status file
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $project = "${{ env.PROJECT_DIR }}"
+          $statusFile = Join-Path $project "data\detect_256_status.csv"
+
+          Set-Location $project
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY DETECTOR STATUS FILE"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          if (-not (Test-Path $statusFile)) {
+
+              Write-Host "[FAIL] Detector status file does not exist:"
+              Write-Host "       data\detect_256_status.csv"
+
+              exit 1
+          }
+
+          $info = Get-Item $statusFile
+
+          if ($info.Length -le 0) {
+
+              Write-Host "[FAIL] Detector status file is empty."
+              exit 1
+          }
+
+          Write-Host "[PASS] Detector status file exists."
+          Write-Host "       Size: $($info.Length) bytes"
+          Write-Host ""
+
+          Write-Host "Last status rows:"
+          Write-Host ""
+
+          Import-Csv $statusFile |
+              Select-Object -Last 20 |
+              Format-Table -AutoSize
+
+
+      # ======================================================
+      # STEP 13
+      # Verify detector signal directory structure
+      # ======================================================
+
+      - name: Verify detector output directories
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
@@ -663,34 +754,170 @@ jobs:
 
           Write-Host ""
           Write-Host "============================================================"
-          Write-Host "RUN 256 DETECTOR CLEAN V001"
+          Write-Host "VERIFY DETECTOR OUTPUT DIRECTORIES"
           Write-Host "============================================================"
           Write-Host ""
 
-          py detect_256.py --market "${{ env.TEST_MARKET }}"
+          $failed = $false
 
-          if ($LASTEXITCODE -ne 0) {
+          foreach ($tf in @("h1", "h4", "d1")) {
 
+              $dir = Join-Path $project "data\signals\256\$tf"
+
+              if (-not (Test-Path $dir)) {
+
+                  Write-Host "[FAIL] Missing detector output directory:"
+                  Write-Host "       data\signals\256\$tf"
+
+                  $failed = $true
+                  continue
+              }
+
+              $files = @(
+                  Get-ChildItem `
+                      -Path $dir `
+                      -Filter "KRW-*.csv" `
+                      -File
+              )
+
+              Write-Host "[$($tf.ToUpper())]"
+              Write-Host "Signal files : $($files.Count)"
               Write-Host ""
-              Write-Host "[FAIL] detect_256.py failed."
+          }
+
+          if ($failed) {
+
+              Write-Host "[FAIL] Detector output directory verification failed."
               exit 1
           }
 
-          Write-Host ""
-          Write-Host "[PASS] 256 detector execution completed."
+          Write-Host "[PASS] Detector output directories exist."
 
 
       # ======================================================
-      # STEP 13
-      # Verify feature files were NOT modified by detector
+      # STEP 14
+      # Verify complete detector output market set
+      #
+      # Expected:
+      #
+      #   h1 = 290
+      #   h4 = 290
+      #   d1 = 290
+      #
       # ======================================================
 
-      - name: Verify detector did not modify feature files
+      - name: Verify full detector output market set
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
           $project = "${{ env.PROJECT_DIR }}"
+          $expectedMarkets = [int]"${{ env.EXPECTED_MARKETS }}"
+
+          Set-Location $project
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY FULL DETECTOR OUTPUT MARKET SET"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $sets = @{}
+
+          foreach ($tf in @("h1", "h4", "d1")) {
+
+              $dir = Join-Path $project "data\signals\256\$tf"
+
+              $files = @(
+                  Get-ChildItem `
+                      -Path $dir `
+                      -Filter "KRW-*.csv" `
+                      -File `
+                      -ErrorAction Stop
+              )
+
+              $markets = @(
+                  $files |
+                  ForEach-Object {
+                      $_.BaseName
+                  } |
+                  Sort-Object -Unique
+              )
+
+              $sets[$tf] = $markets
+
+              Write-Host "[$($tf.ToUpper())]"
+              Write-Host "Files   : $($files.Count)"
+              Write-Host "Markets : $($markets.Count)"
+              Write-Host ""
+
+              if ($files.Count -ne $expectedMarkets) {
+
+                  Write-Host "[FAIL] Detector output count mismatch for $tf."
+                  Write-Host "       Expected: $expectedMarkets"
+                  Write-Host "       Actual  : $($files.Count)"
+
+                  exit 1
+              }
+
+              if ($markets.Count -ne $expectedMarkets) {
+
+                  Write-Host "[FAIL] Unique detector market count mismatch for $tf."
+                  Write-Host "       Expected: $expectedMarkets"
+                  Write-Host "       Actual  : $($markets.Count)"
+
+                  exit 1
+              }
+          }
+
+          $h1VsH4 = @(
+              Compare-Object `
+                  @($sets["h1"]) `
+                  @($sets["h4"])
+          )
+
+          $h1VsD1 = @(
+              Compare-Object `
+                  @($sets["h1"]) `
+                  @($sets["d1"])
+          )
+
+          if ($h1VsH4.Count -ne 0) {
+
+              Write-Host "[FAIL] Detector H1/H4 market sets differ."
+              $h1VsH4 | Format-Table -AutoSize
+
+              exit 1
+          }
+
+          if ($h1VsD1.Count -ne 0) {
+
+              Write-Host "[FAIL] Detector H1/D1 market sets differ."
+              $h1VsD1 | Format-Table -AutoSize
+
+              exit 1
+          }
+
+          Write-Host "[PASS] Detector produced all $expectedMarkets markets."
+          Write-Host "[PASS] H1/H4/D1 detector market sets match."
+          Write-Host "[PASS] Total detector jobs: $($expectedMarkets * 3)"
+
+
+      # ======================================================
+      # STEP 15
+      # Verify Feature files remained unchanged
+      # ======================================================
+
+      - name: Verify all feature files remained unchanged
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $project = "${{ env.PROJECT_DIR }}"
+
+          $hashFile = Join-Path `
+              $env:RUNNER_TEMP `
+              "detect_256_all_features_before.sha256"
 
           Set-Location $project
 
@@ -700,19 +927,16 @@ jobs:
           Write-Host "============================================================"
           Write-Host ""
 
-          $hashFile = Join-Path $env:RUNNER_TEMP "detect_256_features_before.sha256"
-
           if (-not (Test-Path $hashFile)) {
 
-              Write-Host "[FAIL] Saved feature hash file is missing."
+              Write-Host "[FAIL] Feature SHA256 snapshot is missing."
               exit 1
           }
 
-          $savedLines = Get-Content $hashFile
+          $failed = 0
+          $passed = 0
 
-          $failed = $false
-
-          foreach ($line in $savedLines) {
+          foreach ($line in Get-Content $hashFile) {
 
               if ([string]::IsNullOrWhiteSpace($line)) {
                   continue
@@ -722,91 +946,104 @@ jobs:
 
               if ($parts.Count -ne 2) {
 
-                  Write-Host "[FAIL] Invalid saved hash line:"
-                  Write-Host $line
+                  Write-Host "[FAIL] Invalid feature hash record:"
+                  Write-Host "       $line"
 
-                  $failed = $true
+                  $failed++
                   continue
               }
 
-              $relativePath = $parts[0]
-              $beforeHash = $parts[1]
+              $relative = $parts[0]
+              $before = $parts[1]
 
-              $fullPath = Join-Path $project $relativePath
+              $fullPath = Join-Path $project $relative
 
               if (-not (Test-Path $fullPath)) {
 
                   Write-Host "[FAIL] Feature file disappeared:"
-                  Write-Host "       $relativePath"
+                  Write-Host "       $relative"
 
-                  $failed = $true
+                  $failed++
                   continue
               }
 
-              $afterHash = (Get-FileHash `
-                  -Path $fullPath `
-                  -Algorithm SHA256).Hash
+              $after = (
+                  Get-FileHash `
+                      -Path $fullPath `
+                      -Algorithm SHA256
+              ).Hash
 
-              if ($beforeHash -ne $afterHash) {
+              if ($before -ne $after) {
 
-                  Write-Host "[FAIL] Detector modified feature file:"
-                  Write-Host "       $relativePath"
-                  Write-Host "       Before: $beforeHash"
-                  Write-Host "       After : $afterHash"
+                  Write-Host "[FAIL] Feature file changed:"
+                  Write-Host "       $relative"
 
-                  $failed = $true
+                  $failed++
               }
               else {
 
-                  Write-Host "[PASS] Unchanged:"
-                  Write-Host "       $relativePath"
+                  $passed++
               }
           }
 
-          if ($failed) {
+          Write-Host ""
+          Write-Host "Feature integrity:"
+          Write-Host "  Passed : $passed"
+          Write-Host "  Failed : $failed"
+          Write-Host ""
 
-              Write-Host ""
-              Write-Host "[FAIL] Feature integrity verification failed."
+          if ($failed -ne 0) {
+
+              Write-Host "[FAIL] Detector modified Feature data."
               exit 1
           }
 
-          Write-Host ""
-          Write-Host "[PASS] Detector did not modify feature files."
+          if ($passed -ne [int]"${{ env.EXPECTED_JOBS }}") {
+
+              Write-Host "[FAIL] Feature integrity count mismatch."
+              Write-Host "       Expected: ${{ env.EXPECTED_JOBS }}"
+              Write-Host "       Actual  : $passed"
+
+              exit 1
+          }
+
+          Write-Host "[PASS] All Feature CSV files remained unchanged."
 
 
       # ======================================================
-      # STEP 14
-      # Verify original OHLCV was NOT modified
+      # STEP 16
+      # Verify OHLCV files remained unchanged
       # ======================================================
 
-      - name: Verify original OHLCV was preserved
+      - name: Verify all OHLCV files remained unchanged
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
           $project = "${{ env.PROJECT_DIR }}"
 
+          $hashFile = Join-Path `
+              $env:RUNNER_TEMP `
+              "detect_256_all_ohlcv_before.sha256"
+
           Set-Location $project
 
           Write-Host ""
           Write-Host "============================================================"
-          Write-Host "VERIFY ORIGINAL OHLCV INTEGRITY"
+          Write-Host "VERIFY OHLCV FILE INTEGRITY"
           Write-Host "============================================================"
           Write-Host ""
 
-          $hashFile = Join-Path $env:RUNNER_TEMP "detect_256_ohlcv_before.sha256"
-
           if (-not (Test-Path $hashFile)) {
 
-              Write-Host "[FAIL] Saved OHLCV hash file is missing."
+              Write-Host "[FAIL] OHLCV SHA256 snapshot is missing."
               exit 1
           }
 
-          $savedLines = Get-Content $hashFile
+          $failed = 0
+          $passed = 0
 
-          $failed = $false
-
-          foreach ($line in $savedLines) {
+          foreach ($line in Get-Content $hashFile) {
 
               if ([string]::IsNullOrWhiteSpace($line)) {
                   continue
@@ -816,222 +1053,203 @@ jobs:
 
               if ($parts.Count -ne 2) {
 
-                  Write-Host "[FAIL] Invalid saved OHLCV hash line:"
-                  Write-Host $line
+                  Write-Host "[FAIL] Invalid OHLCV hash record:"
+                  Write-Host "       $line"
 
-                  $failed = $true
+                  $failed++
                   continue
               }
 
-              $relativePath = $parts[0]
-              $beforeHash = $parts[1]
+              $relative = $parts[0]
+              $before = $parts[1]
 
-              $fullPath = Join-Path $project $relativePath
+              $fullPath = Join-Path $project $relative
 
               if (-not (Test-Path $fullPath)) {
 
-                  Write-Host "[FAIL] Original OHLCV file disappeared:"
-                  Write-Host "       $relativePath"
+                  Write-Host "[FAIL] OHLCV file disappeared:"
+                  Write-Host "       $relative"
 
-                  $failed = $true
+                  $failed++
                   continue
               }
 
-              $afterHash = (Get-FileHash `
-                  -Path $fullPath `
-                  -Algorithm SHA256).Hash
+              $after = (
+                  Get-FileHash `
+                      -Path $fullPath `
+                      -Algorithm SHA256
+              ).Hash
 
-              if ($beforeHash -ne $afterHash) {
+              if ($before -ne $after) {
 
-                  Write-Host "[FAIL] Original OHLCV file was modified:"
-                  Write-Host "       $relativePath"
-                  Write-Host "       Before: $beforeHash"
-                  Write-Host "       After : $afterHash"
+                  Write-Host "[FAIL] OHLCV file changed:"
+                  Write-Host "       $relative"
 
-                  $failed = $true
+                  $failed++
               }
               else {
 
-                  Write-Host "[PASS] Original OHLCV preserved:"
-                  Write-Host "       $relativePath"
+                  $passed++
               }
           }
 
-          if ($failed) {
+          Write-Host ""
+          Write-Host "OHLCV integrity:"
+          Write-Host "  Passed : $passed"
+          Write-Host "  Failed : $failed"
+          Write-Host ""
 
-              Write-Host ""
-              Write-Host "[FAIL] Original OHLCV integrity verification failed."
+          if ($failed -ne 0) {
+
+              Write-Host "[FAIL] Detector modified OHLCV data."
               exit 1
           }
 
-          Write-Host ""
-          Write-Host "[PASS] All original OHLCV files were preserved."
+          if ($passed -ne [int]"${{ env.EXPECTED_JOBS }}") {
 
+              Write-Host "[FAIL] OHLCV integrity count mismatch."
+              Write-Host "       Expected: ${{ env.EXPECTED_JOBS }}"
+              Write-Host "       Actual  : $passed"
 
-      # ======================================================
-      # STEP 15
-      # Show detector output candidates
-      #
-      # We do not assume one exact output filename here.
-      # This step reports files generated under likely
-      # detector/signal/result locations.
-      # ======================================================
-
-      - name: Show detector output files
-        shell: powershell
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          $project = "${{ env.PROJECT_DIR }}"
-          Set-Location $project
-
-          Write-Host ""
-          Write-Host "============================================================"
-          Write-Host "DETECTOR OUTPUT FILES"
-          Write-Host "============================================================"
-          Write-Host ""
-
-          $candidateDirs = @(
-              "data\signals",
-              "data\results",
-              "data\detect_256",
-              "signals",
-              "results"
-          )
-
-          $foundAny = $false
-
-          foreach ($relativeDir in $candidateDirs) {
-
-              $fullDir = Join-Path $project $relativeDir
-
-              if (Test-Path $fullDir) {
-
-                  Write-Host ""
-                  Write-Host "Directory:"
-                  Write-Host $relativeDir
-
-                  $files = Get-ChildItem `
-                      -Path $fullDir `
-                      -File `
-                      -Recurse `
-                      -ErrorAction SilentlyContinue
-
-                  if ($files) {
-
-                      $foundAny = $true
-
-                      foreach ($file in $files) {
-
-                          Write-Host "  $($file.FullName)"
-                          Write-Host "    Size: $($file.Length) bytes"
-                          Write-Host "    Modified: $($file.LastWriteTime)"
-                      }
-                  }
-                  else {
-
-                      Write-Host "  No files."
-                  }
-              }
+              exit 1
           }
 
-          if (-not $foundAny) {
-
-              Write-Host ""
-              Write-Host "[INFO] No detector output file was found in the standard"
-              Write-Host "       candidate directories."
-              Write-Host ""
-              Write-Host "       This is not automatically treated as failure."
-              Write-Host "       detect_256.py may print results only, or may use"
-              Write-Host "       a different output path."
-          }
-
-
-      # ======================================================
-      # STEP 16
-      # Git safety check
-      #
-      # Runtime/generated data may be untracked.
-      # No commit/push is performed.
-      # ======================================================
-
-      - name: Show Git status safely
-        shell: powershell
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          $project = "${{ env.PROJECT_DIR }}"
-          Set-Location $project
-
-          Write-Host ""
-          Write-Host "============================================================"
-          Write-Host "GIT STATUS"
-          Write-Host "============================================================"
-          Write-Host ""
-
-          if (Test-Path ".git") {
-
-              git status --short --untracked-files=all
-
-              Write-Host ""
-              Write-Host "[INFO] Git status displayed."
-              Write-Host "[INFO] No git reset was executed."
-              Write-Host "[INFO] No git clean was executed."
-              Write-Host "[INFO] No automatic commit was executed."
-              Write-Host "[INFO] No automatic push was executed."
-          }
-          else {
-
-              Write-Host "[INFO] Local project directory is not a Git working tree."
-              Write-Host "[INFO] Detector test itself can still be evaluated."
-          }
+          Write-Host "[PASS] All accumulated OHLCV CSV files remained unchanged."
 
 
       # ======================================================
       # STEP 17
-      # Final result
+      # Verify generated runtime data is Git ignored
       # ======================================================
 
-      - name: Detector test completed
+      - name: Verify generated detector data remains ignored
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $project = "${{ env.PROJECT_DIR }}"
+          Set-Location $project
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY GENERATED DATA GIT SAFETY"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $status = @(
+              git status `
+                  --short `
+                  --untracked-files=all
+          )
+
+          $unexpected = @()
+
+          foreach ($line in $status) {
+
+              if ([string]::IsNullOrWhiteSpace($line)) {
+                  continue
+              }
+
+              Write-Host $line
+
+              $path = ""
+
+              if ($line.Length -gt 3) {
+                  $path = $line.Substring(3).Trim()
+              }
+
+              $normalized = $path.Replace("\", "/")
+
+              $allowed = (
+                  $normalized -like "data/signals/*" -or
+                  $normalized -eq "data/detect_256_status.csv"
+              )
+
+              if (-not $allowed) {
+
+                  $unexpected += $line
+              }
+          }
+
+          Write-Host ""
+
+          if ($unexpected.Count -gt 0) {
+
+              Write-Host "[FAIL] Unexpected Git-visible changes detected:"
+              Write-Host ""
+
+              foreach ($line in $unexpected) {
+                  Write-Host $line
+              }
+
+              Write-Host ""
+              Write-Host "[STOP] Review repository changes before continuing."
+
+              exit 1
+          }
+
+          Write-Host "[PASS] No unexpected Git-visible changes detected."
+          Write-Host "[PASS] Detector runtime data is safely ignored."
+
+
+      # ======================================================
+      # STEP 18
+      # Final summary
+      # ======================================================
+
+      - name: Full detector test completed
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
           Write-Host ""
           Write-Host "============================================================"
-          Write-Host "UPBIT SURGE MONITOR - 256 DETECTOR TEST COMPLETED"
+          Write-Host "FULL KRW 256 DETECTOR SUMMARY"
           Write-Host "============================================================"
           Write-Host ""
 
-          Write-Host "Market:"
-          Write-Host "${{ env.TEST_MARKET }}"
+          Write-Host "Project          : Upbit Surge Monitor"
+          Write-Host "Version          : 256 Detector Clean V002"
+          Write-Host "Execution mode   : FULL KRW MARKET"
+          Write-Host "Markets          : ${{ env.EXPECTED_MARKETS }}"
+          Write-Host "Timeframes       : 3"
+          Write-Host "Detector jobs    : ${{ env.EXPECTED_JOBS }}"
           Write-Host ""
 
-          Write-Host "[PASS] Local project directory verified."
-          Write-Host "[PASS] Python verified."
-          Write-Host "[PASS] Required project files verified."
-          Write-Host "[PASS] Dependencies verified."
-          Write-Host "[PASS] Actual local OHLCV directories verified."
-          Write-Host "[PASS] KRW-BTC OHLCV files verified."
-          Write-Host "[PASS] Clean V002 features built."
-          Write-Host "[PASS] Detector feature inputs verified."
-          Write-Host "[PASS] 256 detector executed."
-          Write-Host "[PASS] Feature files preserved."
-          Write-Host "[PASS] Original accumulated OHLCV preserved."
-
+          Write-Host "Input:"
+          Write-Host "  Feature h1     : VERIFIED"
+          Write-Host "  Feature h4     : VERIFIED"
+          Write-Host "  Feature d1     : VERIFIED"
           Write-Host ""
-          Write-Host "Data structure:"
-          Write-Host "OHLCV    : data\ohlcv\h1 | h4 | d1"
-          Write-Host "Features : data\features\h1 | h4 | d1"
 
+          Write-Host "Output:"
+          Write-Host "  Signal h1      : VERIFIED"
+          Write-Host "  Signal h4      : VERIFIED"
+          Write-Host "  Signal d1      : VERIFIED"
+          Write-Host "  Status file    : VERIFIED"
           Write-Host ""
+
+          Write-Host "Integrity:"
+          Write-Host "  Feature files  : UNCHANGED"
+          Write-Host "  OHLCV files    : UNCHANGED"
+          Write-Host ""
+
           Write-Host "Safety:"
-          Write-Host "Existing OHLCV deletion : DISABLED"
-          Write-Host "Git reset --hard        : DISABLED"
-          Write-Host "Git clean               : DISABLED"
-          Write-Host "Automatic Git commit    : DISABLED"
-          Write-Host "Automatic Git push      : DISABLED"
-          Write-Host "Trading                 : DISABLED"
-
+          Write-Host "  Feature rebuild : DISABLED"
+          Write-Host "  Future labels   : DISABLED"
+          Write-Host "  Prediction      : DISABLED"
+          Write-Host "  Trading         : DISABLED"
+          Write-Host "  Git reset       : DISABLED"
+          Write-Host "  Git clean       : DISABLED"
+          Write-Host "  Git commit      : DISABLED"
+          Write-Host "  Git push        : DISABLED"
           Write-Host ""
+
+          Write-Host "============================================================"
+          Write-Host "[RESULT] FULL KRW 256 DETECTOR PASSED"
+          Write-Host "[PASS] 290 markets verified."
+          Write-Host "[PASS] 870 detector jobs verified."
+          Write-Host "[PASS] Feature data remained unchanged."
+          Write-Host "[PASS] OHLCV data remained unchanged."
+          Write-Host "[NEXT] Full 256 Validator."
           Write-Host "============================================================"
