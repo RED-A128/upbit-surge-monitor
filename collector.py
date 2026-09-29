@@ -1,6 +1,6 @@
 """
-Upbit Surge Monitor - Clean V001
-================================
+Upbit Surge Monitor - Collector Clean V002
+==========================================
 
 File:
     collector.py
@@ -9,17 +9,39 @@ Purpose:
     Upbit KRW 전체 마켓의 OHLCV 데이터를 수집하고
     로컬 CSV 파일에 안전하게 누적 저장한다.
 
-Initial timeframes:
+Timeframes:
     - 1 hour
     - 4 hour
     - 1 day
 
-Important:
-    - 이 파일은 급등 여부를 판단하지 않는다.
-    - 매수/매도 신호를 만들지 않는다.
-    - 머신러닝을 수행하지 않는다.
-    - 자동매매를 수행하지 않는다.
-    - 원본 OHLCV 확보와 보존에 집중한다.
+Clean V002 change:
+    timestamp 컬럼을 Upbit API의 timestamp 값에 의존하지 않는다.
+
+    프로젝트의 canonical candle timestamp는
+    candle_date_time_utc 로부터 직접 계산한다.
+
+    timestamp =
+        candle_date_time_utc Unix epoch milliseconds
+
+Why:
+    일부 과거 Upbit candle 응답에서 API timestamp가
+    비어 있거나 candle 시작 시각과 일치하지 않을 수 있다.
+
+    candle_date_time_utc는 실제 candle 시간축이므로
+    프로젝트 전체에서 이것을 기준 시간으로 사용한다.
+
+Safety:
+    - 기존 OHLCV 데이터 삭제 금지
+    - 기존 candle 보존
+    - candle_date_time_utc 기준 중복 제거
+    - candle_date_time_utc 기준 시간순 정렬
+    - 기존 CSV를 읽을 때 timestamp 자동 정규화
+    - 저장 전 timestamp 재정규화
+    - 임시 파일 저장 후 원본 교체
+    - 패턴 분석 없음
+    - 예측 없음
+    - 머신러닝 없음
+    - 자동매매 없음
 
 Windows:
     py collector.py
@@ -42,7 +64,7 @@ import requests
 # ============================================================
 
 PROJECT_NAME = "Upbit Surge Monitor"
-VERSION = "Clean V001"
+VERSION = "Collector Clean V002"
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -58,30 +80,16 @@ STATUS_FILE = DATA_DIR / "collector_status.csv"
 UPBIT_API_BASE = "https://api.upbit.com/v1"
 
 REQUEST_TIMEOUT = 15
-
-# Upbit candle API의 1회 최대 요청 개수
 API_MAX_COUNT = 200
 
-# 신규 저장소에서 처음 실행할 때 확보할 목표 candle 수
-#
-# h1 : 2000시간 ≈ 83일
-# h4 : 1500개   ≈ 250일
-# d1 : 1000일   ≈ 2.7년
-#
-# 이후 실행부터는 기존 CSV의 마지막 시점 이후 데이터만 갱신한다.
 INITIAL_CANDLE_LIMITS = {
     "h1": 2000,
     "h4": 1500,
     "d1": 1000,
 }
 
-# API 요청 간 기본 대기시간
 REQUEST_SLEEP_SECONDS = 0.12
-
-# 마켓 하나 처리 후 짧은 대기
 MARKET_SLEEP_SECONDS = 0.05
-
-# HTTP 재시도
 MAX_RETRIES = 5
 
 
@@ -125,7 +133,6 @@ OHLCV_COLUMNS = [
     "trade_value",
 ]
 
-
 STATUS_COLUMNS = [
     "run_time_utc",
     "version",
@@ -148,7 +155,7 @@ SESSION = requests.Session()
 SESSION.headers.update(
     {
         "Accept": "application/json",
-        "User-Agent": "upbit-surge-monitor-clean-v001",
+        "User-Agent": "upbit-surge-monitor-collector-clean-v002",
     }
 )
 
@@ -166,10 +173,6 @@ def utc_now_iso() -> str:
 
 
 def ensure_directories() -> None:
-    """
-    프로젝트에서 필요한 데이터 디렉터리를 생성한다.
-    """
-
     directories = [
         DATA_DIR,
         OHLCV_DIR,
@@ -179,7 +182,10 @@ def ensure_directories() -> None:
     ]
 
     for directory in directories:
-        directory.mkdir(parents=True, exist_ok=True)
+        directory.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
 
 
 def safe_int(value: Any, default: int = 0) -> int:
@@ -190,6 +196,207 @@ def safe_int(value: Any, default: int = 0) -> int:
 
 
 # ============================================================
+# CANONICAL TIMESTAMP
+# ============================================================
+
+def normalize_candle_time(
+    series: pd.Series,
+) -> pd.Series:
+    """
+    candle_date_time_utc를 UTC datetime으로 변환한다.
+    """
+    return pd.to_datetime(
+        series,
+        utc=True,
+        errors="coerce",
+    )
+
+
+def build_canonical_timestamp(
+    candle_time: pd.Series,
+) -> pd.Series:
+    """
+    UTC candle 시작 시각을 Unix epoch milliseconds로 변환한다.
+
+    pandas datetime64[ns, UTC]
+        -> nanoseconds
+        -> milliseconds
+
+    반환 dtype:
+        Int64
+
+    NaT는 <NA>가 된다.
+    """
+
+    parsed = normalize_candle_time(
+        candle_time
+    )
+
+    result = pd.Series(
+        pd.NA,
+        index=parsed.index,
+        dtype="Int64",
+    )
+
+    valid = parsed.notna()
+
+    if valid.any():
+        result.loc[valid] = (
+            parsed.loc[valid].astype("int64")
+            // 1_000_000
+        ).astype("int64")
+
+    return result
+
+
+def normalize_ohlcv_dataframe(
+    df: pd.DataFrame,
+    *,
+    require_market: str | None = None,
+) -> pd.DataFrame:
+    """
+    프로젝트 OHLCV 데이터의 공통 정규화 함수.
+
+    핵심:
+        timestamp는 기존 값/API 값을 신뢰하지 않고
+        candle_date_time_utc에서 항상 재생성한다.
+    """
+
+    if df.empty:
+        return pd.DataFrame(
+            columns=OHLCV_COLUMNS
+        )
+
+    work = df.copy()
+
+    for column in OHLCV_COLUMNS:
+        if column not in work.columns:
+            work[column] = pd.NA
+
+    work = work[
+        OHLCV_COLUMNS
+    ].copy()
+
+    work["candle_date_time_utc"] = (
+        normalize_candle_time(
+            work["candle_date_time_utc"]
+        )
+    )
+
+    invalid_time_count = int(
+        work[
+            "candle_date_time_utc"
+        ].isna().sum()
+    )
+
+    if invalid_time_count > 0:
+        raise RuntimeError(
+            "Invalid candle_date_time_utc found: "
+            f"{invalid_time_count:,}"
+        )
+
+    if require_market is not None:
+        market_values = (
+            work["market"]
+            .astype(str)
+            .str.strip()
+            .str.upper()
+        )
+
+        invalid_market = (
+            market_values != require_market
+        )
+
+        if invalid_market.any():
+            raise RuntimeError(
+                "Unexpected market value found in OHLCV CSV."
+            )
+
+        work["market"] = require_market
+
+    # --------------------------------------------------------
+    # Clean V002 핵심
+    # --------------------------------------------------------
+
+    work["timestamp"] = (
+        build_canonical_timestamp(
+            work["candle_date_time_utc"]
+        )
+    )
+
+    if work["timestamp"].isna().any():
+        raise RuntimeError(
+            "Canonical timestamp generation failed."
+        )
+
+    numeric_columns = [
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "trade_value",
+    ]
+
+    for column in numeric_columns:
+        work[column] = pd.to_numeric(
+            work[column],
+            errors="coerce",
+        )
+
+    duplicate_count = int(
+        work[
+            "candle_date_time_utc"
+        ].duplicated(
+            keep=False
+        ).sum()
+    )
+
+    if duplicate_count > 0:
+        work = work.drop_duplicates(
+            subset=[
+                "candle_date_time_utc"
+            ],
+            keep="last",
+        )
+
+    work = work.sort_values(
+        "candle_date_time_utc"
+    )
+
+    work = work.reset_index(
+        drop=True
+    )
+
+    if not work[
+        "candle_date_time_utc"
+    ].is_monotonic_increasing:
+        raise RuntimeError(
+            "candle_date_time_utc is not chronological."
+        )
+
+    timestamp_numeric = pd.to_numeric(
+        work["timestamp"],
+        errors="coerce",
+    )
+
+    if timestamp_numeric.isna().any():
+        raise RuntimeError(
+            "timestamp contains invalid values "
+            "after normalization."
+        )
+
+    if not timestamp_numeric.is_monotonic_increasing:
+        raise RuntimeError(
+            "Canonical timestamp is not chronological."
+        )
+
+    return work[
+        OHLCV_COLUMNS
+    ]
+
+
+# ============================================================
 # HTTP
 # ============================================================
 
@@ -197,16 +404,13 @@ def request_json(
     url: str,
     params: dict[str, Any] | None = None,
 ) -> Any:
-    """
-    Upbit API를 호출하고 JSON을 반환한다.
-
-    429 / 일시적 네트워크 오류 / 서버 오류는 재시도한다.
-    """
 
     last_error: Exception | None = None
 
-    for attempt in range(1, MAX_RETRIES + 1):
-
+    for attempt in range(
+        1,
+        MAX_RETRIES + 1,
+    ):
         try:
             response = SESSION.get(
                 url,
@@ -215,19 +419,24 @@ def request_json(
             )
 
             if response.status_code == 429:
-                wait_seconds = min(1.0 * attempt, 5.0)
+                wait_seconds = min(
+                    float(attempt),
+                    5.0,
+                )
 
                 print(
-                    f"[WARN] HTTP 429 rate limit. "
-                    f"retry={attempt}/{MAX_RETRIES}, "
-                    f"wait={wait_seconds:.1f}s"
+                    f"[WARN] HTTP 429. "
+                    f"retry={attempt}/{MAX_RETRIES}"
                 )
 
                 time.sleep(wait_seconds)
                 continue
 
             if 500 <= response.status_code <= 599:
-                wait_seconds = min(1.0 * attempt, 5.0)
+                wait_seconds = min(
+                    float(attempt),
+                    5.0,
+                )
 
                 print(
                     f"[WARN] Upbit server error "
@@ -254,7 +463,10 @@ def request_json(
             if attempt >= MAX_RETRIES:
                 break
 
-            wait_seconds = min(1.0 * attempt, 5.0)
+            wait_seconds = min(
+                float(attempt),
+                5.0,
+            )
 
             print(
                 f"[WARN] Request failed: {exc} "
@@ -264,11 +476,13 @@ def request_json(
             time.sleep(wait_seconds)
 
     if last_error is None:
-        raise RuntimeError("Unknown API request failure.")
+        raise RuntimeError(
+            "Unknown API request failure."
+        )
 
     raise RuntimeError(
-        f"Upbit API request failed after {MAX_RETRIES} attempts: "
-        f"{last_error}"
+        "Upbit API request failed after "
+        f"{MAX_RETRIES} attempts: {last_error}"
     )
 
 
@@ -277,9 +491,6 @@ def request_json(
 # ============================================================
 
 def get_krw_markets() -> list[str]:
-    """
-    업비트 전체 마켓 중 KRW 마켓만 가져온다.
-    """
 
     url = f"{UPBIT_API_BASE}/market/all"
 
@@ -302,12 +513,19 @@ def get_krw_markets() -> list[str]:
         if not isinstance(item, dict):
             continue
 
-        market = str(item.get("market", "")).strip()
+        market = str(
+            item.get(
+                "market",
+                "",
+            )
+        ).strip().upper()
 
         if market.startswith("KRW-"):
             markets.append(market)
 
-    markets = sorted(set(markets))
+    markets = sorted(
+        set(markets)
+    )
 
     if not markets:
         raise RuntimeError(
@@ -325,9 +543,6 @@ def candle_records_to_dataframe(
     market: str,
     records: list[dict[str, Any]],
 ) -> pd.DataFrame:
-    """
-    Upbit candle 응답을 프로젝트 공통 OHLCV 형식으로 변환한다.
-    """
 
     rows: list[dict[str, Any]] = []
 
@@ -342,11 +557,23 @@ def candle_records_to_dataframe(
                 "candle_date_time_kst": item.get(
                     "candle_date_time_kst"
                 ),
-                "timestamp": item.get("timestamp"),
-                "open": item.get("opening_price"),
-                "high": item.get("high_price"),
-                "low": item.get("low_price"),
-                "close": item.get("trade_price"),
+
+                # Clean V002:
+                # API timestamp는 사용하지 않는다.
+                "timestamp": pd.NA,
+
+                "open": item.get(
+                    "opening_price"
+                ),
+                "high": item.get(
+                    "high_price"
+                ),
+                "low": item.get(
+                    "low_price"
+                ),
+                "close": item.get(
+                    "trade_price"
+                ),
                 "volume": item.get(
                     "candle_acc_trade_volume"
                 ),
@@ -357,39 +584,16 @@ def candle_records_to_dataframe(
         )
 
     if not rows:
-        return pd.DataFrame(columns=OHLCV_COLUMNS)
+        return pd.DataFrame(
+            columns=OHLCV_COLUMNS
+        )
 
     df = pd.DataFrame(rows)
 
-    for column in OHLCV_COLUMNS:
-
-        if column not in df.columns:
-            df[column] = pd.NA
-
-    df = df[OHLCV_COLUMNS]
-
-    df["candle_date_time_utc"] = pd.to_datetime(
-        df["candle_date_time_utc"],
-        utc=True,
-        errors="coerce",
+    return normalize_ohlcv_dataframe(
+        df,
+        require_market=market,
     )
-
-    df = df.dropna(
-        subset=["candle_date_time_utc"]
-    )
-
-    df = df.sort_values(
-        "candle_date_time_utc"
-    )
-
-    df = df.drop_duplicates(
-        subset=["candle_date_time_utc"],
-        keep="last",
-    )
-
-    df = df.reset_index(drop=True)
-
-    return df
 
 
 # ============================================================
@@ -402,15 +606,17 @@ def fetch_candle_batch(
     count: int,
     to: str | None = None,
 ) -> pd.DataFrame:
-    """
-    특정 마켓/시간봉의 candle 한 batch를 가져온다.
-    """
 
-    config = TIMEFRAMES[timeframe]
+    config = TIMEFRAMES[
+        timeframe
+    ]
 
     params: dict[str, Any] = {
         "market": market,
-        "count": min(count, API_MAX_COUNT),
+        "count": min(
+            count,
+            API_MAX_COUNT,
+        ),
     }
 
     if to:
@@ -442,10 +648,6 @@ def fetch_initial_history(
     timeframe: str,
     target_count: int,
 ) -> pd.DataFrame:
-    """
-    해당 마켓의 CSV가 존재하지 않을 때
-    과거 데이터를 여러 페이지에 걸쳐 확보한다.
-    """
 
     frames: list[pd.DataFrame] = []
 
@@ -454,7 +656,9 @@ def fetch_initial_history(
 
     while collected < target_count:
 
-        remaining = target_count - collected
+        remaining = (
+            target_count - collected
+        )
 
         request_count = min(
             API_MAX_COUNT,
@@ -478,13 +682,11 @@ def fetch_initial_history(
             ignore_index=True,
         )
 
-        combined = combined.drop_duplicates(
-            subset=["candle_date_time_utc"],
-            keep="last",
-        )
-
-        combined = combined.sort_values(
-            "candle_date_time_utc"
+        combined = (
+            normalize_ohlcv_dataframe(
+                combined,
+                require_market=market,
+            )
         )
 
         collected = len(combined)
@@ -496,11 +698,11 @@ def fetch_initial_history(
         if pd.isna(oldest_time):
             break
 
-        # Upbit의 'to'는 해당 시각 이전 candle을 요청하기 위한 값이다.
-        # 1초 이전으로 이동하여 동일 candle 재수신 가능성을 줄인다.
         next_to = (
             oldest_time
-            - pd.Timedelta(seconds=1)
+            - pd.Timedelta(
+                seconds=1
+            )
         )
 
         to_value = next_to.strftime(
@@ -510,7 +712,9 @@ def fetch_initial_history(
         if len(batch) < request_count:
             break
 
-        time.sleep(REQUEST_SLEEP_SECONDS)
+        time.sleep(
+            REQUEST_SLEEP_SECONDS
+        )
 
     if not frames:
         return pd.DataFrame(
@@ -522,19 +726,17 @@ def fetch_initial_history(
         ignore_index=True,
     )
 
-    result = result.drop_duplicates(
-        subset=["candle_date_time_utc"],
-        keep="last",
-    )
-
-    result = result.sort_values(
-        "candle_date_time_utc"
+    result = normalize_ohlcv_dataframe(
+        result,
+        require_market=market,
     )
 
     if len(result) > target_count:
-        result = result.tail(target_count)
-
-    result = result.reset_index(drop=True)
+        result = result.tail(
+            target_count
+        ).reset_index(
+            drop=True
+        )
 
     return result
 
@@ -545,60 +747,73 @@ def fetch_initial_history(
 
 def load_existing_csv(
     file_path: Path,
+    market: str,
 ) -> pd.DataFrame:
-    """
-    기존 OHLCV CSV를 읽는다.
-
-    파일이 없거나 비어 있으면 빈 DataFrame을 반환한다.
-    """
 
     if not file_path.exists():
         return pd.DataFrame(
             columns=OHLCV_COLUMNS
         )
 
+    if file_path.stat().st_size == 0:
+        return pd.DataFrame(
+            columns=OHLCV_COLUMNS
+        )
+
     try:
-        df = pd.read_csv(file_path)
+        df = pd.read_csv(
+            file_path,
+            low_memory=False,
+        )
 
     except pd.errors.EmptyDataError:
         return pd.DataFrame(
             columns=OHLCV_COLUMNS
         )
 
+    except Exception as exc:
+        raise RuntimeError(
+            f"Existing CSV read failed: "
+            f"{file_path} | {exc}"
+        ) from exc
+
     if df.empty:
         return pd.DataFrame(
             columns=OHLCV_COLUMNS
         )
 
-    for column in OHLCV_COLUMNS:
+    missing_columns = [
+        column
+        for column in OHLCV_COLUMNS
+        if column not in df.columns
+    ]
 
-        if column not in df.columns:
-            df[column] = pd.NA
+    if missing_columns:
+        raise RuntimeError(
+            "Existing CSV missing columns: "
+            + ", ".join(
+                missing_columns
+            )
+        )
 
-    df = df[OHLCV_COLUMNS]
+    rows_before = len(df)
 
-    df["candle_date_time_utc"] = pd.to_datetime(
-        df["candle_date_time_utc"],
-        utc=True,
-        errors="coerce",
+    normalized = (
+        normalize_ohlcv_dataframe(
+            df,
+            require_market=market,
+        )
     )
 
-    df = df.dropna(
-        subset=["candle_date_time_utc"]
-    )
+    if len(normalized) != rows_before:
+        raise RuntimeError(
+            "Existing CSV row count changed during "
+            "normalization. "
+            f"{rows_before:,} -> "
+            f"{len(normalized):,}"
+        )
 
-    df = df.sort_values(
-        "candle_date_time_utc"
-    )
-
-    df = df.drop_duplicates(
-        subset=["candle_date_time_utc"],
-        keep="last",
-    )
-
-    df = df.reset_index(drop=True)
-
-    return df
+    return normalized
 
 
 # ============================================================
@@ -610,40 +825,30 @@ def fetch_latest_update(
     timeframe: str,
     existing_df: pd.DataFrame,
 ) -> pd.DataFrame:
-    """
-    기존 CSV가 있는 경우 최신 candle들을 다시 받아
-    기존 데이터와 병합한다.
-
-    마지막 몇 개 candle을 다시 받는 이유:
-    가장 최근 candle은 아직 진행 중일 수 있으므로
-    다음 실행에서 최신 값으로 갱신하기 위함이다.
-    """
 
     if existing_df.empty:
         return fetch_initial_history(
             market=market,
             timeframe=timeframe,
-            target_count=INITIAL_CANDLE_LIMITS[
-                timeframe
-            ],
+            target_count=(
+                INITIAL_CANDLE_LIMITS[
+                    timeframe
+                ]
+            ),
         )
-
-    # 일반적인 매시간 실행에서는 200개면 충분하다.
-    #
-    # PC가 장기간 꺼져 있었던 경우를 대비해
-    # 마지막 저장 시점과 현재 시점 차이를 계산해서
-    # 필요한 candle 수를 자동으로 늘린다.
 
     latest_time = existing_df[
         "candle_date_time_utc"
     ].max()
 
-    now = pd.Timestamp.now(tz="UTC")
+    now = pd.Timestamp.now(
+        tz="UTC"
+    )
 
     interval_seconds = safe_int(
-        TIMEFRAMES[timeframe][
-            "interval_seconds"
-        ],
+        TIMEFRAMES[
+            timeframe
+        ]["interval_seconds"],
         3600,
     )
 
@@ -659,13 +864,11 @@ def fetch_latest_update(
         // interval_seconds
     )
 
-    # 최신 candle 재확인을 위해 여유분 추가
     target_count = max(
         20,
         missing_estimate + 10,
     )
 
-    # 200개보다 많으면 pagination으로 가져온다.
     if target_count <= API_MAX_COUNT:
 
         return fetch_candle_batch(
@@ -679,12 +882,12 @@ def fetch_latest_update(
     collected = 0
     to_value: str | None = None
 
-    # 기존 마지막 시점보다 충분히 이전 candle까지
-    # 확보하면 중단한다.
     stop_time = (
         latest_time
         - pd.Timedelta(
-            seconds=interval_seconds * 5
+            seconds=(
+                interval_seconds * 5
+            )
         )
     )
 
@@ -716,7 +919,9 @@ def fetch_latest_update(
 
         next_to = (
             oldest_time
-            - pd.Timedelta(seconds=1)
+            - pd.Timedelta(
+                seconds=1
+            )
         )
 
         to_value = next_to.strftime(
@@ -726,15 +931,17 @@ def fetch_latest_update(
         if len(batch) < API_MAX_COUNT:
             break
 
-        # 비정상적으로 많은 API 요청 방지
-        if collected >= 10000:
+        if collected >= 10_000:
             print(
-                f"[WARN] Update safety limit reached: "
+                f"[WARN] Update safety limit "
+                f"reached: "
                 f"{market} {timeframe}"
             )
             break
 
-        time.sleep(REQUEST_SLEEP_SECONDS)
+        time.sleep(
+            REQUEST_SLEEP_SECONDS
+        )
 
     if not frames:
         return pd.DataFrame(
@@ -746,18 +953,10 @@ def fetch_latest_update(
         ignore_index=True,
     )
 
-    result = result.drop_duplicates(
-        subset=["candle_date_time_utc"],
-        keep="last",
+    return normalize_ohlcv_dataframe(
+        result,
+        require_market=market,
     )
-
-    result = result.sort_values(
-        "candle_date_time_utc"
-    )
-
-    result = result.reset_index(drop=True)
-
-    return result
 
 
 # ============================================================
@@ -767,13 +966,13 @@ def fetch_latest_update(
 def merge_ohlcv(
     existing_df: pd.DataFrame,
     new_df: pd.DataFrame,
+    market: str,
 ) -> pd.DataFrame:
-    """
-    기존 데이터와 신규 데이터를 병합하고
-    timestamp 중복을 제거한다.
-    """
 
-    if existing_df.empty and new_df.empty:
+    if (
+        existing_df.empty
+        and new_df.empty
+    ):
         return pd.DataFrame(
             columns=OHLCV_COLUMNS
         )
@@ -793,32 +992,10 @@ def merge_ohlcv(
             ignore_index=True,
         )
 
-    combined["candle_date_time_utc"] = (
-        pd.to_datetime(
-            combined["candle_date_time_utc"],
-            utc=True,
-            errors="coerce",
-        )
+    return normalize_ohlcv_dataframe(
+        combined,
+        require_market=market,
     )
-
-    combined = combined.dropna(
-        subset=["candle_date_time_utc"]
-    )
-
-    combined = combined.drop_duplicates(
-        subset=["candle_date_time_utc"],
-        keep="last",
-    )
-
-    combined = combined.sort_values(
-        "candle_date_time_utc"
-    )
-
-    combined = combined.reset_index(
-        drop=True
-    )
-
-    return combined[OHLCV_COLUMNS]
 
 
 # ============================================================
@@ -828,48 +1005,76 @@ def merge_ohlcv(
 def save_dataframe_safely(
     df: pd.DataFrame,
     file_path: Path,
+    market: str,
 ) -> None:
-    """
-    임시 파일에 먼저 저장한 뒤 원본 파일을 교체한다.
 
-    저장 중 오류가 발생했을 때 기존 정상 CSV가
-    손상될 가능성을 줄인다.
-    """
+    if df.empty:
+        raise RuntimeError(
+            "Refusing to save empty OHLCV dataframe."
+        )
+
+    output_df = (
+        normalize_ohlcv_dataframe(
+            df,
+            require_market=market,
+        )
+    )
 
     file_path.parent.mkdir(
         parents=True,
         exist_ok=True,
     )
 
-    temp_path = file_path.with_suffix(
-        file_path.suffix + ".tmp"
+    temp_path = (
+        file_path.with_suffix(
+            file_path.suffix + ".tmp"
+        )
     )
 
-    output_df = df.copy()
+    output_df = output_df.copy()
 
-    if (
+    output_df[
         "candle_date_time_utc"
-        in output_df.columns
-    ):
-        output_df[
-            "candle_date_time_utc"
-        ] = output_df[
-            "candle_date_time_utc"
-        ].apply(
-            lambda x: (
-                x.isoformat()
-                if pd.notna(x)
-                else ""
-            )
+    ] = output_df[
+        "candle_date_time_utc"
+    ].apply(
+        lambda value: (
+            value.isoformat()
+            if pd.notna(value)
+            else ""
+        )
+    )
+
+    try:
+        output_df.to_csv(
+            temp_path,
+            index=False,
+            encoding="utf-8-sig",
         )
 
-    output_df.to_csv(
-        temp_path,
-        index=False,
-        encoding="utf-8-sig",
-    )
+        if not temp_path.exists():
+            raise RuntimeError(
+                "Temporary CSV was not created."
+            )
 
-    temp_path.replace(file_path)
+        if temp_path.stat().st_size == 0:
+            raise RuntimeError(
+                "Temporary CSV is empty."
+            )
+
+        temp_path.replace(
+            file_path
+        )
+
+    except Exception:
+
+        if temp_path.exists():
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+
+        raise
 
 
 # ============================================================
@@ -885,9 +1090,6 @@ def append_status(
     new_rows: int,
     message: str = "",
 ) -> None:
-    """
-    collector_status.csv에 처리 결과를 누적한다.
-    """
 
     row = pd.DataFrame(
         [
@@ -940,26 +1142,32 @@ def collect_market_timeframe(
     market: str,
     timeframe: str,
 ) -> tuple[bool, int]:
-    """
-    마켓 하나 + 시간봉 하나를 수집한다.
 
-    Returns:
-        (success, added_rows)
-    """
-
-    directory: Path = TIMEFRAMES[
-        timeframe
-    ]["directory"]
-
-    file_path = directory / f"{market}.csv"
-
-    existing_df = load_existing_csv(
-        file_path
+    directory: Path = (
+        TIMEFRAMES[
+            timeframe
+        ]["directory"]
     )
 
-    rows_before = len(existing_df)
+    file_path = (
+        directory
+        / f"{market}.csv"
+    )
+
+    rows_before = 0
 
     try:
+
+        existing_df = (
+            load_existing_csv(
+                file_path,
+                market,
+            )
+        )
+
+        rows_before = len(
+            existing_df
+        )
 
         if existing_df.empty:
 
@@ -968,30 +1176,39 @@ def collect_market_timeframe(
                 f"initial history..."
             )
 
-            new_df = fetch_initial_history(
-                market=market,
-                timeframe=timeframe,
-                target_count=(
-                    INITIAL_CANDLE_LIMITS[
-                        timeframe
-                    ]
-                ),
+            new_df = (
+                fetch_initial_history(
+                    market=market,
+                    timeframe=timeframe,
+                    target_count=(
+                        INITIAL_CANDLE_LIMITS[
+                            timeframe
+                        ]
+                    ),
+                )
             )
 
         else:
 
-            new_df = fetch_latest_update(
-                market=market,
-                timeframe=timeframe,
-                existing_df=existing_df,
+            new_df = (
+                fetch_latest_update(
+                    market=market,
+                    timeframe=timeframe,
+                    existing_df=(
+                        existing_df
+                    ),
+                )
             )
 
         merged_df = merge_ohlcv(
             existing_df=existing_df,
             new_df=new_df,
+            market=market,
         )
 
-        rows_after = len(merged_df)
+        rows_after = len(
+            merged_df
+        )
 
         added_rows = max(
             0,
@@ -1006,6 +1223,7 @@ def collect_market_timeframe(
         save_dataframe_safely(
             merged_df,
             file_path,
+            market,
         )
 
         append_status(
@@ -1025,7 +1243,10 @@ def collect_market_timeframe(
             f"(+{added_rows:,})"
         )
 
-        return True, added_rows
+        return (
+            True,
+            added_rows,
+        )
 
     except Exception as exc:
 
@@ -1046,7 +1267,10 @@ def collect_market_timeframe(
             f"{message}"
         )
 
-        return False, 0
+        return (
+            False,
+            0,
+        )
 
 
 # ============================================================
@@ -1063,27 +1287,36 @@ def show_final_summary(
 
     print()
     print_line()
-    print("COLLECTOR SUMMARY")
+
+    print(
+        "COLLECTOR SUMMARY"
+    )
+
     print_line()
 
     print(
-        f"Project            : {PROJECT_NAME}"
+        f"Project            : "
+        f"{PROJECT_NAME}"
     )
 
     print(
-        f"Version            : {VERSION}"
+        f"Version            : "
+        f"{VERSION}"
     )
 
     print(
-        f"KRW markets        : {market_count:,}"
+        f"KRW markets        : "
+        f"{market_count:,}"
     )
 
     print(
-        f"Successful jobs    : {success_jobs:,}"
+        f"Successful jobs    : "
+        f"{success_jobs:,}"
     )
 
     print(
-        f"Failed jobs        : {failed_jobs:,}"
+        f"Failed jobs        : "
+        f"{failed_jobs:,}"
     )
 
     print(
@@ -1097,7 +1330,31 @@ def show_final_summary(
     )
 
     print()
-    print("Output directories:")
+
+    print(
+        "Timestamp policy:"
+    )
+
+    print(
+        "  Source            : "
+        "candle_date_time_utc"
+    )
+
+    print(
+        "  Unit              : "
+        "Unix epoch milliseconds"
+    )
+
+    print(
+        "  API timestamp     : "
+        "NOT USED"
+    )
+
+    print()
+
+    print(
+        "Output directories:"
+    )
 
     print(
         f"  H1 : {H1_DIR}"
@@ -1112,7 +1369,8 @@ def show_final_summary(
     )
 
     print(
-        f"  STATUS : {STATUS_FILE}"
+        f"  STATUS : "
+        f"{STATUS_FILE}"
     )
 
     print_line()
@@ -1127,36 +1385,55 @@ def main() -> int:
     start_time = time.time()
 
     print_line()
+
     print(
-        f"{PROJECT_NAME} - {VERSION}"
+        f"{PROJECT_NAME} - "
+        f"{VERSION}"
     )
+
     print_line()
 
     print(
-        f"Started UTC : {utc_now_iso()}"
+        f"Started UTC : "
+        f"{utc_now_iso()}"
     )
 
     print(
-        f"Base dir    : {BASE_DIR}"
+        f"Base dir    : "
+        f"{BASE_DIR}"
+    )
+
+    print()
+
+    print(
+        "Timestamp policy:"
+    )
+
+    print(
+        "  candle_date_time_utc "
+        "-> Unix epoch milliseconds"
+    )
+
+    print(
+        "  Existing timestamp "
+        "values are normalized on save."
     )
 
     print()
 
     ensure_directories()
 
-    # --------------------------------------------------------
-    # KRW MARKET LIST
-    # --------------------------------------------------------
-
-    print("[1/2] Loading Upbit KRW markets...")
+    print(
+        "[1/2] Loading Upbit KRW markets..."
+    )
 
     try:
-
         markets = get_krw_markets()
 
     except Exception as exc:
 
         print()
+
         print(
             f"[FATAL] Failed to load "
             f"KRW markets: {exc}"
@@ -1171,20 +1448,24 @@ def main() -> int:
 
     print()
 
-    # --------------------------------------------------------
-    # COLLECTION
-    # --------------------------------------------------------
+    print(
+        "[2/2] Collecting OHLCV..."
+    )
 
-    print("[2/2] Collecting OHLCV...")
     print()
 
     success_jobs = 0
     failed_jobs = 0
     total_added_rows = 0
 
-    total_markets = len(markets)
+    total_markets = len(
+        markets
+    )
 
-    for market_index, market in enumerate(
+    for (
+        market_index,
+        market,
+    ) in enumerate(
         markets,
         start=1,
     ):
@@ -1201,11 +1482,12 @@ def main() -> int:
             "d1",
         ):
 
-            success, added_rows = (
-                collect_market_timeframe(
-                    market=market,
-                    timeframe=timeframe,
-                )
+            (
+                success,
+                added_rows,
+            ) = collect_market_timeframe(
+                market=market,
+                timeframe=timeframe,
             )
 
             if success:
@@ -1213,7 +1495,6 @@ def main() -> int:
                 total_added_rows += (
                     added_rows
                 )
-
             else:
                 failed_jobs += 1
 
@@ -1225,12 +1506,9 @@ def main() -> int:
             MARKET_SLEEP_SECONDS
         )
 
-    # --------------------------------------------------------
-    # SUMMARY
-    # --------------------------------------------------------
-
     elapsed_seconds = (
-        time.time() - start_time
+        time.time()
+        - start_time
     )
 
     show_final_summary(
@@ -1240,18 +1518,16 @@ def main() -> int:
         total_added_rows=(
             total_added_rows
         ),
-        elapsed_seconds=elapsed_seconds,
+        elapsed_seconds=(
+            elapsed_seconds
+        ),
     )
-
-    # 일부 종목 실패가 있어도 나머지 데이터는 보존된다.
-    # 실패가 하나라도 있으면 exit code 1을 반환하여
-    # GitHub Actions에서 문제를 확인할 수 있도록 한다.
 
     if failed_jobs > 0:
 
         print(
-            "[RESULT] Completed with "
-            "one or more failed jobs."
+            "[RESULT] Collector completed "
+            "with one or more failed jobs."
         )
 
         return 1
@@ -1264,5 +1540,11 @@ def main() -> int:
     return 0
 
 
+# ============================================================
+# ENTRY POINT
+# ============================================================
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(
+        main()
+    )
