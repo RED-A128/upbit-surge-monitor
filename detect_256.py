@@ -1,30 +1,28 @@
 """
-Upbit Surge Monitor - 256 Detector Clean V001
+Upbit Surge Monitor - 256 Detector Clean V002
 ==============================================
 
 File:
     detect_256.py
 
 Purpose:
-    build_features.py Clean V002가 생성한 Feature CSV를
+    build_features.py Clean V002가 생성한 전체 KRW Feature CSV를
     READ ONLY로 읽어 256 연구용 상태를 판정한다.
 
-    첫 Detector 버전에서는 256 패턴을 하나의 단순한
-    True / False 신호로 만들지 않는다.
-
+    256 패턴을 단순 True / False 하나로 만들지 않고
     다음 3단계 상태로 분리한다.
 
         SETUP
         READY
         TRIGGER
 
-    이렇게 분리하는 이유는 이후 실제 급등 결과와 비교하여
-    어떤 조건이 유효했는지 연구 / 백테스트하기 위함이다.
+    이후 실제 급등 결과와 비교하여
+    어떤 조건이 유효했는지 연구 / 백테스트하기 위한
+    Research Detector이다.
 
-
-Clean V001 scope:
-    - KRW-BTC 단일 마켓 검증
-    - h1 / h4 / d1 처리
+Clean V002 scope:
+    - 전체 KRW 마켓 자동 발견
+    - h1 / h4 / d1 공통 Feature 파일만 실행
     - Feature CSV READ ONLY
     - 원본 OHLCV READ ONLY
     - Signal CSV 별도 저장
@@ -33,26 +31,21 @@ Clean V001 scope:
     - 예측 기능 없음
     - 자동매매 기능 없음
 
-
 Input:
-    data/features/h1/KRW-BTC.csv
-    data/features/h4/KRW-BTC.csv
-    data/features/d1/KRW-BTC.csv
-
+    data/features/h1/*.csv
+    data/features/h4/*.csv
+    data/features/d1/*.csv
 
 Output:
-    data/signals/256/h1/KRW-BTC.csv
-    data/signals/256/h4/KRW-BTC.csv
-    data/signals/256/d1/KRW-BTC.csv
-
+    data/signals/256/h1/*.csv
+    data/signals/256/h4/*.csv
+    data/signals/256/d1/*.csv
 
 Status:
     data/detect_256_status.csv
 
-
 Windows:
     py detect_256.py
-
 
 Important:
     이 파일은 연구용 Detector이다.
@@ -60,7 +53,7 @@ Important:
     "256"이라는 이름이 특정 매매법의 수익성을 보장하거나
     미래 상승을 예측한다는 의미가 아니다.
 
-    Clean V001에서는 현재/과거 Feature만 사용하여
+    현재/과거 Feature만 사용하여
     시장 구조를 단계별로 분류한다.
 """
 
@@ -82,34 +75,18 @@ import pandas as pd
 # ============================================================
 
 PROJECT_NAME = "Upbit Surge Monitor"
-
-VERSION = "256 Detector Clean V001"
+VERSION = "256 Detector Clean V002"
 
 BASE_DIR = Path(__file__).resolve().parent
-
 DATA_DIR = BASE_DIR / "data"
-
 FEATURE_DIR = DATA_DIR / "features"
-
-SIGNAL_DIR = (
-    DATA_DIR
-    / "signals"
-    / "256"
-)
-
-STATUS_FILE = (
-    DATA_DIR
-    / "detect_256_status.csv"
-)
+SIGNAL_DIR = DATA_DIR / "signals" / "256"
+STATUS_FILE = DATA_DIR / "detect_256_status.csv"
 
 
 # ============================================================
 # TARGET CONFIG
 # ============================================================
-
-TARGET_MARKETS = [
-    "KRW-BTC",
-]
 
 TARGET_TIMEFRAMES = (
     "h1",
@@ -123,38 +100,17 @@ TARGET_TIMEFRAMES = (
 # ============================================================
 
 TIMEFRAMES = {
-
     "h1": {
-        "feature_directory": (
-            FEATURE_DIR
-            / "h1"
-        ),
-        "signal_directory": (
-            SIGNAL_DIR
-            / "h1"
-        ),
+        "feature_directory": FEATURE_DIR / "h1",
+        "signal_directory": SIGNAL_DIR / "h1",
     },
-
     "h4": {
-        "feature_directory": (
-            FEATURE_DIR
-            / "h4"
-        ),
-        "signal_directory": (
-            SIGNAL_DIR
-            / "h4"
-        ),
+        "feature_directory": FEATURE_DIR / "h4",
+        "signal_directory": SIGNAL_DIR / "h4",
     },
-
     "d1": {
-        "feature_directory": (
-            FEATURE_DIR
-            / "d1"
-        ),
-        "signal_directory": (
-            SIGNAL_DIR
-            / "d1"
-        ),
+        "feature_directory": FEATURE_DIR / "d1",
+        "signal_directory": SIGNAL_DIR / "d1",
     },
 }
 
@@ -182,31 +138,21 @@ BASE_COLUMNS = [
 # ============================================================
 
 REQUIRED_FEATURE_COLUMNS = [
-
-    # --------------------------------------------------------
     # MOVING AVERAGE
-    # --------------------------------------------------------
-
     "sma_5",
     "sma_20",
     "sma_60",
     "sma_112",
     "sma_224",
 
-    # --------------------------------------------------------
     # PRICE POSITION
-    # --------------------------------------------------------
-
     "close_to_sma_5",
     "close_to_sma_20",
     "close_to_sma_60",
     "close_to_sma_112",
     "close_to_sma_224",
 
-    # --------------------------------------------------------
     # MA DISTANCE
-    # --------------------------------------------------------
-
     "sma_5_to_20",
     "sma_5_to_60",
     "sma_20_to_60",
@@ -214,87 +160,55 @@ REQUIRED_FEATURE_COLUMNS = [
     "sma_5_to_224",
     "sma_112_to_224",
 
-    # --------------------------------------------------------
     # MA SLOPE
-    # --------------------------------------------------------
-
     "sma_5_slope_1",
     "sma_5_slope_3",
-
     "sma_20_slope_1",
     "sma_20_slope_3",
-
     "sma_60_slope_1",
     "sma_60_slope_3",
-
     "sma_112_slope_1",
     "sma_112_slope_3",
-
     "sma_224_slope_1",
     "sma_224_slope_3",
 
-    # --------------------------------------------------------
     # VOLUME
-    # --------------------------------------------------------
-
     "volume_ratio_5",
     "volume_ratio_20",
 
-    # --------------------------------------------------------
     # TRADE VALUE
-    # --------------------------------------------------------
-
     "trade_value_ratio_5",
     "trade_value_ratio_20",
 
-    # --------------------------------------------------------
     # MOMENTUM
-    # --------------------------------------------------------
-
     "return_1",
     "return_3",
     "return_6",
-
     "rsi_14",
-
     "macd",
     "macd_signal",
     "macd_hist",
 
-    # --------------------------------------------------------
     # VOLATILITY
-    # --------------------------------------------------------
-
     "atr_pct_14",
-
     "bb_width",
     "bb_position",
 
-    # --------------------------------------------------------
     # CANDLE
-    # --------------------------------------------------------
-
     "candle_return",
     "candle_range_pct",
     "candle_body_pct",
-
     "upper_wick_pct",
     "lower_wick_pct",
-
     "body_to_range",
     "close_position_in_range",
-
     "is_bullish",
     "is_bearish",
 
-    # --------------------------------------------------------
     # RECENT RANGE
-    # --------------------------------------------------------
-
     "close_to_high_20",
     "close_to_low_20",
     "range_position_20",
-
     "close_to_high_60",
     "close_to_low_60",
     "range_position_60",
@@ -306,47 +220,30 @@ REQUIRED_FEATURE_COLUMNS = [
 # ============================================================
 
 DETECTOR_COLUMNS = [
-
-    # --------------------------------------------------------
     # CONDITION FLAGS
-    # --------------------------------------------------------
-
     "cond_ma_compression",
     "cond_long_ma_compression",
-
     "cond_short_ma_turn",
     "cond_mid_ma_turn",
     "cond_long_ma_stable",
-
     "cond_price_above_sma5",
     "cond_price_above_sma20",
-
     "cond_momentum_positive",
     "cond_macd_positive",
-
     "cond_volume_expansion",
     "cond_trade_value_expansion",
-
     "cond_candle_strength",
-
     "cond_not_overextended",
 
-    # --------------------------------------------------------
     # SCORES
-    # --------------------------------------------------------
-
     "setup_score",
     "ready_score",
     "trigger_score",
 
-    # --------------------------------------------------------
     # STATES
-    # --------------------------------------------------------
-
     "signal_setup",
     "signal_ready",
     "signal_trigger",
-
     "signal_stage",
 ]
 
@@ -373,88 +270,30 @@ STATUS_COLUMNS = [
 # DETECTOR THRESHOLDS
 # ============================================================
 
-# ------------------------------------------------------------
-# IMPORTANT
-#
-# 아래 값들은 Clean V001의 "연구 시작값"이다.
-#
-# 아직 최적화된 값이 아니다.
-#
-# 이후 실제 급등 Label과 백테스트 결과를 사용하여
-# 조정할 예정이다.
-# ------------------------------------------------------------
+# 기존 Clean V001 연구 시작값을 그대로 유지한다.
+# 전체시장 실행 수정에서 Detector 판정값은 변경하지 않는다.
 
-
-# ============================================================
-# MA COMPRESSION
-# ============================================================
-
-# SMA5와 SMA20 상대 이격도
 SHORT_MA_COMPRESSION_LIMIT = 0.015
-
-
-# SMA20과 SMA60 상대 이격도
 MID_MA_COMPRESSION_LIMIT = 0.030
-
-
-# SMA112와 SMA224 상대 이격도
 LONG_MA_COMPRESSION_LIMIT = 0.080
 
-
-# ============================================================
-# PRICE POSITION
-# ============================================================
-
-# 과도한 급등 상태를 제외하기 위한 상단 제한
 MAX_CLOSE_TO_SMA20 = 0.080
 
-
-# ============================================================
-# VOLUME
-# ============================================================
-
 VOLUME_RATIO_5_MIN = 1.10
-
 VOLUME_RATIO_20_MIN = 1.05
 
-
-# ============================================================
-# TRADE VALUE
-# ============================================================
-
 TRADE_VALUE_RATIO_5_MIN = 1.10
-
 TRADE_VALUE_RATIO_20_MIN = 1.05
 
-
-# ============================================================
-# MOMENTUM
-# ============================================================
-
 RETURN_1_MIN = 0.0
-
 RETURN_3_MIN = 0.0
 
-
-# ============================================================
-# RSI
-# ============================================================
-
 RSI_READY_MIN = 45.0
-
 RSI_TRIGGER_MIN = 50.0
-
 RSI_TRIGGER_MAX = 75.0
 
-
-# ============================================================
-# SCORE THRESHOLDS
-# ============================================================
-
 SETUP_SCORE_MIN = 4
-
 READY_SCORE_MIN = 5
-
 TRIGGER_SCORE_MIN = 5
 
 
@@ -466,17 +305,11 @@ def print_line(
     char: str = "=",
     length: int = 72,
 ) -> None:
-
-    print(
-        char * length
-    )
+    print(char * length)
 
 
 def utc_now_iso() -> str:
-
-    return datetime.now(
-        timezone.utc
-    ).isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 def ensure_directories() -> None:
@@ -485,28 +318,17 @@ def ensure_directories() -> None:
 
     Feature 입력 디렉터리는 생성하거나 수정하지 않는다.
     """
-
     directories = [
         DATA_DIR,
         SIGNAL_DIR,
     ]
 
     for timeframe in TARGET_TIMEFRAMES:
-
-        signal_directory = (
-            TIMEFRAMES[
-                timeframe
-            ][
-                "signal_directory"
-            ]
-        )
-
         directories.append(
-            signal_directory
+            TIMEFRAMES[timeframe]["signal_directory"]
         )
 
     for directory in directories:
-
         directory.mkdir(
             parents=True,
             exist_ok=True,
@@ -522,25 +344,16 @@ def calculate_file_sha256(
     Detector 실행 전/후 Feature CSV가
     변경되지 않았는지 검증한다.
     """
-
     sha256 = hashlib.sha256()
 
-    with file_path.open(
-        "rb"
-    ) as file:
-
+    with file_path.open("rb") as file:
         while True:
-
-            chunk = file.read(
-                1024 * 1024
-            )
+            chunk = file.read(1024 * 1024)
 
             if not chunk:
                 break
 
-            sha256.update(
-                chunk
-            )
+            sha256.update(chunk)
 
     return sha256.hexdigest()
 
@@ -550,16 +363,121 @@ def numeric_flag(
 ) -> pd.Series:
     """
     bool 조건을 0 / 1 int8로 변환한다.
-
-    NaN 비교 결과가 True로 잘못 해석되지 않도록
-    fillna(False)를 적용한다.
     """
-
     return (
         condition
         .fillna(False)
         .astype("int8")
     )
+
+
+# ============================================================
+# MARKET DISCOVERY
+# ============================================================
+
+def discover_target_markets() -> list[str]:
+    """
+    h1 / h4 / d1 Feature 디렉터리의 KRW CSV를 조사한다.
+
+    안전 원칙:
+        1. Feature 파일은 읽기만 한다.
+        2. 세 timeframe의 파일 집합이 정확히 동일해야 한다.
+        3. KRW-*.csv만 대상으로 한다.
+        4. 하나라도 불일치하면 전체 Detector 실행을 중단한다.
+
+    현재 정상 상태라면:
+        290 markets
+        x 3 timeframes
+        = 870 jobs
+    """
+
+    timeframe_markets: dict[str, set[str]] = {}
+
+    for timeframe in TARGET_TIMEFRAMES:
+        feature_directory = (
+            TIMEFRAMES[timeframe]["feature_directory"]
+        )
+
+        if not feature_directory.exists():
+            raise RuntimeError(
+                "Feature directory not found: "
+                f"{feature_directory}"
+            )
+
+        if not feature_directory.is_dir():
+            raise RuntimeError(
+                "Feature path is not a directory: "
+                f"{feature_directory}"
+            )
+
+        markets: set[str] = set()
+
+        for file_path in feature_directory.glob("KRW-*.csv"):
+            if not file_path.is_file():
+                continue
+
+            market = file_path.stem.strip()
+
+            if not market.startswith("KRW-"):
+                continue
+
+            markets.add(market)
+
+        if not markets:
+            raise RuntimeError(
+                "No KRW Feature CSV files found: "
+                f"{feature_directory}"
+            )
+
+        timeframe_markets[timeframe] = markets
+
+    reference_timeframe = TARGET_TIMEFRAMES[0]
+    reference_markets = timeframe_markets[reference_timeframe]
+
+    for timeframe in TARGET_TIMEFRAMES[1:]:
+        current_markets = timeframe_markets[timeframe]
+
+        if current_markets != reference_markets:
+            missing = sorted(
+                reference_markets - current_markets
+            )
+
+            extra = sorted(
+                current_markets - reference_markets
+            )
+
+            message_parts = [
+                "Feature market sets differ between timeframes.",
+                f"Reference={reference_timeframe}",
+                f"Current={timeframe}",
+                f"Reference count={len(reference_markets):,}",
+                f"Current count={len(current_markets):,}",
+            ]
+
+            if missing:
+                message_parts.append(
+                    "Missing="
+                    + ", ".join(missing[:20])
+                )
+
+            if extra:
+                message_parts.append(
+                    "Extra="
+                    + ", ".join(extra[:20])
+                )
+
+            raise RuntimeError(
+                " | ".join(message_parts)
+            )
+
+    target_markets = sorted(reference_markets)
+
+    if not target_markets:
+        raise RuntimeError(
+            "No common KRW markets discovered."
+        )
+
+    return target_markets
 
 
 # ============================================================
@@ -577,36 +495,28 @@ def load_feature_dataframe(
     """
 
     if not file_path.exists():
-
         raise FileNotFoundError(
             "Feature CSV not found: "
             f"{file_path}"
         )
 
     try:
-
         df = pd.read_csv(
             file_path,
             encoding="utf-8-sig",
         )
 
     except pd.errors.EmptyDataError as exc:
-
         raise RuntimeError(
             "Feature CSV is empty: "
             f"{file_path}"
         ) from exc
 
     if df.empty:
-
         raise RuntimeError(
             "Feature CSV contains no rows: "
             f"{file_path}"
         )
-
-    # --------------------------------------------------------
-    # REQUIRED COLUMNS
-    # --------------------------------------------------------
 
     required_columns = (
         BASE_COLUMNS
@@ -620,17 +530,10 @@ def load_feature_dataframe(
     ]
 
     if missing_columns:
-
         raise RuntimeError(
             "Feature CSV is missing required columns: "
-            + ", ".join(
-                missing_columns
-            )
+            + ", ".join(missing_columns)
         )
-
-    # --------------------------------------------------------
-    # MARKET
-    # --------------------------------------------------------
 
     market_values = (
         df["market"]
@@ -641,78 +544,51 @@ def load_feature_dataframe(
         .tolist()
     )
 
-    if market_values != [
-        expected_market
-    ]:
-
+    if market_values != [expected_market]:
         raise RuntimeError(
             "Unexpected market values: "
             f"{market_values}"
         )
 
-    # --------------------------------------------------------
-    # UTC TIME
-    # --------------------------------------------------------
-
-    df[
-        "candle_date_time_utc"
-    ] = pd.to_datetime(
-        df[
-            "candle_date_time_utc"
-        ],
+    df["candle_date_time_utc"] = pd.to_datetime(
+        df["candle_date_time_utc"],
         utc=True,
         errors="coerce",
     )
 
     invalid_time_count = int(
-        df[
-            "candle_date_time_utc"
-        ].isna().sum()
+        df["candle_date_time_utc"]
+        .isna()
+        .sum()
     )
 
     if invalid_time_count > 0:
-
         raise RuntimeError(
             "Invalid UTC timestamps: "
             f"{invalid_time_count:,}"
         )
 
-    # --------------------------------------------------------
-    # DUPLICATES
-    # --------------------------------------------------------
-
     duplicate_count = int(
         df.duplicated(
-            subset=[
-                "candle_date_time_utc"
-            ],
+            subset=["candle_date_time_utc"],
             keep=False,
         ).sum()
     )
 
     if duplicate_count > 0:
-
         raise RuntimeError(
             "Duplicate UTC timestamps detected: "
             f"{duplicate_count:,}"
         )
 
-    # --------------------------------------------------------
-    # SORT
-    # --------------------------------------------------------
-
-    df = df.sort_values(
-        "candle_date_time_utc"
-    )
-
-    df = df.reset_index(
-        drop=True
+    df = (
+        df.sort_values("candle_date_time_utc")
+        .reset_index(drop=True)
     )
 
     if not df[
         "candle_date_time_utc"
     ].is_monotonic_increasing:
-
         raise RuntimeError(
             "Feature CSV time order is invalid."
         )
@@ -727,43 +603,28 @@ def load_feature_dataframe(
 def add_ma_compression_conditions(
     df: pd.DataFrame,
 ) -> pd.DataFrame:
-    """
-    이동평균선이 서로 가까워지는 구조를 확인한다.
-
-    아직 '256 완성 패턴'이라고 판정하지 않는다.
-    """
 
     short_compression = (
-        df[
-            "sma_5_to_20"
-        ].abs()
+        df["sma_5_to_20"].abs()
         <= SHORT_MA_COMPRESSION_LIMIT
     )
 
     mid_compression = (
-        df[
-            "sma_20_to_60"
-        ].abs()
+        df["sma_20_to_60"].abs()
         <= MID_MA_COMPRESSION_LIMIT
     )
 
     long_compression = (
-        df[
-            "sma_112_to_224"
-        ].abs()
+        df["sma_112_to_224"].abs()
         <= LONG_MA_COMPRESSION_LIMIT
     )
 
-    df[
-        "cond_ma_compression"
-    ] = numeric_flag(
+    df["cond_ma_compression"] = numeric_flag(
         short_compression
         & mid_compression
     )
 
-    df[
-        "cond_long_ma_compression"
-    ] = numeric_flag(
+    df["cond_long_ma_compression"] = numeric_flag(
         long_compression
     )
 
@@ -777,71 +638,31 @@ def add_ma_compression_conditions(
 def add_ma_direction_conditions(
     df: pd.DataFrame,
 ) -> pd.DataFrame:
-    """
-    이동평균 기울기를 이용해
-    단기 / 중기 / 장기 방향을 확인한다.
-    """
 
     short_turn = (
-        (
-            df[
-                "sma_5_slope_1"
-            ]
-            > 0
-        )
-        & (
-            df[
-                "sma_5_slope_3"
-            ]
-            >= 0
-        )
+        (df["sma_5_slope_1"] > 0)
+        & (df["sma_5_slope_3"] >= 0)
     )
 
     mid_turn = (
-        (
-            df[
-                "sma_20_slope_1"
-            ]
-            >= 0
-        )
-        & (
-            df[
-                "sma_20_slope_3"
-            ]
-            >= 0
-        )
+        (df["sma_20_slope_1"] >= 0)
+        & (df["sma_20_slope_3"] >= 0)
     )
 
     long_stable = (
-        (
-            df[
-                "sma_112_slope_3"
-            ]
-            >= 0
-        )
-        | (
-            df[
-                "sma_224_slope_3"
-            ]
-            >= 0
-        )
+        (df["sma_112_slope_3"] >= 0)
+        | (df["sma_224_slope_3"] >= 0)
     )
 
-    df[
-        "cond_short_ma_turn"
-    ] = numeric_flag(
+    df["cond_short_ma_turn"] = numeric_flag(
         short_turn
     )
 
-    df[
-        "cond_mid_ma_turn"
-    ] = numeric_flag(
+    df["cond_mid_ma_turn"] = numeric_flag(
         mid_turn
     )
 
-    df[
-        "cond_long_ma_stable"
-    ] = numeric_flag(
+    df["cond_long_ma_stable"] = numeric_flag(
         long_stable
     )
 
@@ -856,28 +677,16 @@ def add_price_position_conditions(
     df: pd.DataFrame,
 ) -> pd.DataFrame:
 
-    df[
-        "cond_price_above_sma5"
-    ] = numeric_flag(
-        df[
-            "close_to_sma_5"
-        ] >= 0
+    df["cond_price_above_sma5"] = numeric_flag(
+        df["close_to_sma_5"] >= 0
     )
 
-    df[
-        "cond_price_above_sma20"
-    ] = numeric_flag(
-        df[
-            "close_to_sma_20"
-        ] >= 0
+    df["cond_price_above_sma20"] = numeric_flag(
+        df["close_to_sma_20"] >= 0
     )
 
-    df[
-        "cond_not_overextended"
-    ] = numeric_flag(
-        df[
-            "close_to_sma_20"
-        ]
+    df["cond_not_overextended"] = numeric_flag(
+        df["close_to_sma_20"]
         <= MAX_CLOSE_TO_SMA20
     )
 
@@ -893,52 +702,24 @@ def add_momentum_conditions(
 ) -> pd.DataFrame:
 
     momentum_positive = (
-        (
-            df[
-                "return_1"
-            ]
-            > RETURN_1_MIN
-        )
-        & (
-            df[
-                "return_3"
-            ]
-            > RETURN_3_MIN
-        )
-        & (
-            df[
-                "rsi_14"
-            ]
-            >= RSI_READY_MIN
-        )
+        (df["return_1"] > RETURN_1_MIN)
+        & (df["return_3"] > RETURN_3_MIN)
+        & (df["rsi_14"] >= RSI_READY_MIN)
     )
 
     macd_positive = (
-        (
-            df[
-                "macd_hist"
-            ]
-            > 0
-        )
+        (df["macd_hist"] > 0)
         & (
-            df[
-                "macd"
-            ]
-            >= df[
-                "macd_signal"
-            ]
+            df["macd"]
+            >= df["macd_signal"]
         )
     )
 
-    df[
-        "cond_momentum_positive"
-    ] = numeric_flag(
+    df["cond_momentum_positive"] = numeric_flag(
         momentum_positive
     )
 
-    df[
-        "cond_macd_positive"
-    ] = numeric_flag(
+    df["cond_macd_positive"] = numeric_flag(
         macd_positive
     )
 
@@ -954,44 +735,29 @@ def add_volume_conditions(
 ) -> pd.DataFrame:
 
     volume_expansion = (
-        (
-            df[
-                "volume_ratio_5"
-            ]
-            >= VOLUME_RATIO_5_MIN
-        )
+        (df["volume_ratio_5"] >= VOLUME_RATIO_5_MIN)
         | (
-            df[
-                "volume_ratio_20"
-            ]
+            df["volume_ratio_20"]
             >= VOLUME_RATIO_20_MIN
         )
     )
 
     trade_value_expansion = (
         (
-            df[
-                "trade_value_ratio_5"
-            ]
+            df["trade_value_ratio_5"]
             >= TRADE_VALUE_RATIO_5_MIN
         )
         | (
-            df[
-                "trade_value_ratio_20"
-            ]
+            df["trade_value_ratio_20"]
             >= TRADE_VALUE_RATIO_20_MIN
         )
     )
 
-    df[
-        "cond_volume_expansion"
-    ] = numeric_flag(
+    df["cond_volume_expansion"] = numeric_flag(
         volume_expansion
     )
 
-    df[
-        "cond_trade_value_expansion"
-    ] = numeric_flag(
+    df["cond_trade_value_expansion"] = numeric_flag(
         trade_value_expansion
     )
 
@@ -1007,29 +773,15 @@ def add_candle_conditions(
 ) -> pd.DataFrame:
 
     candle_strength = (
-        (
-            df[
-                "is_bullish"
-            ]
-            == 1
-        )
+        (df["is_bullish"] == 1)
+        & (df["candle_return"] > 0)
         & (
-            df[
-                "candle_return"
-            ]
-            > 0
-        )
-        & (
-            df[
-                "close_position_in_range"
-            ]
+            df["close_position_in_range"]
             >= 0.60
         )
     )
 
-    df[
-        "cond_candle_strength"
-    ] = numeric_flag(
+    df["cond_candle_strength"] = numeric_flag(
         candle_strength
     )
 
@@ -1043,10 +795,6 @@ def add_candle_conditions(
 def add_setup_score(
     df: pd.DataFrame,
 ) -> pd.DataFrame:
-    """
-    SETUP은 급등 직전 신호가 아니라
-    연구 대상이 될 수 있는 구조 형성 단계이다.
-    """
 
     columns = [
         "cond_ma_compression",
@@ -1056,15 +804,9 @@ def add_setup_score(
         "cond_not_overextended",
     ]
 
-    df[
-        "setup_score"
-    ] = (
-        df[
-            columns
-        ]
-        .sum(
-            axis=1
-        )
+    df["setup_score"] = (
+        df[columns]
+        .sum(axis=1)
         .astype("int16")
     )
 
@@ -1078,10 +820,6 @@ def add_setup_score(
 def add_ready_score(
     df: pd.DataFrame,
 ) -> pd.DataFrame:
-    """
-    READY는 SETUP 이후
-    단기 방향과 모멘텀이 살아나는 구간을 연구한다.
-    """
 
     columns = [
         "cond_short_ma_turn",
@@ -1092,15 +830,9 @@ def add_ready_score(
         "cond_not_overextended",
     ]
 
-    df[
-        "ready_score"
-    ] = (
-        df[
-            columns
-        ]
-        .sum(
-            axis=1
-        )
+    df["ready_score"] = (
+        df[columns]
+        .sum(axis=1)
         .astype("int16")
     )
 
@@ -1114,11 +846,6 @@ def add_ready_score(
 def add_trigger_score(
     df: pd.DataFrame,
 ) -> pd.DataFrame:
-    """
-    TRIGGER는 READY 구조에서
-    가격 / 거래량 / 거래대금 / 캔들 힘이
-    실제로 동반되는지를 확인한다.
-    """
 
     columns = [
         "cond_price_above_sma5",
@@ -1131,15 +858,9 @@ def add_trigger_score(
         "cond_not_overextended",
     ]
 
-    df[
-        "trigger_score"
-    ] = (
-        df[
-            columns
-        ]
-        .sum(
-            axis=1
-        )
+    df["trigger_score"] = (
+        df[columns]
+        .sum(axis=1)
         .astype("int16")
     )
 
@@ -1153,138 +874,57 @@ def add_trigger_score(
 def add_signal_states(
     df: pd.DataFrame,
 ) -> pd.DataFrame:
-    """
-    SETUP -> READY -> TRIGGER 상태를 생성한다.
-
-    중요한 점:
-        미래 candle을 보지 않는다.
-
-        현재 row의 Feature와 과거에서 계산된 Feature만
-        사용한다.
-    """
-
-    # --------------------------------------------------------
-    # SETUP
-    # --------------------------------------------------------
 
     setup = (
-        (
-            df[
-                "setup_score"
-            ]
-            >= SETUP_SCORE_MIN
-        )
-        & (
-            df[
-                "cond_ma_compression"
-            ]
-            == 1
-        )
+        (df["setup_score"] >= SETUP_SCORE_MIN)
+        & (df["cond_ma_compression"] == 1)
     )
 
-    df[
-        "signal_setup"
-    ] = numeric_flag(
+    df["signal_setup"] = numeric_flag(
         setup
     )
 
-    # --------------------------------------------------------
-    # READY
-    # --------------------------------------------------------
-
     ready = (
-        (
-            df[
-                "ready_score"
-            ]
-            >= READY_SCORE_MIN
-        )
-        & (
-            df[
-                "cond_short_ma_turn"
-            ]
-            == 1
-        )
-        & (
-            df[
-                "cond_price_above_sma5"
-            ]
-            == 1
-        )
-        & (
-            df[
-                "rsi_14"
-            ]
-            >= RSI_READY_MIN
-        )
+        (df["ready_score"] >= READY_SCORE_MIN)
+        & (df["cond_short_ma_turn"] == 1)
+        & (df["cond_price_above_sma5"] == 1)
+        & (df["rsi_14"] >= RSI_READY_MIN)
     )
 
-    df[
-        "signal_ready"
-    ] = numeric_flag(
+    df["signal_ready"] = numeric_flag(
         ready
     )
 
-    # --------------------------------------------------------
-    # TRIGGER
-    # --------------------------------------------------------
-
     trigger = (
         (
-            df[
-                "trigger_score"
-            ]
+            df["trigger_score"]
             >= TRIGGER_SCORE_MIN
         )
+        & (df["signal_ready"] == 1)
         & (
-            df[
-                "signal_ready"
-            ]
+            df["cond_price_above_sma20"]
             == 1
         )
         & (
-            df[
-                "cond_price_above_sma20"
-            ]
-            == 1
-        )
-        & (
-            df[
-                "rsi_14"
-            ]
+            df["rsi_14"]
             >= RSI_TRIGGER_MIN
         )
         & (
-            df[
-                "rsi_14"
-            ]
+            df["rsi_14"]
             <= RSI_TRIGGER_MAX
         )
         & (
-            (
-                df[
-                    "cond_volume_expansion"
-                ]
-                == 1
-            )
+            (df["cond_volume_expansion"] == 1)
             | (
-                df[
-                    "cond_trade_value_expansion"
-                ]
+                df["cond_trade_value_expansion"]
                 == 1
             )
         )
     )
 
-    df[
-        "signal_trigger"
-    ] = numeric_flag(
+    df["signal_trigger"] = numeric_flag(
         trigger
     )
-
-    # --------------------------------------------------------
-    # STAGE
-    # --------------------------------------------------------
 
     stage = np.full(
         len(df),
@@ -1293,32 +933,24 @@ def add_signal_states(
     )
 
     stage[
-        df[
-            "signal_setup"
-        ].to_numpy(
+        df["signal_setup"].to_numpy(
             dtype=bool
         )
     ] = "SETUP"
 
     stage[
-        df[
-            "signal_ready"
-        ].to_numpy(
+        df["signal_ready"].to_numpy(
             dtype=bool
         )
     ] = "READY"
 
     stage[
-        df[
-            "signal_trigger"
-        ].to_numpy(
+        df["signal_trigger"].to_numpy(
             dtype=bool
         )
     ] = "TRIGGER"
 
-    df[
-        "signal_stage"
-    ] = stage
+    df["signal_stage"] = stage
 
     return df
 
@@ -1330,70 +962,21 @@ def add_signal_states(
 def build_detector_dataframe(
     feature_df: pd.DataFrame,
 ) -> pd.DataFrame:
-    """
-    Feature DataFrame을 받아
-    256 연구용 Detector 결과를 생성한다.
-
-    원본 Feature DataFrame은 수정하지 않는다.
-    """
 
     df = feature_df.copy()
 
-    # --------------------------------------------------------
-    # CONDITIONS
-    # --------------------------------------------------------
+    df = add_ma_compression_conditions(df)
+    df = add_ma_direction_conditions(df)
+    df = add_price_position_conditions(df)
+    df = add_momentum_conditions(df)
+    df = add_volume_conditions(df)
+    df = add_candle_conditions(df)
 
-    df = add_ma_compression_conditions(
-        df
-    )
+    df = add_setup_score(df)
+    df = add_ready_score(df)
+    df = add_trigger_score(df)
 
-    df = add_ma_direction_conditions(
-        df
-    )
-
-    df = add_price_position_conditions(
-        df
-    )
-
-    df = add_momentum_conditions(
-        df
-    )
-
-    df = add_volume_conditions(
-        df
-    )
-
-    df = add_candle_conditions(
-        df
-    )
-
-    # --------------------------------------------------------
-    # SCORES
-    # --------------------------------------------------------
-
-    df = add_setup_score(
-        df
-    )
-
-    df = add_ready_score(
-        df
-    )
-
-    df = add_trigger_score(
-        df
-    )
-
-    # --------------------------------------------------------
-    # STATES
-    # --------------------------------------------------------
-
-    df = add_signal_states(
-        df
-    )
-
-    # --------------------------------------------------------
-    # Infinity cleanup
-    # --------------------------------------------------------
+    df = add_signal_states(df)
 
     df = df.replace(
         [
@@ -1417,30 +1000,16 @@ def validate_detector_dataframe(
 ) -> None:
 
     if detector_df.empty:
-
         raise RuntimeError(
             "Detector DataFrame is empty."
         )
 
-    # --------------------------------------------------------
-    # ROW COUNT
-    # --------------------------------------------------------
-
-    if len(
-        detector_df
-    ) != len(
-        feature_df
-    ):
-
+    if len(detector_df) != len(feature_df):
         raise RuntimeError(
             "Detector row count changed unexpectedly: "
             f"feature={len(feature_df):,}, "
             f"detector={len(detector_df):,}"
         )
-
-    # --------------------------------------------------------
-    # DETECTOR COLUMNS
-    # --------------------------------------------------------
 
     missing_detector_columns = [
         column
@@ -1449,7 +1018,6 @@ def validate_detector_dataframe(
     ]
 
     if missing_detector_columns:
-
         raise RuntimeError(
             "Detector output is missing columns: "
             + ", ".join(
@@ -1457,14 +1025,8 @@ def validate_detector_dataframe(
             )
         )
 
-    # --------------------------------------------------------
-    # MARKET
-    # --------------------------------------------------------
-
     market_values = (
-        detector_df[
-            "market"
-        ]
+        detector_df["market"]
         .dropna()
         .astype(str)
         .str.strip()
@@ -1472,31 +1034,21 @@ def validate_detector_dataframe(
         .tolist()
     )
 
-    if market_values != [
-        expected_market
-    ]:
-
+    if market_values != [expected_market]:
         raise RuntimeError(
             "Detector output contains "
             "unexpected market values: "
             f"{market_values}"
         )
 
-    # --------------------------------------------------------
-    # TIMESTAMP
-    # --------------------------------------------------------
-
     duplicate_count = int(
         detector_df.duplicated(
-            subset=[
-                "candle_date_time_utc"
-            ],
+            subset=["candle_date_time_utc"],
             keep=False,
         ).sum()
     )
 
     if duplicate_count > 0:
-
         raise RuntimeError(
             "Detector output contains duplicate "
             "UTC timestamps: "
@@ -1506,34 +1058,22 @@ def validate_detector_dataframe(
     if not detector_df[
         "candle_date_time_utc"
     ].is_monotonic_increasing:
-
         raise RuntimeError(
             "Detector output is not sorted "
             "by UTC timestamp."
         )
 
-    # --------------------------------------------------------
-    # INPUT FEATURE PRESERVATION
-    # --------------------------------------------------------
-
+    # Feature 입력값 보존 검증
     for column in feature_df.columns:
 
         source_series = (
-            feature_df[
-                column
-            ]
-            .reset_index(
-                drop=True
-            )
+            feature_df[column]
+            .reset_index(drop=True)
         )
 
         detector_series = (
-            detector_df[
-                column
-            ]
-            .reset_index(
-                drop=True
-            )
+            detector_df[column]
+            .reset_index(drop=True)
         )
 
         if column == "candle_date_time_utc":
@@ -1553,7 +1093,6 @@ def validate_detector_dataframe(
             if not source_values.equals(
                 detector_values
             ):
-
                 raise RuntimeError(
                     "Feature UTC timestamp changed "
                     "during detection."
@@ -1566,23 +1105,18 @@ def validate_detector_dataframe(
             source_values = pd.to_numeric(
                 source_series,
                 errors="coerce",
-            ).to_numpy(
-                dtype=float
-            )
+            ).to_numpy(dtype=float)
 
             detector_values = pd.to_numeric(
                 detector_series,
                 errors="coerce",
-            ).to_numpy(
-                dtype=float
-            )
+            ).to_numpy(dtype=float)
 
             if not np.allclose(
                 source_values,
                 detector_values,
                 equal_nan=True,
             ):
-
                 raise RuntimeError(
                     "Feature numeric column changed "
                     "during detection: "
@@ -1603,60 +1137,41 @@ def validate_detector_dataframe(
                 .tolist()
             )
 
-            if (
-                source_values
-                != detector_values
-            ):
-
+            if source_values != detector_values:
                 raise RuntimeError(
                     "Feature column changed "
                     "during detection: "
                     f"{column}"
                 )
 
-    # --------------------------------------------------------
-    # FLAG VALUES
-    # --------------------------------------------------------
-
+    # Flag 검증
     flag_columns = [
         column
         for column in DETECTOR_COLUMNS
-        if column.startswith(
-            "cond_"
+        if (
+            column.startswith("cond_")
+            or (
+                column.startswith("signal_")
+                and column != "signal_stage"
+            )
         )
-        or column.startswith(
-            "signal_"
-        )
-        and column != "signal_stage"
     ]
 
     for column in flag_columns:
 
         values = set(
-            detector_df[
-                column
-            ]
+            detector_df[column]
             .dropna()
             .unique()
             .tolist()
         )
 
-        if not values.issubset(
-            {
-                0,
-                1,
-            }
-        ):
-
+        if not values.issubset({0, 1}):
             raise RuntimeError(
                 "Invalid detector flag values "
                 f"in {column}: "
                 f"{values}"
             )
-
-    # --------------------------------------------------------
-    # STAGE VALUES
-    # --------------------------------------------------------
 
     allowed_stages = {
         "NONE",
@@ -1666,9 +1181,7 @@ def validate_detector_dataframe(
     }
 
     stage_values = set(
-        detector_df[
-            "signal_stage"
-        ]
+        detector_df["signal_stage"]
         .dropna()
         .astype(str)
         .unique()
@@ -1678,59 +1191,30 @@ def validate_detector_dataframe(
     if not stage_values.issubset(
         allowed_stages
     ):
-
         raise RuntimeError(
             "Invalid signal_stage values: "
             f"{stage_values}"
         )
 
-    # --------------------------------------------------------
-    # STATE CONSISTENCY
-    # --------------------------------------------------------
-
     trigger_without_ready = (
-        (
-            detector_df[
-                "signal_trigger"
-            ]
-            == 1
-        )
-        & (
-            detector_df[
-                "signal_ready"
-            ]
-            != 1
-        )
+        (detector_df["signal_trigger"] == 1)
+        & (detector_df["signal_ready"] != 1)
     )
 
     if trigger_without_ready.any():
-
         raise RuntimeError(
             "TRIGGER exists without READY."
         )
 
-    # --------------------------------------------------------
-    # INFINITY
-    # --------------------------------------------------------
-
-    numeric_df = (
-        detector_df.select_dtypes(
-            include=[
-                np.number
-            ]
-        )
+    numeric_df = detector_df.select_dtypes(
+        include=[np.number]
     )
 
-    numeric_values = (
-        numeric_df.to_numpy(
-            dtype=float
-        )
+    numeric_values = numeric_df.to_numpy(
+        dtype=float
     )
 
-    if np.isinf(
-        numeric_values
-    ).any():
-
+    if np.isinf(numeric_values).any():
         raise RuntimeError(
             "Detector output contains "
             "infinite numeric values."
@@ -1745,12 +1229,6 @@ def save_detector_dataframe(
     detector_df: pd.DataFrame,
     output_file: Path,
 ) -> None:
-    """
-    Signal CSV를 임시 파일에 저장한 뒤
-    최종 파일로 교체한다.
-
-    Feature 입력 CSV에는 쓰지 않는다.
-    """
 
     output_file.parent.mkdir(
         parents=True,
@@ -1759,15 +1237,10 @@ def save_detector_dataframe(
 
     temporary_file = (
         output_file.parent
-        / (
-            output_file.name
-            + ".tmp"
-        )
+        / (output_file.name + ".tmp")
     )
 
-    save_df = (
-        detector_df.copy()
-    )
+    save_df = detector_df.copy()
 
     save_df[
         "candle_date_time_utc"
@@ -1776,15 +1249,12 @@ def save_detector_dataframe(
     ].apply(
         lambda value: (
             value.isoformat()
-            if pd.notna(
-                value
-            )
+            if pd.notna(value)
             else ""
         )
     )
 
     try:
-
         save_df.to_csv(
             temporary_file,
             index=False,
@@ -1796,9 +1266,7 @@ def save_detector_dataframe(
         )
 
     finally:
-
         if temporary_file.exists():
-
             temporary_file.unlink(
                 missing_ok=True
             )
@@ -1826,9 +1294,7 @@ def append_detector_status(
     )
 
     row = {
-        "run_time_utc": (
-            utc_now_iso()
-        ),
+        "run_time_utc": utc_now_iso(),
         "version": VERSION,
         "market": market,
         "timeframe": timeframe,
@@ -1845,9 +1311,7 @@ def append_detector_status(
     }
 
     status_df = pd.DataFrame(
-        [
-            row
-        ],
+        [row],
         columns=STATUS_COLUMNS,
     )
 
@@ -1874,28 +1338,19 @@ def detect_single_file(
 ) -> dict[str, Any]:
 
     if timeframe not in TIMEFRAMES:
-
         raise ValueError(
             "Unsupported timeframe: "
             f"{timeframe}"
         )
 
-    config = (
-        TIMEFRAMES[
-            timeframe
-        ]
-    )
+    config = TIMEFRAMES[timeframe]
 
     feature_directory = (
-        config[
-            "feature_directory"
-        ]
+        config["feature_directory"]
     )
 
     signal_directory = (
-        config[
-            "signal_directory"
-        ]
+        config["signal_directory"]
     )
 
     feature_file = (
@@ -1908,10 +1363,7 @@ def detect_single_file(
         / f"{market}.csv"
     )
 
-    print_line(
-        "-",
-        72,
-    )
+    print_line("-", 72)
 
     print(
         f"[{timeframe.upper()}] "
@@ -1938,25 +1390,14 @@ def detect_single_file(
     ready_count = 0
     trigger_count = 0
 
-    started = (
-        time.perf_counter()
-    )
+    started = time.perf_counter()
 
     try:
-
-        # ----------------------------------------------------
-        # HASH BEFORE
-        # ----------------------------------------------------
-
         feature_sha256_before = (
             calculate_file_sha256(
                 feature_file
             )
         )
-
-        # ----------------------------------------------------
-        # LOAD
-        # ----------------------------------------------------
 
         feature_df = (
             load_feature_dataframe(
@@ -1965,18 +1406,12 @@ def detect_single_file(
             )
         )
 
-        feature_rows = len(
-            feature_df
-        )
+        feature_rows = len(feature_df)
 
         print(
             "Rows    : "
             f"{feature_rows:,}"
         )
-
-        # ----------------------------------------------------
-        # DETECT
-        # ----------------------------------------------------
 
         detector_df = (
             build_detector_dataframe(
@@ -1984,23 +1419,13 @@ def detect_single_file(
             )
         )
 
-        signal_rows = len(
-            detector_df
-        )
-
-        # ----------------------------------------------------
-        # VALIDATE
-        # ----------------------------------------------------
+        signal_rows = len(detector_df)
 
         validate_detector_dataframe(
             feature_df=feature_df,
             detector_df=detector_df,
             expected_market=market,
         )
-
-        # ----------------------------------------------------
-        # COUNTS
-        # ----------------------------------------------------
 
         setup_count = int(
             detector_df[
@@ -2020,10 +1445,6 @@ def detect_single_file(
             ].sum()
         )
 
-        # ----------------------------------------------------
-        # VERIFY INPUT BEFORE SAVE
-        # ----------------------------------------------------
-
         feature_sha256_mid = (
             calculate_file_sha256(
                 feature_file
@@ -2034,34 +1455,22 @@ def detect_single_file(
             feature_sha256_mid
             != feature_sha256_before
         ):
-
             raise RuntimeError(
                 "Feature CSV changed while "
                 "detector was running."
             )
-
-        # ----------------------------------------------------
-        # SAVE
-        # ----------------------------------------------------
 
         save_detector_dataframe(
             detector_df,
             output_file,
         )
 
-        # ----------------------------------------------------
-        # VERIFY SAVED OUTPUT
-        # ----------------------------------------------------
-
         saved_df = pd.read_csv(
             output_file,
             encoding="utf-8-sig",
         )
 
-        if len(
-            saved_df
-        ) != signal_rows:
-
+        if len(saved_df) != signal_rows:
             raise RuntimeError(
                 "Saved detector row count mismatch: "
                 f"expected={signal_rows:,}, "
@@ -2075,17 +1484,12 @@ def detect_single_file(
         ]
 
         if missing_saved_columns:
-
             raise RuntimeError(
                 "Saved detector CSV is missing columns: "
                 + ", ".join(
                     missing_saved_columns
                 )
             )
-
-        # ----------------------------------------------------
-        # HASH AFTER
-        # ----------------------------------------------------
 
         feature_sha256_after = (
             calculate_file_sha256(
@@ -2097,7 +1501,6 @@ def detect_single_file(
             feature_sha256_after
             != feature_sha256_before
         ):
-
             raise RuntimeError(
                 "Feature CSV was modified "
                 "during detector execution."
@@ -2166,18 +1569,14 @@ def detect_single_file(
             "setup_count": setup_count,
             "ready_count": ready_count,
             "trigger_count": trigger_count,
-            "output_file": str(
-                output_file
-            ),
+            "output_file": str(output_file),
             "message": message,
         }
 
     except Exception as exc:
 
         try:
-
             if feature_file.exists():
-
                 feature_sha256_after = (
                     calculate_file_sha256(
                         feature_file
@@ -2185,14 +1584,11 @@ def detect_single_file(
                 )
 
         except Exception:
-
             feature_sha256_after = (
                 "HASH_CHECK_FAILED"
             )
 
-        message = str(
-            exc
-        )
+        message = str(exc)
 
         append_detector_status(
             market=market,
@@ -2223,9 +1619,7 @@ def detect_single_file(
             "setup_count": setup_count,
             "ready_count": ready_count,
             "trigger_count": trigger_count,
-            "output_file": str(
-                output_file
-            ),
+            "output_file": str(output_file),
             "message": message,
         }
 
@@ -2236,33 +1630,25 @@ def detect_single_file(
 
 def print_summary(
     results: list[dict[str, Any]],
+    target_markets: list[str],
+    elapsed_total: float,
 ) -> None:
 
     print()
-
+    print_line()
+    print("256 DETECTOR SUMMARY")
     print_line()
 
-    print(
-        "256 DETECTOR SUMMARY"
-    )
-
-    print_line()
-
-    total_jobs = len(
-        results
-    )
+    total_jobs = len(results)
 
     passed_jobs = sum(
         1
         for result in results
-        if result[
-            "status"
-        ] == "PASSED"
+        if result["status"] == "PASSED"
     )
 
     failed_jobs = (
-        total_jobs
-        - passed_jobs
+        total_jobs - passed_jobs
     )
 
     total_feature_rows = sum(
@@ -2327,7 +1713,7 @@ def print_summary(
 
     print(
         "Markets       : "
-        f"{len(TARGET_MARKETS):,}"
+        f"{len(target_markets):,}"
     )
 
     print(
@@ -2362,9 +1748,7 @@ def print_summary(
 
     print()
 
-    print(
-        "256 Research States:"
-    )
+    print("256 Research States:")
 
     print(
         "  SETUP       : "
@@ -2383,57 +1767,45 @@ def print_summary(
 
     print()
 
-    print(
-        "Detector design:"
-    )
-
+    print("Detector design:")
     print(
         "  SETUP   = MA structure / compression"
     )
-
     print(
         "  READY   = short-term turn / momentum"
     )
-
     print(
         "  TRIGGER = price + momentum + activity"
     )
 
     print()
 
-    print(
-        "Safety:"
-    )
-
-    print(
-        "  Future data : NOT USED"
-    )
-
-    print(
-        "  Future label: NOT IMPLEMENTED"
-    )
-
-    print(
-        "  Prediction  : DISABLED"
-    )
-
-    print(
-        "  Trading     : DISABLED"
-    )
+    print("Safety:")
+    print("  Feature CSV : READ ONLY")
+    print("  OHLCV       : UNTOUCHED")
+    print("  Future data : NOT USED")
+    print("  Future label: NOT IMPLEMENTED")
+    print("  Prediction  : DISABLED")
+    print("  Trading     : DISABLED")
 
     print()
+    print(
+        "Elapsed total : "
+        f"{elapsed_total:.2f}s"
+    )
 
-    for result in results:
+    if failed_jobs > 0:
+        print()
+        print("Failed jobs:")
 
-        print(
-            f"[{result['status']}] "
-            f"{result['market']} "
-            f"{result['timeframe']} "
-            f"rows={result['signal_rows']:,} "
-            f"setup={result['setup_count']:,} "
-            f"ready={result['ready_count']:,} "
-            f"trigger={result['trigger_count']:,}"
-        )
+        for result in results:
+            if result["status"] == "FAILED":
+                print(
+                    f"[FAILED] "
+                    f"{result['market']} "
+                    f"{result['timeframe']} "
+                    f"- {result['message']}"
+                )
 
     print_line()
 
@@ -2444,6 +1816,8 @@ def print_summary(
 
 def main() -> int:
 
+    started_total = time.perf_counter()
+
     print_line()
 
     print(
@@ -2452,7 +1826,7 @@ def main() -> int:
     )
 
     print(
-        "STEP 4 - 256 DETECTOR FOUNDATION"
+        "STEP 4 - 256 DETECTOR FULL KRW MARKET"
     )
 
     print_line()
@@ -2469,115 +1843,152 @@ def main() -> int:
 
     print()
 
-    print(
-        "Mode:"
-    )
-
-    print(
-        "  Feature CSV READ ONLY"
-    )
-
-    print(
-        "  Original OHLCV untouched"
-    )
-
-    print(
-        "  KRW-BTC validation mode"
-    )
-
-    print(
-        "  h1 / h4 / d1"
-    )
-
-    print(
-        "  SETUP / READY / TRIGGER research"
-    )
-
-    print(
-        "  No future labels"
-    )
-
-    print(
-        "  No prediction"
-    )
-
-    print(
-        "  No trading"
-    )
+    print("Mode:")
+    print("  Feature CSV READ ONLY")
+    print("  Original OHLCV untouched")
+    print("  ALL KRW MARKET mode")
+    print("  h1 / h4 / d1")
+    print("  SETUP / READY / TRIGGER research")
+    print("  No future labels")
+    print("  No prediction")
+    print("  No trading")
 
     print()
 
-    print(
-        "Clean V001 detector:"
-    )
-
-    print(
-        "  MA compression"
-    )
-
-    print(
-        "  MA direction"
-    )
-
-    print(
-        "  Price position"
-    )
-
-    print(
-        "  Momentum"
-    )
-
-    print(
-        "  Volume / trade-value expansion"
-    )
-
-    print(
-        "  Candle strength"
-    )
-
-    print(
-        "  SETUP / READY / TRIGGER scores"
-    )
+    print("Clean V002 detector:")
+    print("  Full KRW market auto discovery")
+    print("  h1 / h4 / d1 market-set consistency")
+    print("  MA compression")
+    print("  MA direction")
+    print("  Price position")
+    print("  Momentum")
+    print("  Volume / trade-value expansion")
+    print("  Candle strength")
+    print("  SETUP / READY / TRIGGER scores")
 
     print()
 
     ensure_directories()
 
+    # --------------------------------------------------------
+    # DISCOVER ALL KRW MARKETS
+    # --------------------------------------------------------
+
+    target_markets = discover_target_markets()
+
+    expected_jobs = (
+        len(target_markets)
+        * len(TARGET_TIMEFRAMES)
+    )
+
+    print_line("-", 72)
+
+    print(
+        "[DISCOVERY] KRW markets : "
+        f"{len(target_markets):,}"
+    )
+
+    print(
+        "[DISCOVERY] Timeframes  : "
+        f"{len(TARGET_TIMEFRAMES):,}"
+    )
+
+    print(
+        "[DISCOVERY] Total jobs  : "
+        f"{expected_jobs:,}"
+    )
+
+    print(
+        "[PASS] h1 / h4 / d1 "
+        "market file sets are identical."
+    )
+
+    print_line("-", 72)
+
     results: list[
         dict[str, Any]
     ] = []
 
-    for market in TARGET_MARKETS:
+    # --------------------------------------------------------
+    # RUN ALL MARKETS
+    # --------------------------------------------------------
+
+    current_job = 0
+
+    for market in target_markets:
 
         for timeframe in TARGET_TIMEFRAMES:
 
-            result = (
-                detect_single_file(
-                    market=market,
-                    timeframe=timeframe,
-                )
+            current_job += 1
+
+            print()
+            print(
+                f"[JOB {current_job:,}"
+                f"/{expected_jobs:,}]"
             )
 
-            results.append(
-                result
+            result = detect_single_file(
+                market=market,
+                timeframe=timeframe,
             )
+
+            results.append(result)
+
+    # --------------------------------------------------------
+    # FINAL SUMMARY
+    # --------------------------------------------------------
+
+    elapsed_total = (
+        time.perf_counter()
+        - started_total
+    )
 
     print_summary(
-        results
+        results=results,
+        target_markets=target_markets,
+        elapsed_total=elapsed_total,
     )
 
     failed_jobs = [
         result
         for result in results
-        if result[
-            "status"
-        ] != "PASSED"
+        if result["status"] != "PASSED"
     ]
 
     if failed_jobs:
 
         print(
             "[RESULT] 256 DETECTOR FAILED"
+        )
+
+        print(
+            "[FAIL] "
+            f"{len(failed_jobs):,} / "
+            f"{expected_jobs:,} jobs failed."
+        )
+
+        print(
+            "[STOP] Do not proceed to "
+            "256 Validator."
+        )
+
+        return 1
+
+    if len(results) != expected_jobs:
+
+        print(
+            "[RESULT] 256 DETECTOR FAILED"
+        )
+
+        print(
+            "[FAIL] Job count mismatch: "
+            f"expected={expected_jobs:,}, "
+            f"actual={len(results):,}"
+        )
+
+        print(
+            "[STOP] Do not proceed to "
+            "256 Validator."
         )
 
         return 1
@@ -2587,8 +1998,24 @@ def main() -> int:
     )
 
     print(
+        "[PASS] "
+        f"{len(target_markets):,} markets."
+    )
+
+    print(
+        "[PASS] "
+        f"{len(results):,} / "
+        f"{expected_jobs:,} jobs passed."
+    )
+
+    print(
         "[PASS] Feature CSV files "
         "remained unchanged."
+    )
+
+    print(
+        "[PASS] Original OHLCV data "
+        "remained untouched."
     )
 
     print(
@@ -2597,8 +2024,7 @@ def main() -> int:
     )
 
     print(
-        "[NEXT] Validate detector output "
-        "before adding future-result labels."
+        "[NEXT] Full 256 Detector validation."
     )
 
     return 0
@@ -2611,23 +2037,18 @@ def main() -> int:
 if __name__ == "__main__":
 
     try:
-
         exit_code = main()
 
     except KeyboardInterrupt:
 
         print()
-
-        print(
-            "[STOP] Interrupted by user."
-        )
+        print("[STOP] Interrupted by user.")
 
         exit_code = 130
 
     except Exception as exc:
 
         print()
-
         print_line()
 
         print(
@@ -2639,9 +2060,7 @@ if __name__ == "__main__":
 
         exit_code = 1
 
-    sys.exit(
-        exit_code
-    )
+    sys.exit(exit_code)
 
 
 # ============================================================
