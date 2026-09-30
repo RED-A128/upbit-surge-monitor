@@ -302,6 +302,10 @@ data/validation/validate_256_checkpoint.json
 data/collector/
 data/collector_status.csv
 
+# Data History Audit Clean V003 runtime data
+data/data_history_audit_status.csv
+data/validation/data_history_audit_checkpoint.json
+
 # ============================================================
 # END
 # ============================================================
