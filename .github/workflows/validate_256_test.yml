@@ -1,36 +1,43 @@
 # ============================================================
 # Upbit Surge Monitor
 # .github/workflows/validate_256_test.yml
-# Full KRW 256 Validator - Clean V002
+#
+# Full KRW 256 Validator - Clean V003
 # ============================================================
 #
 # PURPOSE
 # ------------------------------------------------------------
 #
-# Validate the COMPLETE existing 256 Detector output generated
-# for all KRW markets.
+# Validate the COMPLETE existing 256 Detector output.
 #
-# Current validated foundation:
+# Expected current dataset:
 #
 #   KRW markets : 290
 #   Timeframes  : h1 / h4 / d1
 #   Total jobs  : 870
 #
-# Input:
-#
-#   data/ohlcv/
-#   data/features/
-#   data/signals/256/
-#
 # Validator:
 #
-#   validate_256.py
+#   validate_256.py - Clean V003
+#
+#
+# CLEAN V003
+# ------------------------------------------------------------
+#
+#   - Full KRW market validation
+#   - 290 markets
+#   - h1 / h4 / d1
+#   - 870 validation jobs
+#   - Persistent local checkpoint
+#   - Safe resume after interruption
+#   - SHA256-aware resume
+#   - Changed input -> revalidate
+#   - Failed job -> retry next run
+#   - Source data READ ONLY
 #
 #
 # IMPORTANT
 # ------------------------------------------------------------
-#
-# READ ONLY VALIDATION.
 #
 # This workflow does NOT:
 #
@@ -38,10 +45,10 @@
 #   - run backfill_history.py
 #   - run build_features.py
 #   - run detect_256.py
-#   - modify OHLCV
+#   - modify OHLCV CSV
 #   - modify Feature CSV
 #   - modify Signal CSV
-#   - generate future-result labels
+#   - generate future labels
 #   - perform prediction
 #   - perform trading
 #   - run git reset --hard
@@ -50,44 +57,43 @@
 #   - push
 #
 #
-# RESUME POLICY
+# RESUME
 # ------------------------------------------------------------
 #
-# Long-running validation must support safe resume.
+# validate_256.py Clean V003 stores:
 #
-# Workflow responsibilities:
+#   data/validation/validate_256_checkpoint.json
 #
-#   - preserve validator checkpoint/runtime state
-#   - never delete checkpoint data
-#   - never clean runtime data
-#   - verify complete input dataset before validation
-#   - verify all source files remain unchanged
+# Every successful validation job is checkpointed.
 #
-# Validator responsibilities:
+# On restart:
 #
-#   - checkpoint completed validation jobs
-#   - verify checkpoint validity against current inputs
-#   - skip only previously validated unchanged jobs
-#   - revalidate changed / incomplete / invalid jobs
+#   PASS + same OHLCV SHA256
+#        + same Feature SHA256
+#        + same Signal SHA256
+#
+#       -> SKIP
+#
+#   Input changed
+#
+#       -> REVALIDATE
+#
+#   Previous job failed
+#
+#       -> REVALIDATE
+#
+#   No checkpoint
+#
+#       -> VALIDATE
 #
 #
-# EXPECTED DATASET
-# ------------------------------------------------------------
-#
-#   290 KRW markets
-#
-#   h1 : 290 OHLCV + 290 Feature + 290 Signal
-#   h4 : 290 OHLCV + 290 Feature + 290 Signal
-#   d1 : 290 OHLCV + 290 Feature + 290 Signal
-#
-#   Validation jobs:
-#
-#       290 markets x 3 timeframes = 870
+# Because the runner is self-hosted, the project data and
+# checkpoint remain on the Windows PC after the workflow ends.
 #
 # ============================================================
 
 
-name: Full KRW 256 Validator Clean V002
+name: Full KRW 256 Validator Clean V003
 
 
 # ============================================================
@@ -111,7 +117,7 @@ permissions:
 # ============================================================
 
 concurrency:
-  group: full-krw-256-validator-v002
+  group: full-krw-256-validator-clean-v003
   cancel-in-progress: false
 
 
@@ -123,11 +129,19 @@ env:
 
   PROJECT_DIR: C:\Users\USER\Documents\upbit-surge-monitor
 
+  VALIDATOR_FILE: validate_256.py
+
   EXPECTED_MARKETS: "290"
+
   EXPECTED_TIMEFRAMES: "3"
+
   EXPECTED_JOBS: "870"
 
-  VALIDATOR_FILE: validate_256.py
+  EXPECTED_SOURCE_FILES: "2610"
+
+  CHECKPOINT_FILE: data\validation\validate_256_checkpoint.json
+
+  STATUS_FILE: data\validate_256_status.csv
 
 
 # ============================================================
@@ -138,17 +152,19 @@ jobs:
 
   validate-256-full:
 
-    name: Full KRW 256 Validator Clean V002
+    name: Full KRW 256 Validator Clean V003
 
     runs-on:
       - self-hosted
       - Windows
       - X64
 
-    timeout-minutes: 180
+    timeout-minutes: 360
 
     defaults:
+
       run:
+
         shell: powershell
 
 
@@ -161,7 +177,7 @@ jobs:
 
       # ======================================================
       # STEP 1
-      # Show environment
+      # Environment
       # ======================================================
 
       - name: Show validation environment
@@ -173,24 +189,29 @@ jobs:
           Write-Host ""
           Write-Host "============================================================"
           Write-Host "UPBIT SURGE MONITOR"
-          Write-Host "FULL KRW 256 VALIDATOR - CLEAN V002"
+          Write-Host "FULL KRW 256 VALIDATOR - CLEAN V003"
           Write-Host "============================================================"
           Write-Host ""
 
           Write-Host "Runner:"
-          Write-Host "  Name        : $env:RUNNER_NAME"
-          Write-Host "  OS          : $env:RUNNER_OS"
-          Write-Host "  Architecture: $env:RUNNER_ARCH"
+          Write-Host "  Name         : $env:RUNNER_NAME"
+          Write-Host "  OS           : $env:RUNNER_OS"
+          Write-Host "  Architecture : $env:RUNNER_ARCH"
           Write-Host ""
 
           Write-Host "Project:"
           Write-Host "  ${{ env.PROJECT_DIR }}"
           Write-Host ""
 
-          Write-Host "Expected dataset:"
-          Write-Host "  Markets    : ${{ env.EXPECTED_MARKETS }}"
-          Write-Host "  Timeframes : ${{ env.EXPECTED_TIMEFRAMES }}"
-          Write-Host "  Jobs       : ${{ env.EXPECTED_JOBS }}"
+          Write-Host "Validator:"
+          Write-Host "  ${{ env.VALIDATOR_FILE }}"
+          Write-Host ""
+
+          Write-Host "Expected:"
+          Write-Host "  Markets      : ${{ env.EXPECTED_MARKETS }}"
+          Write-Host "  Timeframes   : ${{ env.EXPECTED_TIMEFRAMES }}"
+          Write-Host "  Jobs         : ${{ env.EXPECTED_JOBS }}"
+          Write-Host "  Source files : ${{ env.EXPECTED_SOURCE_FILES }}"
           Write-Host ""
 
           Write-Host "Timeframes:"
@@ -199,38 +220,31 @@ jobs:
           Write-Host "  d1"
           Write-Host ""
 
-          Write-Host "Mode:"
-          Write-Host "  READ ONLY VALIDATION"
-          Write-Host "  FULL KRW MARKET"
-          Write-Host "  EXISTING DETECTOR OUTPUT"
+          Write-Host "Resume:"
+          Write-Host "  Checkpoint   : ${{ env.CHECKPOINT_FILE }}"
+          Write-Host "  Status       : ${{ env.STATUS_FILE }}"
+          Write-Host "  SHA256 aware : ENABLED"
           Write-Host ""
 
           Write-Host "Safety:"
-          Write-Host "  Collector           : DISABLED"
-          Write-Host "  Backfill            : DISABLED"
-          Write-Host "  Feature rebuild     : DISABLED"
-          Write-Host "  Detector rebuild    : DISABLED"
-          Write-Host "  Future labels       : DISABLED"
-          Write-Host "  Prediction          : DISABLED"
-          Write-Host "  Trading             : DISABLED"
-          Write-Host "  Git reset           : DISABLED"
-          Write-Host "  Git clean           : DISABLED"
-          Write-Host "  Git commit          : DISABLED"
-          Write-Host "  Git push            : DISABLED"
+          Write-Host "  OHLCV write       : DISABLED"
+          Write-Host "  Feature write     : DISABLED"
+          Write-Host "  Signal write      : DISABLED"
+          Write-Host "  Future labels     : DISABLED"
+          Write-Host "  Prediction        : DISABLED"
+          Write-Host "  Trading           : DISABLED"
+          Write-Host "  Git reset         : DISABLED"
+          Write-Host "  Git clean         : DISABLED"
+          Write-Host "  Git commit        : DISABLED"
+          Write-Host "  Git push          : DISABLED"
           Write-Host ""
 
-          Write-Host "Resume:"
-          Write-Host "  Runtime state       : PRESERVED"
-          Write-Host "  Automatic clean     : DISABLED"
-          Write-Host "  Checkpoint deletion : DISABLED"
-          Write-Host ""
-
-          Write-Host "[PASS] Environment information displayed."
+          Write-Host "[PASS] Environment displayed."
 
 
       # ======================================================
       # STEP 2
-      # Verify project directory
+      # Project directory
       # ======================================================
 
       - name: Verify project directory
@@ -253,7 +267,7 @@ jobs:
                   -PathType Container
           )) {
 
-              Write-Host "[FAIL] Project directory does not exist:"
+              Write-Host "[FAIL] Project directory not found:"
               Write-Host "       $projectRoot"
 
               exit 1
@@ -261,51 +275,50 @@ jobs:
 
           Set-Location $projectRoot
 
-          Write-Host "Project root:"
-          Write-Host "  $projectRoot"
-          Write-Host ""
-
-          Write-Host "[PASS] Project directory exists."
-
-
-      # ======================================================
-      # STEP 3
-      # Synchronize repository
-      #
-      # IMPORTANT:
-      #
-      # No reset.
-      # No clean.
-      #
-      # Persistent local data and checkpoints are preserved.
-      # ======================================================
-
-      - name: Synchronize repository source
-
-        run: |
-
-          $ErrorActionPreference = "Stop"
-
-          $projectRoot = "${{ env.PROJECT_DIR }}"
-
-          Set-Location $projectRoot
-
-          Write-Host ""
-          Write-Host "============================================================"
-          Write-Host "SYNCHRONIZE REPOSITORY SOURCE"
-          Write-Host "============================================================"
-          Write-Host ""
-
           if (-not (
               Test-Path `
                   -LiteralPath ".git" `
                   -PathType Container
           )) {
 
-              Write-Host "[FAIL] .git directory not found."
+              Write-Host "[FAIL] Git repository not found:"
+              Write-Host "       $projectRoot"
 
               exit 1
           }
+
+          Write-Host "Project root:"
+          Write-Host "  $projectRoot"
+          Write-Host ""
+
+          Write-Host "[PASS] Project directory verified."
+
+
+      # ======================================================
+      # STEP 3
+      # Git synchronization
+      #
+      # IMPORTANT:
+      #
+      # No reset.
+      # No clean.
+      #
+      # Local data and checkpoint must survive.
+      # ======================================================
+
+      - name: Synchronize repository safely
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location "${{ env.PROJECT_DIR }}"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "SYNCHRONIZE REPOSITORY"
+          Write-Host "============================================================"
+          Write-Host ""
 
           Write-Host "Git status before synchronization:"
           Write-Host ""
@@ -327,7 +340,7 @@ jobs:
 
           if ($LASTEXITCODE -ne 0) {
 
-              Write-Host "[FAIL] git fetch failed."
+              Write-Host "[FAIL] git fetch origin main failed."
 
               exit 1
           }
@@ -346,7 +359,7 @@ jobs:
           }
 
           Write-Host ""
-          Write-Host "Fast-forwarding local main..."
+          Write-Host "Fast-forward pull..."
           Write-Host ""
 
           git pull --ff-only origin main
@@ -356,8 +369,9 @@ jobs:
               Write-Host ""
               Write-Host "[FAIL] git pull --ff-only failed."
               Write-Host ""
-              Write-Host "No automatic reset was performed."
-              Write-Host "No local runtime data was deleted."
+              Write-Host "[SAFETY] git reset was NOT executed."
+              Write-Host "[SAFETY] git clean was NOT executed."
+              Write-Host "[SAFETY] Runtime/checkpoint data was NOT deleted."
 
               exit 1
           }
@@ -381,7 +395,7 @@ jobs:
 
       # ======================================================
       # STEP 4
-      # Verify Python
+      # Python
       # ======================================================
 
       - name: Verify Python
@@ -403,7 +417,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
 
               Write-Host ""
-              Write-Host "[FAIL] Python launcher 'py' is unavailable."
+              Write-Host "[FAIL] Windows Python launcher 'py' is unavailable."
 
               exit 1
           }
@@ -414,80 +428,20 @@ jobs:
 
       # ======================================================
       # STEP 5
-      # Verify validator source
+      # Dependencies
       # ======================================================
 
-      - name: Verify validator source
+      - name: Verify Python dependencies
 
         run: |
 
           $ErrorActionPreference = "Stop"
 
-          $projectRoot = "${{ env.PROJECT_DIR }}"
-
-          Set-Location $projectRoot
-
-          $validator = Join-Path `
-              $projectRoot `
-              "${{ env.VALIDATOR_FILE }}"
+          Set-Location "${{ env.PROJECT_DIR }}"
 
           Write-Host ""
           Write-Host "============================================================"
-          Write-Host "VERIFY VALIDATOR SOURCE"
-          Write-Host "============================================================"
-          Write-Host ""
-
-          if (-not (
-              Test-Path `
-                  -LiteralPath $validator `
-                  -PathType Leaf
-          )) {
-
-              Write-Host "[FAIL] Validator does not exist:"
-              Write-Host "       $validator"
-
-              exit 1
-          }
-
-          $validatorInfo = Get-Item `
-              -LiteralPath $validator
-
-          if ($validatorInfo.Length -le 0) {
-
-              Write-Host "[FAIL] Validator file is empty."
-
-              exit 1
-          }
-
-          Write-Host "Validator:"
-          Write-Host "  $validator"
-          Write-Host ""
-
-          Write-Host "Size:"
-          Write-Host "  $($validatorInfo.Length) bytes"
-          Write-Host ""
-
-          Write-Host "[PASS] Validator source verified."
-
-
-      # ======================================================
-      # STEP 6
-      # Verify dependencies
-      # ======================================================
-
-      - name: Verify dependencies
-
-        run: |
-
-          $ErrorActionPreference = "Stop"
-
-          $projectRoot = "${{ env.PROJECT_DIR }}"
-
-          Set-Location $projectRoot
-
-          Write-Host ""
-          Write-Host "============================================================"
-          Write-Host "VERIFY DEPENDENCIES"
+          Write-Host "VERIFY PYTHON DEPENDENCIES"
           Write-Host "============================================================"
           Write-Host ""
 
@@ -513,15 +467,113 @@ jobs:
           }
 
           Write-Host ""
-          Write-Host "[PASS] Dependencies available."
+          Write-Host "[PASS] Dependencies verified."
+
+
+      # ======================================================
+      # STEP 6
+      # Validator source
+      # ======================================================
+
+      - name: Verify Clean V003 validator source
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          $projectRoot = "${{ env.PROJECT_DIR }}"
+
+          Set-Location $projectRoot
+
+          $validatorPath = Join-Path `
+              $projectRoot `
+              "${{ env.VALIDATOR_FILE }}"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY VALIDATOR SOURCE"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          if (-not (
+              Test-Path `
+                  -LiteralPath $validatorPath `
+                  -PathType Leaf
+          )) {
+
+              Write-Host "[FAIL] Validator not found:"
+              Write-Host "       $validatorPath"
+
+              exit 1
+          }
+
+          $validatorInfo = Get-Item `
+              -LiteralPath $validatorPath
+
+          if ($validatorInfo.Length -le 0) {
+
+              Write-Host "[FAIL] Validator file is empty."
+
+              exit 1
+          }
+
+          $source = Get-Content `
+              -LiteralPath $validatorPath `
+              -Raw
+
+          $requiredMarkers = @(
+
+              "Clean V003",
+              "Full KRW market validation",
+              "Resume / checkpoint support",
+              "CHECKPOINT_PATH",
+              "checkpoint_job_is_current",
+              "mark_checkpoint_passed",
+              "discover_markets"
+
+          )
+
+          $missingMarkers = @()
+
+          foreach ($marker in $requiredMarkers) {
+
+              if (-not $source.Contains($marker)) {
+
+                  $missingMarkers += $marker
+              }
+          }
+
+          if ($missingMarkers.Count -gt 0) {
+
+              Write-Host "[FAIL] validate_256.py does not appear to be Clean V003."
+              Write-Host ""
+
+              foreach ($marker in $missingMarkers) {
+
+                  Write-Host "Missing marker:"
+                  Write-Host "  $marker"
+              }
+
+              exit 1
+          }
+
+          Write-Host "Validator:"
+          Write-Host "  $validatorPath"
+          Write-Host ""
+
+          Write-Host "Size:"
+          Write-Host "  $($validatorInfo.Length) bytes"
+          Write-Host ""
+
+          Write-Host "[PASS] validate_256.py Clean V003 markers verified."
 
 
       # ======================================================
       # STEP 7
-      # Verify complete directory structure
+      # Required directories
       # ======================================================
 
-      - name: Verify full validation directories
+      - name: Verify validation directories
 
         run: |
 
@@ -533,7 +585,7 @@ jobs:
 
           Write-Host ""
           Write-Host "============================================================"
-          Write-Host "VERIFY FULL VALIDATION DIRECTORY STRUCTURE"
+          Write-Host "VERIFY VALIDATION DIRECTORIES"
           Write-Host "============================================================"
           Write-Host ""
 
@@ -581,37 +633,48 @@ jobs:
           if ($failed) {
 
               Write-Host ""
-              Write-Host "[FAIL] Required validation directories are incomplete."
+              Write-Host "[FAIL] Validation directory structure incomplete."
 
               exit 1
           }
 
           Write-Host ""
-          Write-Host "[PASS] Full directory structure verified."
+          Write-Host "[PASS] Required validation directories verified."
 
 
       # ======================================================
       # STEP 8
-      # Verify complete 290-market file sets
+      # Verify exact market sets
       #
-      # OHLCV / Feature / Signal must all contain exactly
-      # the same 290 KRW markets for every timeframe.
+      # 290 markets must exist in:
+      #
+      #   OHLCV
+      #   Feature
+      #   Signal
+      #
+      # for:
+      #
+      #   h1
+      #   h4
+      #   d1
+      #
       # ======================================================
 
-      - name: Verify complete validation file sets
+      - name: Verify full 290 market input sets
 
         run: |
 
           $ErrorActionPreference = "Stop"
 
           $projectRoot = "${{ env.PROJECT_DIR }}"
+
           $expectedMarkets = [int]"${{ env.EXPECTED_MARKETS }}"
 
           Set-Location $projectRoot
 
           Write-Host ""
           Write-Host "============================================================"
-          Write-Host "VERIFY COMPLETE VALIDATION FILE SETS"
+          Write-Host "VERIFY FULL 290 MARKET INPUT SETS"
           Write-Host "============================================================"
           Write-Host ""
 
@@ -687,9 +750,9 @@ jobs:
                   Sort-Object -Unique
               )
 
-              Write-Host "OHLCV   : $($ohlcvMarkets.Count)"
-              Write-Host "Feature : $($featureMarkets.Count)"
-              Write-Host "Signal  : $($signalMarkets.Count)"
+              Write-Host "OHLCV markets   : $($ohlcvMarkets.Count)"
+              Write-Host "Feature markets : $($featureMarkets.Count)"
+              Write-Host "Signal markets  : $($signalMarkets.Count)"
               Write-Host ""
 
               if ($ohlcvMarkets.Count -ne $expectedMarkets) {
@@ -719,35 +782,35 @@ jobs:
                   exit 1
               }
 
-              $ohlcvVsFeature = @(
+              $ohlcvFeatureDiff = @(
                   Compare-Object `
-                      $ohlcvMarkets `
-                      $featureMarkets
+                      -ReferenceObject $ohlcvMarkets `
+                      -DifferenceObject $featureMarkets
               )
 
-              if ($ohlcvVsFeature.Count -ne 0) {
+              if ($ohlcvFeatureDiff.Count -gt 0) {
 
-                  Write-Host "[FAIL] $tf OHLCV/Feature market sets differ."
+                  Write-Host "[FAIL] $tf OHLCV and Feature market sets differ."
                   Write-Host ""
 
-                  $ohlcvVsFeature |
+                  $ohlcvFeatureDiff |
                       Format-Table -AutoSize
 
                   exit 1
               }
 
-              $ohlcvVsSignal = @(
+              $ohlcvSignalDiff = @(
                   Compare-Object `
-                      $ohlcvMarkets `
-                      $signalMarkets
+                      -ReferenceObject $ohlcvMarkets `
+                      -DifferenceObject $signalMarkets
               )
 
-              if ($ohlcvVsSignal.Count -ne 0) {
+              if ($ohlcvSignalDiff.Count -gt 0) {
 
-                  Write-Host "[FAIL] $tf OHLCV/Signal market sets differ."
+                  Write-Host "[FAIL] $tf OHLCV and Signal market sets differ."
                   Write-Host ""
 
-                  $ohlcvVsSignal |
+                  $ohlcvSignalDiff |
                       Format-Table -AutoSize
 
                   exit 1
@@ -762,18 +825,18 @@ jobs:
               }
               else {
 
-                  $tfComparison = @(
+                  $timeframeDiff = @(
                       Compare-Object `
-                          $referenceMarkets `
-                          $ohlcvMarkets
+                          -ReferenceObject $referenceMarkets `
+                          -DifferenceObject $ohlcvMarkets
                   )
 
-                  if ($tfComparison.Count -ne 0) {
+                  if ($timeframeDiff.Count -gt 0) {
 
-                      Write-Host "[FAIL] Timeframe market sets differ."
+                      Write-Host "[FAIL] Market sets differ between timeframes."
                       Write-Host ""
 
-                      $tfComparison |
+                      $timeframeDiff |
                           Format-Table -AutoSize
 
                       exit 1
@@ -791,7 +854,7 @@ jobs:
           $expectedJobs = [int]"${{ env.EXPECTED_JOBS }}"
 
           Write-Host "============================================================"
-          Write-Host "FILE SET SUMMARY"
+          Write-Host "INPUT FILE SUMMARY"
           Write-Host "============================================================"
           Write-Host ""
 
@@ -802,21 +865,21 @@ jobs:
 
           if ($totalOhlcv -ne $expectedJobs) {
 
-              Write-Host "[FAIL] Total OHLCV file count mismatch."
+              Write-Host "[FAIL] OHLCV file count mismatch."
 
               exit 1
           }
 
           if ($totalFeature -ne $expectedJobs) {
 
-              Write-Host "[FAIL] Total Feature file count mismatch."
+              Write-Host "[FAIL] Feature file count mismatch."
 
               exit 1
           }
 
           if ($totalSignal -ne $expectedJobs) {
 
-              Write-Host "[FAIL] Total Signal file count mismatch."
+              Write-Host "[FAIL] Signal file count mismatch."
 
               exit 1
           }
@@ -829,10 +892,10 @@ jobs:
 
       # ======================================================
       # STEP 9
-      # Verify all validation files are non-empty
+      # Verify non-empty files
       # ======================================================
 
-      - name: Verify all validation files are non-empty
+      - name: Verify all 2610 source files are non-empty
 
         run: |
 
@@ -840,28 +903,28 @@ jobs:
 
           $projectRoot = "${{ env.PROJECT_DIR }}"
 
+          $expectedSourceFiles = [int]"${{ env.EXPECTED_SOURCE_FILES }}"
+
           Set-Location $projectRoot
 
           Write-Host ""
           Write-Host "============================================================"
-          Write-Host "VERIFY ALL VALIDATION FILES ARE NON-EMPTY"
+          Write-Host "VERIFY SOURCE FILE CONTENT"
           Write-Host "============================================================"
           Write-Host ""
 
-          $failed = 0
           $checked = 0
+          $empty = 0
 
           foreach ($tf in @("h1", "h4", "d1")) {
 
-              $directories = @(
+              foreach ($relativeDirectory in @(
 
                   "data\ohlcv\$tf",
                   "data\features\$tf",
                   "data\signals\256\$tf"
 
-              )
-
-              foreach ($relativeDirectory in $directories) {
+              )) {
 
                   $directory = Join-Path `
                       $projectRoot `
@@ -880,50 +943,50 @@ jobs:
 
                       if ($file.Length -le 0) {
 
-                          Write-Host "[FAIL] Empty file:"
+                          Write-Host "[FAIL] Empty source file:"
                           Write-Host "       $($file.FullName)"
 
-                          $failed++
+                          $empty++
                       }
                   }
               }
           }
 
           Write-Host "Files checked : $checked"
-          Write-Host "Empty files   : $failed"
+          Write-Host "Expected      : $expectedSourceFiles"
+          Write-Host "Empty         : $empty"
           Write-Host ""
 
-          if ($failed -ne 0) {
+          if ($checked -ne $expectedSourceFiles) {
 
-              Write-Host "[FAIL] Empty validation files detected."
-
-              exit 1
-          }
-
-          if ($checked -ne 2610) {
-
-              Write-Host "[FAIL] Validation file count mismatch."
-              Write-Host "       Expected: 2610"
-              Write-Host "       Actual  : $checked"
+              Write-Host "[FAIL] Source file count mismatch."
 
               exit 1
           }
 
-          Write-Host "[PASS] All 2,610 validation source files are non-empty."
+          if ($empty -ne 0) {
+
+              Write-Host "[FAIL] Empty source files detected."
+
+              exit 1
+          }
+
+          Write-Host "[PASS] All 2,610 source files are non-empty."
 
 
       # ======================================================
       # STEP 10
-      # Record complete source SHA256 snapshot
+      # Record SHA256 before validation
       #
-      # 870 OHLCV
-      # 870 Feature
-      # 870 Signal
+      # This snapshot is independent from the Python
+      # validator's per-job resume hashes.
       #
-      # Total = 2,610 files
+      # Purpose:
+      #
+      #   prove validation did not modify input data.
       # ======================================================
 
-      - name: Record all source SHA256 before validation
+      - name: Record source SHA256 before validation
 
         run: |
 
@@ -931,41 +994,39 @@ jobs:
 
           $projectRoot = "${{ env.PROJECT_DIR }}"
 
+          $expectedSourceFiles = [int]"${{ env.EXPECTED_SOURCE_FILES }}"
+
           Set-Location $projectRoot
 
           Write-Host ""
           Write-Host "============================================================"
-          Write-Host "RECORD COMPLETE SOURCE SHA256 SNAPSHOT"
+          Write-Host "RECORD SOURCE SHA256 BEFORE VALIDATION"
           Write-Host "============================================================"
           Write-Host ""
 
-          $hashFile = Join-Path `
+          $snapshotPath = Join-Path `
               $env:RUNNER_TEMP `
-              "validate_256_full_before.sha256"
+              "validate_256_v003_before.sha256"
 
-          if (Test-Path -LiteralPath $hashFile) {
+          if (Test-Path -LiteralPath $snapshotPath) {
 
               Remove-Item `
-                  -LiteralPath $hashFile `
+                  -LiteralPath $snapshotPath `
                   -Force
           }
 
-          $lines = New-Object `
+          $records = New-Object `
               System.Collections.Generic.List[string]
-
-          $count = 0
 
           foreach ($tf in @("h1", "h4", "d1")) {
 
-              $directories = @(
+              foreach ($relativeDirectory in @(
 
                   "data\ohlcv\$tf",
                   "data\features\$tf",
                   "data\signals\256\$tf"
 
-              )
-
-              foreach ($relativeDirectory in $directories) {
+              )) {
 
                   $directory = Join-Path `
                       $projectRoot `
@@ -987,53 +1048,46 @@ jobs:
                               -Algorithm SHA256
                       ).Hash
 
-                      $relativePath = (
-                          Join-Path `
-                              $relativeDirectory `
-                              $file.Name
-                      )
+                      $relativePath = Join-Path `
+                          $relativeDirectory `
+                          $file.Name
 
-                      $lines.Add(
+                      $records.Add(
                           "$relativePath|$hash"
                       )
-
-                      $count++
                   }
               }
           }
 
-          $lines |
-              Set-Content `
-                  -LiteralPath $hashFile `
-                  -Encoding UTF8
+          if ($records.Count -ne $expectedSourceFiles) {
 
-          Write-Host "SHA256 records : $count"
-          Write-Host "Expected       : 2610"
-          Write-Host ""
-
-          if ($count -ne 2610) {
-
-              Write-Host "[FAIL] SHA256 snapshot count mismatch."
+              Write-Host "[FAIL] SHA256 snapshot record count mismatch."
+              Write-Host "       Expected: $expectedSourceFiles"
+              Write-Host "       Actual  : $($records.Count)"
 
               exit 1
           }
 
-          Write-Host "[PASS] Complete source SHA256 snapshot saved."
+          $records |
+              Set-Content `
+                  -LiteralPath $snapshotPath `
+                  -Encoding UTF8
+
+          Write-Host "SHA256 records:"
+          Write-Host "  $($records.Count)"
+          Write-Host ""
+
+          Write-Host "[PASS] Pre-validation SHA256 snapshot created."
 
 
       # ======================================================
       # STEP 11
-      # Inspect persistent resume/checkpoint state
+      # Resume state
       #
-      # IMPORTANT:
-      #
-      # This step does NOT delete anything.
-      #
-      # validate_256.py is responsible for interpreting its
-      # own checkpoint format.
+      # DO NOT delete checkpoint.
       # ======================================================
 
-      - name: Inspect validator resume state
+      - name: Inspect persistent validator checkpoint
 
         run: |
 
@@ -1043,63 +1097,109 @@ jobs:
 
           Set-Location $projectRoot
 
+          $checkpointPath = Join-Path `
+              $projectRoot `
+              "${{ env.CHECKPOINT_FILE }}"
+
           Write-Host ""
           Write-Host "============================================================"
-          Write-Host "VALIDATOR RESUME STATE"
+          Write-Host "VALIDATOR RESUME CHECK"
           Write-Host "============================================================"
           Write-Host ""
 
-          $possibleCheckpointPaths = @(
-
-              "data\validate_256_checkpoint.json",
-              "data\validate_256_checkpoint.csv",
-              "data\validate_256_status.csv",
-              "data\validation\256",
-              "data\checkpoints\validate_256"
-
-          )
-
-          $found = $false
-
-          foreach ($relativePath in $possibleCheckpointPaths) {
-
-              $fullPath = Join-Path `
-                  $projectRoot `
-                  $relativePath
-
-              if (Test-Path -LiteralPath $fullPath) {
-
-                  Write-Host "[FOUND] $relativePath"
-
-                  $found = $true
-              }
-          }
-
-          if (-not $found) {
-
-              Write-Host "[INFO] No known validator checkpoint currently exists."
-              Write-Host "[INFO] First full validation may start from job 1."
-          }
-
+          Write-Host "Checkpoint:"
+          Write-Host "  $checkpointPath"
           Write-Host ""
-          Write-Host "[PASS] No checkpoint data was deleted."
+
+          if (-not (
+              Test-Path `
+                  -LiteralPath $checkpointPath `
+                  -PathType Leaf
+          )) {
+
+              Write-Host "[INFO] No checkpoint exists."
+              Write-Host "[INFO] Clean V003 will start normal validation."
+              Write-Host "[INFO] PASS jobs will be checkpointed one by one."
+              Write-Host ""
+
+              Write-Host "[PASS] Fresh validation state."
+
+              exit 0
+          }
+
+          $checkpointInfo = Get-Item `
+              -LiteralPath $checkpointPath
+
+          Write-Host "Existing checkpoint detected."
+          Write-Host "Size:"
+          Write-Host "  $($checkpointInfo.Length) bytes"
+          Write-Host ""
+
+          if ($checkpointInfo.Length -le 0) {
+
+              Write-Host "[WARN] Existing checkpoint is empty."
+              Write-Host "[WARN] Python validator will decide whether it can be trusted."
+              Write-Host ""
+
+              exit 0
+          }
+
+          try {
+
+              $checkpoint = Get-Content `
+                  -LiteralPath $checkpointPath `
+                  -Raw |
+                  ConvertFrom-Json
+
+          }
+          catch {
+
+              Write-Host "[WARN] Checkpoint JSON could not be parsed by workflow."
+              Write-Host "[WARN] validate_256.py Clean V003 will ignore invalid checkpoint safely."
+              Write-Host ""
+
+              exit 0
+          }
+
+          $completedCount = 0
+
+          if ($null -ne $checkpoint.completed) {
+
+              $completedCount = @(
+                  $checkpoint.completed.PSObject.Properties
+              ).Count
+          }
+
+          Write-Host "Checkpoint version:"
+          Write-Host "  $($checkpoint.checkpoint_version)"
+          Write-Host ""
+
+          Write-Host "Recorded completed jobs:"
+          Write-Host "  $completedCount"
+          Write-Host ""
+
+          Write-Host "Updated UTC:"
+          Write-Host "  $($checkpoint.updated_utc)"
+          Write-Host ""
+
+          Write-Host "[PASS] Existing checkpoint preserved."
+          Write-Host "[INFO] Clean V003 will verify SHA256 before each resume skip."
 
 
       # ======================================================
       # STEP 12
-      # Run full validator
+      # Run validator
       #
       # IMPORTANT:
       #
-      # No --market KRW-BTC restriction.
+      # No --market KRW-BTC.
       #
-      # validate_256.py must perform full-market discovery.
+      # Clean V003 automatically discovers the full KRW
+      # market set.
       #
-      # Resume/checkpoint behavior belongs inside
-      # validate_256.py.
       # ======================================================
 
-      - name: Run Full KRW 256 Validator
+      - name: Run Full KRW 256 Validator Clean V003
 
         run: |
 
@@ -1111,17 +1211,22 @@ jobs:
 
           Write-Host ""
           Write-Host "============================================================"
-          Write-Host "RUN FULL KRW 256 VALIDATOR"
+          Write-Host "RUN FULL KRW 256 VALIDATOR - CLEAN V003"
           Write-Host "============================================================"
           Write-Host ""
 
-          Write-Host "Expected:"
+          Write-Host "Target:"
           Write-Host "  Markets    : ${{ env.EXPECTED_MARKETS }}"
-          Write-Host "  Timeframes : ${{ env.EXPECTED_TIMEFRAMES }}"
+          Write-Host "  Timeframes : h1 / h4 / d1"
           Write-Host "  Jobs       : ${{ env.EXPECTED_JOBS }}"
           Write-Host ""
 
-          Write-Host "Starting validator..."
+          Write-Host "Resume:"
+          Write-Host "  ENABLED"
+          Write-Host ""
+
+          Write-Host "Starting:"
+          Write-Host "  py ${{ env.VALIDATOR_FILE }}"
           Write-Host ""
 
           py "${{ env.VALIDATOR_FILE }}"
@@ -1129,30 +1234,256 @@ jobs:
           $validatorExitCode = $LASTEXITCODE
 
           Write-Host ""
-          Write-Host "Validator exit code: $validatorExitCode"
+          Write-Host "Validator exit code:"
+          Write-Host "  $validatorExitCode"
           Write-Host ""
 
           if ($validatorExitCode -ne 0) {
 
-              Write-Host "[FAIL] validate_256.py returned a failure."
+              Write-Host "[FAIL] validate_256.py Clean V003 did not complete successfully."
               Write-Host ""
-              Write-Host "[STOP] Do NOT proceed to future-result labels."
-              Write-Host "[INFO] Existing checkpoint/runtime state was preserved."
+              Write-Host "[IMPORTANT]"
+              Write-Host "  Successful jobs already checkpointed remain preserved."
+              Write-Host "  Failed jobs are not considered complete."
+              Write-Host "  Re-running this workflow will resume safely."
+              Write-Host ""
+              Write-Host "[STOP] Do NOT proceed to the next project stage."
 
               exit $validatorExitCode
           }
 
-          Write-Host "[PASS] Full KRW 256 Validator completed successfully."
+          Write-Host "[PASS] validate_256.py Clean V003 completed successfully."
 
 
       # ======================================================
       # STEP 13
-      # Verify complete source SHA256 after validation
-      #
-      # Runs even if validator fails.
+      # Verify final checkpoint
       # ======================================================
 
-      - name: Verify all source SHA256 after validation
+      - name: Verify completed 870-job checkpoint
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          $projectRoot = "${{ env.PROJECT_DIR }}"
+
+          $expectedMarkets = [int]"${{ env.EXPECTED_MARKETS }}"
+          $expectedJobs = [int]"${{ env.EXPECTED_JOBS }}"
+
+          Set-Location $projectRoot
+
+          $checkpointPath = Join-Path `
+              $projectRoot `
+              "${{ env.CHECKPOINT_FILE }}"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY FINAL VALIDATOR CHECKPOINT"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          if (-not (
+              Test-Path `
+                  -LiteralPath $checkpointPath `
+                  -PathType Leaf
+          )) {
+
+              Write-Host "[FAIL] Final checkpoint does not exist."
+
+              exit 1
+          }
+
+          try {
+
+              $checkpoint = Get-Content `
+                  -LiteralPath $checkpointPath `
+                  -Raw |
+                  ConvertFrom-Json
+
+          }
+          catch {
+
+              Write-Host "[FAIL] Final checkpoint JSON is invalid."
+
+              exit 1
+          }
+
+          $completedCount = 0
+
+          if ($null -ne $checkpoint.completed) {
+
+              $completedCount = @(
+                  $checkpoint.completed.PSObject.Properties
+              ).Count
+          }
+
+          Write-Host "Checkpoint version       : $($checkpoint.checkpoint_version)"
+          Write-Host "Validator version        : $($checkpoint.validator_version)"
+          Write-Host "Completed records        : $completedCount"
+          Write-Host "Full validation passed   : $($checkpoint.full_validation_passed)"
+          Write-Host "Market count             : $($checkpoint.market_count)"
+          Write-Host "Job count                : $($checkpoint.job_count)"
+          Write-Host ""
+
+          if ($completedCount -ne $expectedJobs) {
+
+              Write-Host "[FAIL] Completed checkpoint job count mismatch."
+              Write-Host "       Expected: $expectedJobs"
+              Write-Host "       Actual  : $completedCount"
+
+              exit 1
+          }
+
+          if ($checkpoint.full_validation_passed -ne $true) {
+
+              Write-Host "[FAIL] full_validation_passed is not true."
+
+              exit 1
+          }
+
+          if ([int]$checkpoint.market_count -ne $expectedMarkets) {
+
+              Write-Host "[FAIL] Final market count mismatch."
+
+              exit 1
+          }
+
+          if ([int]$checkpoint.job_count -ne $expectedJobs) {
+
+              Write-Host "[FAIL] Final job count mismatch."
+
+              exit 1
+          }
+
+          Write-Host "[PASS] Final checkpoint confirms 870 successful jobs."
+
+
+      # ======================================================
+      # STEP 14
+      # Verify status CSV
+      # ======================================================
+
+      - name: Verify validator status CSV
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          $projectRoot = "${{ env.PROJECT_DIR }}"
+
+          $expectedJobs = [int]"${{ env.EXPECTED_JOBS }}"
+
+          Set-Location $projectRoot
+
+          $statusPath = Join-Path `
+              $projectRoot `
+              "${{ env.STATUS_FILE }}"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY VALIDATOR STATUS CSV"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          if (-not (
+              Test-Path `
+                  -LiteralPath $statusPath `
+                  -PathType Leaf
+          )) {
+
+              Write-Host "[FAIL] Validator status CSV not found:"
+              Write-Host "       $statusPath"
+
+              exit 1
+          }
+
+          $rows = @(
+              Import-Csv `
+                  -LiteralPath $statusPath
+          )
+
+          Write-Host "Status rows:"
+          Write-Host "  $($rows.Count)"
+          Write-Host ""
+
+          if ($rows.Count -ne $expectedJobs) {
+
+              Write-Host "[FAIL] Status CSV row count mismatch."
+              Write-Host "       Expected: $expectedJobs"
+              Write-Host "       Actual  : $($rows.Count)"
+
+              exit 1
+          }
+
+          $failedRows = @(
+              $rows |
+              Where-Object {
+                  $_.passed -notmatch '^(True|true|1)$'
+              }
+          )
+
+          if ($failedRows.Count -gt 0) {
+
+              Write-Host "[FAIL] Failed validation records found:"
+              Write-Host "       $($failedRows.Count)"
+              Write-Host ""
+
+              $failedRows |
+                  Select-Object `
+                      market,
+                      timeframe,
+                      passed,
+                      errors |
+                  Format-Table -AutoSize
+
+              exit 1
+          }
+
+          $markets = @(
+              $rows.market |
+              Sort-Object -Unique
+          )
+
+          $timeframes = @(
+              $rows.timeframe |
+              Sort-Object -Unique
+          )
+
+          Write-Host "Unique markets:"
+          Write-Host "  $($markets.Count)"
+          Write-Host ""
+
+          Write-Host "Timeframes:"
+          Write-Host "  $($timeframes -join ', ')"
+          Write-Host ""
+
+          if ($markets.Count -ne 290) {
+
+              Write-Host "[FAIL] Status CSV market count is not 290."
+
+              exit 1
+          }
+
+          if ($timeframes.Count -ne 3) {
+
+              Write-Host "[FAIL] Status CSV timeframe count is not 3."
+
+              exit 1
+          }
+
+          Write-Host "[PASS] 870 / 870 status records passed."
+
+
+      # ======================================================
+      # STEP 15
+      # Verify SHA256 after validation
+      #
+      # Runs even if validator fails.
+      #
+      # ======================================================
+
+      - name: Verify source SHA256 after validation
 
         if: always()
 
@@ -1162,21 +1493,23 @@ jobs:
 
           $projectRoot = "${{ env.PROJECT_DIR }}"
 
+          $expectedSourceFiles = [int]"${{ env.EXPECTED_SOURCE_FILES }}"
+
           Set-Location $projectRoot
 
           Write-Host ""
           Write-Host "============================================================"
-          Write-Host "VERIFY COMPLETE SOURCE SHA256 AFTER VALIDATION"
+          Write-Host "VERIFY SOURCE SHA256 AFTER VALIDATION"
           Write-Host "============================================================"
           Write-Host ""
 
-          $hashFile = Join-Path `
+          $snapshotPath = Join-Path `
               $env:RUNNER_TEMP `
-              "validate_256_full_before.sha256"
+              "validate_256_v003_before.sha256"
 
           if (-not (
               Test-Path `
-                  -LiteralPath $hashFile `
+                  -LiteralPath $snapshotPath `
                   -PathType Leaf
           )) {
 
@@ -1185,22 +1518,27 @@ jobs:
               exit 1
           }
 
-          $failed = 0
           $passed = 0
+          $failed = 0
 
-          foreach ($line in Get-Content -LiteralPath $hashFile) {
+          $records = @(
+              Get-Content `
+                  -LiteralPath $snapshotPath
+          )
 
-              if ([string]::IsNullOrWhiteSpace($line)) {
+          foreach ($record in $records) {
+
+              if ([string]::IsNullOrWhiteSpace($record)) {
 
                   continue
               }
 
-              $parts = $line -split '\|', 2
+              $parts = $record -split '\|', 2
 
               if ($parts.Count -ne 2) {
 
                   Write-Host "[FAIL] Invalid SHA256 record:"
-                  Write-Host "       $line"
+                  Write-Host "       $record"
 
                   $failed++
 
@@ -1236,7 +1574,7 @@ jobs:
 
               if ($beforeHash -ne $afterHash) {
 
-                  Write-Host "[FAIL] SHA256 changed:"
+                  Write-Host "[FAIL] Source SHA256 changed:"
                   Write-Host "       $relativePath"
 
                   $failed++
@@ -1249,22 +1587,22 @@ jobs:
           }
 
           Write-Host ""
-          Write-Host "SHA256 verification:"
+          Write-Host "SHA256:"
           Write-Host "  Passed : $passed"
           Write-Host "  Failed : $failed"
           Write-Host ""
 
           if ($failed -ne 0) {
 
-              Write-Host "[FAIL] Validation modified source data."
+              Write-Host "[FAIL] Source data changed during validation."
 
               exit 1
           }
 
-          if ($passed -ne 2610) {
+          if ($passed -ne $expectedSourceFiles) {
 
               Write-Host "[FAIL] SHA256 verification count mismatch."
-              Write-Host "       Expected: 2610"
+              Write-Host "       Expected: $expectedSourceFiles"
               Write-Host "       Actual  : $passed"
 
               exit 1
@@ -1274,11 +1612,12 @@ jobs:
 
 
       # ======================================================
-      # STEP 14
-      # Verify Git safety
+      # STEP 16
+      # Git safety
       #
-      # Existing ignored runtime/checkpoint files are allowed.
-      # No reset / clean is performed.
+      # Runtime/checkpoint files should be ignored by Git.
+      #
+      # DO NOT delete anything.
       # ======================================================
 
       - name: Verify Git safety
@@ -1289,9 +1628,7 @@ jobs:
 
           $ErrorActionPreference = "Stop"
 
-          $projectRoot = "${{ env.PROJECT_DIR }}"
-
-          Set-Location $projectRoot
+          Set-Location "${{ env.PROJECT_DIR }}"
 
           Write-Host ""
           Write-Host "============================================================"
@@ -1316,33 +1653,35 @@ jobs:
 
               Write-Host "[PASS] No Git-visible changes detected."
 
+              exit 0
           }
-          else {
 
-              Write-Host "Git-visible changes:"
-              Write-Host ""
+          Write-Host "Git-visible changes detected:"
+          Write-Host ""
 
-              foreach ($line in $status) {
+          foreach ($line in $status) {
 
-                  Write-Host $line
-              }
-
-              Write-Host ""
-              Write-Host "[FAIL] Unexpected Git-visible changes exist."
-              Write-Host ""
-              Write-Host "Generated runtime/checkpoint data must remain ignored."
-              Write-Host "No automatic deletion was performed."
-
-              exit 1
+              Write-Host $line
           }
+
+          Write-Host ""
+          Write-Host "[FAIL] Validator created or modified Git-visible files."
+          Write-Host ""
+          Write-Host "[SAFETY] Nothing was automatically deleted."
+          Write-Host "[SAFETY] git reset was NOT executed."
+          Write-Host "[SAFETY] git clean was NOT executed."
+          Write-Host ""
+          Write-Host "Checkpoint/status runtime files should be ignored by .gitignore."
+
+          exit 1
 
 
       # ======================================================
-      # STEP 15
+      # STEP 17
       # Final summary
       # ======================================================
 
-      - name: Full validation summary
+      - name: Full KRW 256 Validator summary
 
         if: success()
 
@@ -1356,43 +1695,44 @@ jobs:
           Write-Host "============================================================"
           Write-Host ""
 
-          Write-Host "Project:"
-          Write-Host "  Upbit Surge Monitor"
+          Write-Host "Project          : Upbit Surge Monitor"
+          Write-Host "Version          : 256 Validator Clean V003"
+          Write-Host "Execution mode   : FULL KRW MARKET"
           Write-Host ""
 
-          Write-Host "Workflow:"
-          Write-Host "  Full KRW 256 Validator Clean V002"
-          Write-Host ""
-
-          Write-Host "Validator:"
-          Write-Host "  validate_256.py"
-          Write-Host ""
-
-          Write-Host "Execution:"
-          Write-Host "  Markets       : ${{ env.EXPECTED_MARKETS }}"
-          Write-Host "  Timeframes    : ${{ env.EXPECTED_TIMEFRAMES }}"
-          Write-Host "  Jobs          : ${{ env.EXPECTED_JOBS }}"
+          Write-Host "Markets          : ${{ env.EXPECTED_MARKETS }}"
+          Write-Host "Timeframes       : ${{ env.EXPECTED_TIMEFRAMES }}"
+          Write-Host "Validator jobs   : ${{ env.EXPECTED_JOBS }}"
           Write-Host ""
 
           Write-Host "Input:"
-          Write-Host "  OHLCV files   : 870"
-          Write-Host "  Feature files : 870"
-          Write-Host "  Signal files  : 870"
-          Write-Host "  Total sources : 2610"
+          Write-Host "  OHLCV          : 870 files"
+          Write-Host "  Feature        : 870 files"
+          Write-Host "  Signal         : 870 files"
+          Write-Host "  Total          : 2,610 files"
+          Write-Host ""
+
+          Write-Host "Resume:"
+          Write-Host "  Checkpoint     : ENABLED"
+          Write-Host "  Per-job save   : ENABLED"
+          Write-Host "  SHA256 verify  : ENABLED"
+          Write-Host "  PASS skip      : ENABLED"
+          Write-Host "  Changed rerun  : ENABLED"
+          Write-Host "  Failed retry   : ENABLED"
           Write-Host ""
 
           Write-Host "Integrity:"
-          Write-Host "  OHLCV         : UNCHANGED"
-          Write-Host "  Feature       : UNCHANGED"
-          Write-Host "  Signal        : UNCHANGED"
-          Write-Host "  SHA256        : VERIFIED"
+          Write-Host "  OHLCV          : VERIFIED / UNCHANGED"
+          Write-Host "  Feature        : VERIFIED / UNCHANGED"
+          Write-Host "  Signal         : VERIFIED / UNCHANGED"
+          Write-Host "  Source SHA256  : VERIFIED"
           Write-Host ""
 
           Write-Host "Safety:"
           Write-Host "  Collector      : DISABLED"
           Write-Host "  Backfill       : DISABLED"
           Write-Host "  Feature rebuild: DISABLED"
-          Write-Host "  Detector       : DISABLED"
+          Write-Host "  Detector rebuild: DISABLED"
           Write-Host "  Future labels  : DISABLED"
           Write-Host "  Prediction     : DISABLED"
           Write-Host "  Trading        : DISABLED"
@@ -1402,17 +1742,12 @@ jobs:
           Write-Host "  Git push       : DISABLED"
           Write-Host ""
 
-          Write-Host "Resume policy:"
-          Write-Host "  Runtime state       : PRESERVED"
-          Write-Host "  Checkpoint deletion : DISABLED"
-          Write-Host "  Automatic clean     : DISABLED"
-          Write-Host ""
-
           Write-Host "============================================================"
-          Write-Host "[RESULT] FULL KRW 256 VALIDATOR PASSED"
+          Write-Host "[RESULT] FULL KRW 256 VALIDATOR CLEAN V003 PASSED"
           Write-Host "[PASS] 290 markets verified."
-          Write-Host "[PASS] 870 validation jobs completed."
+          Write-Host "[PASS] 870 / 870 validator jobs passed."
+          Write-Host "[PASS] Resume/checkpoint integrity verified."
           Write-Host "[PASS] 2,610 source files remained unchanged."
-          Write-Host "[PASS] Detector validation completed."
-          Write-Host "[NEXT] Review validator results before future-result labels."
+          Write-Host "[PASS] 256 Detector output validation completed."
+          Write-Host "[NEXT] Review results and continue to the next research stage."
           Write-Host "============================================================"
