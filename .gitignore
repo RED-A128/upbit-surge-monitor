@@ -294,6 +294,9 @@ outputs/
 data/signals/
 data/detect_256_status.csv
 
+# 256 Validator Clean V003 runtime data
+data/validate_256_status.csv
+data/validation/validate_256_checkpoint.json
 
 # ============================================================
 # END
