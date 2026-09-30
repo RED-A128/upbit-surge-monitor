@@ -1,0 +1,1041 @@
+name: Full KRW Data History Audit Clean V003
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: data-history-audit-clean-v003
+  cancel-in-progress: false
+
+jobs:
+  data-history-audit:
+    name: Full KRW Data History Audit Clean V003
+
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+
+    timeout-minutes: 360
+
+    defaults:
+      run:
+        shell: powershell
+
+    steps:
+
+      # ======================================================
+      # 01. Repository synchronization
+      # ======================================================
+
+      - name: Synchronize local repository
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "REPOSITORY SYNCHRONIZATION"
+          Write-Host "============================================================"
+
+          Set-Location "${{ github.workspace }}"
+
+          Write-Host "Workspace:"
+          Write-Host (Get-Location)
+
+          Write-Host ""
+          Write-Host "Current branch:"
+          git branch --show-current
+
+          Write-Host ""
+          Write-Host "Fetching origin..."
+          git fetch origin main
+
+          Write-Host ""
+          Write-Host "Updating local main..."
+
+          git checkout main
+          git pull --ff-only origin main
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "git pull --ff-only origin main failed."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Repository synchronization completed."
+
+
+      # ======================================================
+      # 02. Verify Python
+      # ======================================================
+
+      - name: Verify Python
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY PYTHON"
+          Write-Host "============================================================"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Python launcher 'py' is not available."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Python verified."
+
+
+      # ======================================================
+      # 03. Verify required Python packages
+      # ======================================================
+
+      - name: Verify Python packages
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY PYTHON PACKAGES"
+          Write-Host "============================================================"
+
+          py -c "import pandas; print('pandas:', pandas.__version__)"
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Required Python package verification failed."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Required Python packages verified."
+
+
+      # ======================================================
+      # 04. Verify audit script
+      # ======================================================
+
+      - name: Verify data history audit script
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY DATA HISTORY AUDIT SCRIPT"
+          Write-Host "============================================================"
+
+          Set-Location "${{ github.workspace }}"
+
+          if (-not (Test-Path "data_history_audit.py")) {
+              throw "data_history_audit.py not found."
+          }
+
+          $file = Get-Item "data_history_audit.py"
+
+          Write-Host "File:"
+          Write-Host $file.FullName
+
+          Write-Host ""
+          Write-Host "Size:"
+          Write-Host $file.Length
+
+          Write-Host ""
+          Write-Host "[PASS] data_history_audit.py exists."
+
+
+      # ======================================================
+      # 05. Verify OHLCV directories
+      # ======================================================
+
+      - name: Verify OHLCV directories
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY OHLCV DIRECTORIES"
+          Write-Host "============================================================"
+
+          Set-Location "${{ github.workspace }}"
+
+          $directories = @(
+              "data\ohlcv\h1",
+              "data\ohlcv\h4",
+              "data\ohlcv\d1"
+          )
+
+          foreach ($directory in $directories) {
+
+              if (-not (Test-Path $directory)) {
+                  throw "Required directory not found: $directory"
+              }
+
+              $count = (
+                  Get-ChildItem `
+                      -Path $directory `
+                      -Filter "*.csv" `
+                      -File
+              ).Count
+
+              Write-Host "$directory : $count CSV files"
+
+              if ($count -eq 0) {
+                  throw "No CSV files found: $directory"
+              }
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] OHLCV directories verified."
+
+
+      # ======================================================
+      # 06. Verify full market file set
+      # ======================================================
+
+      - name: Verify full OHLCV market file set
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY FULL OHLCV MARKET FILE SET"
+          Write-Host "============================================================"
+
+          Set-Location "${{ github.workspace }}"
+
+          $h1 = @(
+              Get-ChildItem `
+                  -Path "data\ohlcv\h1" `
+                  -Filter "*.csv" `
+                  -File |
+              ForEach-Object {
+                  $_.BaseName.ToUpper()
+              } |
+              Sort-Object
+          )
+
+          $h4 = @(
+              Get-ChildItem `
+                  -Path "data\ohlcv\h4" `
+                  -Filter "*.csv" `
+                  -File |
+              ForEach-Object {
+                  $_.BaseName.ToUpper()
+              } |
+              Sort-Object
+          )
+
+          $d1 = @(
+              Get-ChildItem `
+                  -Path "data\ohlcv\d1" `
+                  -Filter "*.csv" `
+                  -File |
+              ForEach-Object {
+                  $_.BaseName.ToUpper()
+              } |
+              Sort-Object
+          )
+
+          Write-Host "h1 markets : $($h1.Count)"
+          Write-Host "h4 markets : $($h4.Count)"
+          Write-Host "d1 markets : $($d1.Count)"
+
+          if ($h1.Count -ne $h4.Count) {
+              throw "h1 / h4 market count mismatch."
+          }
+
+          if ($h1.Count -ne $d1.Count) {
+              throw "h1 / d1 market count mismatch."
+          }
+
+          $compareH1H4 = Compare-Object $h1 $h4
+
+          if ($compareH1H4) {
+
+              Write-Host ""
+              Write-Host "h1 / h4 differences:"
+              $compareH1H4 | Format-Table
+
+              throw "h1 / h4 market file sets are different."
+          }
+
+          $compareH1D1 = Compare-Object $h1 $d1
+
+          if ($compareH1D1) {
+
+              Write-Host ""
+              Write-Host "h1 / d1 differences:"
+              $compareH1D1 | Format-Table
+
+              throw "h1 / d1 market file sets are different."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Full OHLCV market file set verified."
+          Write-Host "[PASS] Markets: $($h1.Count)"
+          Write-Host "[PASS] Jobs: $($h1.Count * 3)"
+
+
+      # ======================================================
+      # 07. Record OHLCV SHA256 before audit
+      # ======================================================
+
+      - name: Record OHLCV SHA256 before audit
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "RECORD OHLCV SHA256 BEFORE AUDIT"
+          Write-Host "============================================================"
+
+          Set-Location "${{ github.workspace }}"
+
+          $hashFile = Join-Path `
+              $env:RUNNER_TEMP `
+              "data_history_audit_ohlcv_before.sha256"
+
+          if (Test-Path $hashFile) {
+              Remove-Item $hashFile -Force
+          }
+
+          $files = @(
+              Get-ChildItem `
+                  -Path "data\ohlcv" `
+                  -Filter "*.csv" `
+                  -File `
+                  -Recurse |
+              Sort-Object FullName
+          )
+
+          if ($files.Count -eq 0) {
+              throw "No OHLCV CSV files found."
+          }
+
+          foreach ($file in $files) {
+
+              $hash = (
+                  Get-FileHash `
+                      -Path $file.FullName `
+                      -Algorithm SHA256
+              ).Hash
+
+              $relative = (
+                  $file.FullName.Substring(
+                      "${{ github.workspace }}".Length
+                  )
+              ).TrimStart('\')
+
+              "$hash`t$relative" |
+                  Out-File `
+                      -FilePath $hashFile `
+                      -Append `
+                      -Encoding utf8
+          }
+
+          Write-Host "Files hashed : $($files.Count)"
+          Write-Host "Hash record  : $hashFile"
+
+          Write-Host ""
+          Write-Host "[PASS] Pre-audit OHLCV SHA256 recorded."
+
+
+      # ======================================================
+      # 08. Inspect persistent checkpoint
+      # ======================================================
+
+      - name: Inspect persistent audit checkpoint
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "INSPECT DATA HISTORY AUDIT CHECKPOINT"
+          Write-Host "============================================================"
+
+          Set-Location "${{ github.workspace }}"
+
+          $checkpoint = "data\validation\data_history_audit_checkpoint.json"
+
+          if (Test-Path $checkpoint) {
+
+              Write-Host "[RESUME] Existing checkpoint found."
+              Write-Host $checkpoint
+
+              $info = Get-Item $checkpoint
+
+              Write-Host ""
+              Write-Host "Checkpoint size:"
+              Write-Host $info.Length
+
+          } else {
+
+              Write-Host "[INFO] No existing checkpoint found."
+              Write-Host "[INFO] This run will create one."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Checkpoint inspection completed."
+
+
+      # ======================================================
+      # 09. Run full data history audit
+      # ======================================================
+
+      - name: Run Full KRW Data History Audit Clean V003
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "RUN FULL KRW DATA HISTORY AUDIT CLEAN V003"
+          Write-Host "============================================================"
+
+          Set-Location "${{ github.workspace }}"
+
+          py data_history_audit.py
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "data_history_audit.py failed with exit code $LASTEXITCODE."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Data History Audit Clean V003 completed."
+
+
+      # ======================================================
+      # 10. Verify status CSV
+      # ======================================================
+
+      - name: Verify audit status CSV
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY AUDIT STATUS CSV"
+          Write-Host "============================================================"
+
+          Set-Location "${{ github.workspace }}"
+
+          $statusFile = "data\data_history_audit_status.csv"
+
+          if (-not (Test-Path $statusFile)) {
+              throw "Audit status CSV not found: $statusFile"
+          }
+
+          $rows = @(
+              Import-Csv $statusFile
+          )
+
+          if ($rows.Count -eq 0) {
+              throw "Audit status CSV contains zero rows."
+          }
+
+          $h1Count = @(
+              $rows |
+              Where-Object {
+                  $_.timeframe -eq "h1"
+              }
+          ).Count
+
+          $h4Count = @(
+              $rows |
+              Where-Object {
+                  $_.timeframe -eq "h4"
+              }
+          ).Count
+
+          $d1Count = @(
+              $rows |
+              Where-Object {
+                  $_.timeframe -eq "d1"
+              }
+          ).Count
+
+          Write-Host "Status rows : $($rows.Count)"
+          Write-Host "h1          : $h1Count"
+          Write-Host "h4          : $h4Count"
+          Write-Host "d1          : $d1Count"
+
+          if ($h1Count -eq 0) {
+              throw "No h1 status rows found."
+          }
+
+          if ($h4Count -eq 0) {
+              throw "No h4 status rows found."
+          }
+
+          if ($d1Count -eq 0) {
+              throw "No d1 status rows found."
+          }
+
+          if ($h1Count -ne $h4Count) {
+              throw "Status CSV h1 / h4 row count mismatch."
+          }
+
+          if ($h1Count -ne $d1Count) {
+              throw "Status CSV h1 / d1 row count mismatch."
+          }
+
+          $unreadable = @(
+              $rows |
+              Where-Object {
+                  $_.readable -ne "True"
+              }
+          )
+
+          if ($unreadable.Count -gt 0) {
+
+              Write-Host ""
+              Write-Host "Unreadable entries:"
+
+              $unreadable |
+                  Select-Object `
+                      timeframe,
+                      market,
+                      errors |
+                  Format-Table -AutoSize
+
+              throw "$($unreadable.Count) unreadable audit entries detected."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Audit status CSV verified."
+          Write-Host "[PASS] $($rows.Count) audit jobs recorded."
+
+
+      # ======================================================
+      # 11. Verify completed checkpoint
+      # ======================================================
+
+      - name: Verify completed audit checkpoint
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY COMPLETED AUDIT CHECKPOINT"
+          Write-Host "============================================================"
+
+          Set-Location "${{ github.workspace }}"
+
+          $checkpoint = "data\validation\data_history_audit_checkpoint.json"
+
+          if (-not (Test-Path $checkpoint)) {
+              throw "Audit checkpoint not found."
+          }
+
+          $json = Get-Content `
+              -Path $checkpoint `
+              -Raw |
+              ConvertFrom-Json
+
+          if ($null -eq $json.completed) {
+              throw "Checkpoint has no completed section."
+          }
+
+          $completedCount = @(
+              $json.completed.PSObject.Properties
+          ).Count
+
+          $h1Files = @(
+              Get-ChildItem `
+                  "data\ohlcv\h1" `
+                  -Filter "*.csv" `
+                  -File
+          ).Count
+
+          $h4Files = @(
+              Get-ChildItem `
+                  "data\ohlcv\h4" `
+                  -Filter "*.csv" `
+                  -File
+          ).Count
+
+          $d1Files = @(
+              Get-ChildItem `
+                  "data\ohlcv\d1" `
+                  -Filter "*.csv" `
+                  -File
+          ).Count
+
+          $expected = (
+              $h1Files +
+              $h4Files +
+              $d1Files
+          )
+
+          Write-Host "Checkpoint completed : $completedCount"
+          Write-Host "Expected jobs        : $expected"
+
+          if ($completedCount -lt $expected) {
+              throw "Checkpoint is incomplete. Expected at least $expected completed jobs, found $completedCount."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Completed checkpoint verified."
+
+
+      # ======================================================
+      # 12. Resume verification
+      #
+      # Run the audit a second time.
+      #
+      # Because source SHA256 values are unchanged,
+      # completed files should be loaded from checkpoint.
+      #
+      # This verifies that interrupted/restarted execution
+      # can reuse completed audit work.
+      # ======================================================
+
+      - name: Verify Resume behavior
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY RESUME BEHAVIOR"
+          Write-Host "============================================================"
+
+          Set-Location "${{ github.workspace }}"
+
+          $checkpoint = "data\validation\data_history_audit_checkpoint.json"
+
+          if (-not (Test-Path $checkpoint)) {
+              throw "Checkpoint missing before Resume verification."
+          }
+
+          $before = Get-Content `
+              -Path $checkpoint `
+              -Raw |
+              ConvertFrom-Json
+
+          $beforeCount = @(
+              $before.completed.PSObject.Properties
+          ).Count
+
+          Write-Host "Completed before Resume run : $beforeCount"
+
+          Write-Host ""
+          Write-Host "Running audit again..."
+          Write-Host "Unchanged source files should use RESUME."
+
+          $outputFile = Join-Path `
+              $env:RUNNER_TEMP `
+              "data_history_audit_resume_output.txt"
+
+          if (Test-Path $outputFile) {
+              Remove-Item $outputFile -Force
+          }
+
+          py data_history_audit.py 2>&1 |
+              Tee-Object `
+                  -FilePath $outputFile
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Resume audit run failed with exit code $LASTEXITCODE."
+          }
+
+          $resumeMatches = @(
+              Select-String `
+                  -Path $outputFile `
+                  -Pattern "RESUME"
+          )
+
+          Write-Host ""
+          Write-Host "Resume markers detected : $($resumeMatches.Count)"
+
+          if ($resumeMatches.Count -eq 0) {
+              throw "No RESUME marker was detected during second audit run."
+          }
+
+          $after = Get-Content `
+              -Path $checkpoint `
+              -Raw |
+              ConvertFrom-Json
+
+          $afterCount = @(
+              $after.completed.PSObject.Properties
+          ).Count
+
+          Write-Host "Completed after Resume run  : $afterCount"
+
+          if ($afterCount -lt $beforeCount) {
+              throw "Checkpoint completed count decreased after Resume run."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Resume behavior verified."
+
+
+      # ======================================================
+      # 13. Verify OHLCV SHA256 after audit
+      # ======================================================
+
+      - name: Verify OHLCV SHA256 after audit
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY OHLCV SHA256 AFTER AUDIT"
+          Write-Host "============================================================"
+
+          Set-Location "${{ github.workspace }}"
+
+          $beforeFile = Join-Path `
+              $env:RUNNER_TEMP `
+              "data_history_audit_ohlcv_before.sha256"
+
+          if (-not (Test-Path $beforeFile)) {
+              throw "Pre-audit SHA256 record not found."
+          }
+
+          $beforeLines = @(
+              Get-Content $beforeFile
+          )
+
+          $beforeMap = @{}
+
+          foreach ($line in $beforeLines) {
+
+              if ([string]::IsNullOrWhiteSpace($line)) {
+                  continue
+              }
+
+              $parts = $line -split "`t", 2
+
+              if ($parts.Count -ne 2) {
+                  throw "Invalid SHA256 record line: $line"
+              }
+
+              $beforeMap[$parts[1]] = $parts[0]
+          }
+
+          $files = @(
+              Get-ChildItem `
+                  -Path "data\ohlcv" `
+                  -Filter "*.csv" `
+                  -File `
+                  -Recurse |
+              Sort-Object FullName
+          )
+
+          if ($files.Count -ne $beforeMap.Count) {
+              throw "OHLCV file count changed during audit."
+          }
+
+          $changed = @()
+
+          foreach ($file in $files) {
+
+              $relative = (
+                  $file.FullName.Substring(
+                      "${{ github.workspace }}".Length
+                  )
+              ).TrimStart('\')
+
+              if (-not $beforeMap.ContainsKey($relative)) {
+                  $changed += "NEW FILE: $relative"
+                  continue
+              }
+
+              $currentHash = (
+                  Get-FileHash `
+                      -Path $file.FullName `
+                      -Algorithm SHA256
+              ).Hash
+
+              if ($currentHash -ne $beforeMap[$relative]) {
+                  $changed += "CHANGED: $relative"
+              }
+          }
+
+          if ($changed.Count -gt 0) {
+
+              Write-Host ""
+              Write-Host "OHLCV source changes detected:"
+
+              foreach ($item in $changed) {
+                  Write-Host $item
+              }
+
+              throw "OHLCV source files changed during Data History Audit."
+          }
+
+          Write-Host "Verified files : $($files.Count)"
+
+          Write-Host ""
+          Write-Host "[PASS] All OHLCV SHA256 values remained unchanged."
+
+
+      # ======================================================
+      # 14. Verify generated runtime data remains ignored
+      # ======================================================
+
+      - name: Verify generated runtime data remains ignored
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY RUNTIME DATA IS GIT-IGNORED"
+          Write-Host "============================================================"
+
+          Set-Location "${{ github.workspace }}"
+
+          $runtimeFiles = @(
+              "data/data_history_audit_status.csv",
+              "data/validation/data_history_audit_checkpoint.json"
+          )
+
+          foreach ($file in $runtimeFiles) {
+
+              if (-not (Test-Path $file)) {
+                  throw "Expected runtime file not found: $file"
+              }
+
+              git check-ignore -q -- $file
+
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Runtime file is not ignored by .gitignore: $file"
+              }
+
+              Write-Host "[PASS] Ignored: $file"
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Data History Audit runtime data remains ignored."
+
+
+      # ======================================================
+      # 15. Final Git safety verification
+      #
+      # We do NOT require the entire working tree to be clean
+      # because a self-hosted runner may already contain
+      # unrelated local runtime files.
+      #
+      # Instead we specifically ensure that this audit's
+      # runtime outputs are not Git-visible.
+      # ======================================================
+
+      - name: Verify Git safety
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY GIT SAFETY"
+          Write-Host "============================================================"
+
+          Set-Location "${{ github.workspace }}"
+
+          $runtimePatterns = @(
+              "data/data_history_audit_status.csv",
+              "data/validation/data_history_audit_checkpoint.json"
+          )
+
+          $status = @(
+              git status `
+                  --short `
+                  --untracked-files=all
+          )
+
+          $violations = @()
+
+          foreach ($line in $status) {
+
+              foreach ($pattern in $runtimePatterns) {
+
+                  if ($line -like "*$pattern*") {
+                      $violations += $line
+                  }
+              }
+          }
+
+          if ($violations.Count -gt 0) {
+
+              Write-Host ""
+              Write-Host "Git-visible audit runtime files detected:"
+
+              foreach ($line in $violations) {
+                  Write-Host $line
+              }
+
+              throw "Data History Audit created Git-visible runtime files."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Audit runtime files are not Git-visible."
+          Write-Host "[PASS] git reset was NOT executed."
+          Write-Host "[PASS] git clean was NOT executed."
+          Write-Host "[PASS] git commit was NOT executed."
+          Write-Host "[PASS] git push was NOT executed."
+
+
+      # ======================================================
+      # 16. Final summary
+      # ======================================================
+
+      - name: Full Data History Audit test completed
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "FULL KRW DATA HISTORY AUDIT CLEAN V003"
+          Write-Host "============================================================"
+
+          Set-Location "${{ github.workspace }}"
+
+          $statusFile = "data\data_history_audit_status.csv"
+
+          $rows = @(
+              Import-Csv $statusFile
+          )
+
+          $markets = @(
+              $rows |
+              Select-Object `
+                  -ExpandProperty market `
+                  -Unique
+          )
+
+          $h1Count = @(
+              $rows |
+              Where-Object {
+                  $_.timeframe -eq "h1"
+              }
+          ).Count
+
+          $h4Count = @(
+              $rows |
+              Where-Object {
+                  $_.timeframe -eq "h4"
+              }
+          ).Count
+
+          $d1Count = @(
+              $rows |
+              Where-Object {
+                  $_.timeframe -eq "d1"
+              }
+          ).Count
+
+          $gapRows = @(
+              $rows |
+              Where-Object {
+                  [int64]$_.gap_count -gt 0
+              }
+          )
+
+          $gapEvents = 0L
+          $estimatedMissing = 0L
+
+          foreach ($row in $rows) {
+
+              if (
+                  -not [string]::IsNullOrWhiteSpace(
+                      $row.gap_count
+                  )
+              ) {
+                  $gapEvents += (
+                      [int64]$row.gap_count
+                  )
+              }
+
+              if (
+                  -not [string]::IsNullOrWhiteSpace(
+                      $row.estimated_missing_candles
+                  )
+              ) {
+                  $estimatedMissing += (
+                      [int64]$row.estimated_missing_candles
+                  )
+              }
+          }
+
+          $checkpoint = Get-Content `
+              "data\validation\data_history_audit_checkpoint.json" `
+              -Raw |
+              ConvertFrom-Json
+
+          $completedCount = @(
+              $checkpoint.completed.PSObject.Properties
+          ).Count
+
+          Write-Host "Project          : Upbit Surge Monitor"
+          Write-Host "Version          : Data History Audit Clean V003"
+          Write-Host "Execution mode   : FULL KRW MARKET"
+          Write-Host "Markets          : $($markets.Count)"
+          Write-Host "Timeframes       : 3"
+          Write-Host "Audit jobs       : $($rows.Count)"
+          Write-Host ""
+          Write-Host "Input:"
+          Write-Host "  OHLCV h1       : $h1Count VERIFIED"
+          Write-Host "  OHLCV h4       : $h4Count VERIFIED"
+          Write-Host "  OHLCV d1       : $d1Count VERIFIED"
+          Write-Host ""
+          Write-Host "Resume:"
+          Write-Host "  Checkpoint     : VERIFIED"
+          Write-Host "  Completed jobs : $completedCount"
+          Write-Host "  Resume test    : VERIFIED"
+          Write-Host ""
+          Write-Host "Gap audit:"
+          Write-Host "  Files w/gaps   : $($gapRows.Count)"
+          Write-Host "  Gap events     : $gapEvents"
+          Write-Host "  Missing est.   : $estimatedMissing"
+          Write-Host ""
+          Write-Host "Integrity:"
+          Write-Host "  OHLCV SHA256   : UNCHANGED"
+          Write-Host "  Runtime ignore : VERIFIED"
+          Write-Host ""
+          Write-Host "Safety:"
+          Write-Host "  OHLCV write    : DISABLED"
+          Write-Host "  OHLCV delete   : DISABLED"
+          Write-Host "  Gap repair     : DISABLED"
+          Write-Host "  Feature build  : DISABLED"
+          Write-Host "  256 Detector   : DISABLED"
+          Write-Host "  Future labels  : DISABLED"
+          Write-Host "  Prediction     : DISABLED"
+          Write-Host "  Trading        : DISABLED"
+          Write-Host "  Git reset      : DISABLED"
+          Write-Host "  Git clean      : DISABLED"
+          Write-Host "  Git commit     : DISABLED"
+          Write-Host "  Git push       : DISABLED"
+          Write-Host "============================================================"
+          Write-Host "[RESULT] FULL KRW DATA HISTORY AUDIT PASSED"
+          Write-Host "[PASS] Full market OHLCV history verified."
+          Write-Host "[PASS] Resume/checkpoint behavior verified."
+          Write-Host "[PASS] OHLCV source data remained unchanged."
+
+          if ($gapRows.Count -gt 0) {
+              Write-Host "[INFO] Timestamp gaps were detected."
+              Write-Host "[NEXT] Review gap findings before historical recovery."
+          } else {
+              Write-Host "[PASS] No internal timestamp gaps were detected."
+              Write-Host "[NEXT] Historical dataset is ready for the next stage."
+          }
+
+          Write-Host "============================================================"
+
+
+      # ======================================================
+      # 17. Complete job
+      # ======================================================
+
+      - name: Complete job
+        if: always()
+        run: |
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "DATA HISTORY AUDIT WORKFLOW COMPLETE"
+          Write-Host "============================================================"
+          Write-Host ""
+          Write-Host "No automatic Git cleanup was executed."
+          Write-Host "No OHLCV source deletion was executed."
+          Write-Host "No OHLCV source rewrite was executed."
+          Write-Host ""
