@@ -1,29 +1,75 @@
 # ============================================================
 # Upbit Surge Monitor
-# Clean V001
+# Clean V003
 #
 # File:
 #   .github/workflows/collect.yml
 #
 # Purpose:
-#   Run collector.py automatically on the Windows
-#   self-hosted runner, validate the collected OHLCV data,
-#   and audit accumulated OHLCV history.
+#   Run collector.py Clean V003 automatically on the Windows
+#   self-hosted runner.
+#
+#   After successful collection:
+#
+#       Collector
+#           ↓
+#       Collector Validator
+#           ↓
+#       OHLCV Data History Audit
+#
+#
+# Clean V003 additions:
+#
+#   - Collector current-run checkpoint / Resume support
+#   - Persistent local checkpoint protection
+#   - Existing OHLCV preservation
+#   - Dynamic KRW market count support
+#   - Dynamic total jobs = KRW markets x 3
+#   - Longer workflow timeout
+#   - Checkpoint inspection before Collector
+#   - Checkpoint verification after Collector
+#   - Failed/interrupted run can resume
+#
 #
 # Important project rules:
+#
 #   - Windows PC self-hosted runner
 #   - Use "py" only
 #   - Raw OHLCV data stays on the PC
 #   - data/ohlcv is NOT committed to Git
+#   - Collector checkpoint stays on the PC
 #   - Collector runs before Validator
 #   - Validator is READ ONLY
 #   - Data History Audit is READ ONLY
-#   - No trading
-#   - No prediction
-#   - No pattern analysis in this workflow
+#   - Existing OHLCV must NEVER be deleted
+#   - No git reset
+#   - No git clean
+#   - No automatic git commit
+#   - No automatic git push
+#   - No Feature generation
+#   - No 256 Detector
+#   - No Prediction
+#   - No Trading
+#
+#
+# Collector Resume policy:
+#
+#   data/collector/collector_checkpoint.json
+#
+#   RUNNING checkpoint:
+#       Resume the interrupted current run.
+#
+#   COMPLETED checkpoint:
+#       collector.py starts a NEW run and checks all markets
+#       again for newly created candles.
+#
+#   Therefore checkpoint completion does NOT permanently skip
+#   future collection.
+#
 # ============================================================
 
-name: Upbit Data Collector V001
+
+name: Upbit Data Collector Clean V003
 
 
 # ============================================================
@@ -33,29 +79,19 @@ name: Upbit Data Collector V001
 # GitHub cron uses UTC.
 #
 # "5 * * * *"
-# means:
 #
-#   every hour at minute 05 UTC
+# Every hour at minute 05 UTC.
 #
-# In Korea (KST, UTC+9), this is also minute 05
-# of each local hour.
+# Korea:
+#   UTC + 9
 #
-# Examples:
-#
-#   00:05 UTC -> 09:05 KST
-#   01:05 UTC -> 10:05 KST
-#   15:05 UTC -> 00:05 KST
-#
-# workflow_dispatch allows manual execution from:
-#
-#   GitHub
-#   -> Actions
-#   -> Upbit Data Collector V001
-#   -> Run workflow
+# workflow_dispatch:
+#   Allows manual execution from GitHub Actions.
 #
 # ============================================================
 
 on:
+
   schedule:
     - cron: "5 * * * *"
 
@@ -66,10 +102,7 @@ on:
 # PERMISSIONS
 # ============================================================
 #
-# Collector, Validator, and Data History Audit do not need
-# to modify the repository.
-#
-# Read-only permission is therefore sufficient.
+# This workflow does not modify the Git repository.
 #
 # ============================================================
 
@@ -81,15 +114,17 @@ permissions:
 # CONCURRENCY
 # ============================================================
 #
-# Prevent multiple Collector jobs from running at the same time.
+# Never run two collectors simultaneously.
 #
-# If one collection is still running when another scheduled
-# event arrives, the existing run is NOT cancelled.
+# If a Collector is still running when another scheduled
+# trigger occurs, GitHub must NOT cancel the existing run.
 #
 # ============================================================
 
 concurrency:
-  group: upbit-data-collector-v001
+
+  group: upbit-data-collector-clean-v003
+
   cancel-in-progress: false
 
 
@@ -101,21 +136,10 @@ jobs:
 
   collect:
 
+    name: Collector Clean V003
+
     # ========================================================
     # SELF-HOSTED WINDOWS PC
-    # ========================================================
-    #
-    # The Collector runs on the user's Windows PC.
-    #
-    # Raw OHLCV history is stored locally under:
-    #
-    #   data/ohlcv/h1
-    #   data/ohlcv/h4
-    #   data/ohlcv/d1
-    #
-    # GitHub-hosted runners are temporary machines and are not
-    # suitable for our local cumulative OHLCV storage model.
-    #
     # ========================================================
 
     runs-on:
@@ -123,7 +147,25 @@ jobs:
       - Windows
       - X64
 
-    timeout-minutes: 60
+
+    # ========================================================
+    # TIMEOUT
+    # ========================================================
+    #
+    # Clean V001:
+    #
+    #   60 minutes
+    #
+    # Clean V003:
+    #
+    #   180 minutes
+    #
+    # Full market collection + validation + history audit can
+    # take considerably longer than a lightweight collection.
+    #
+    # ========================================================
+
+    timeout-minutes: 180
 
 
     # ========================================================
@@ -131,8 +173,14 @@ jobs:
     # ========================================================
 
     env:
+
       PYTHONUTF8: "1"
+
       PYTHONIOENCODING: "utf-8"
+
+      COLLECTOR_CHECKPOINT: "data\\collector\\collector_checkpoint.json"
+
+      COLLECTOR_STATUS: "data\\collector_status.csv"
 
 
     # ========================================================
@@ -146,30 +194,30 @@ jobs:
       # STEP 1
       # Checkout repository
       # ======================================================
+      #
+      # CRITICAL:
+      #
+      # clean MUST remain false.
+      #
+      # The self-hosted runner contains persistent local data:
+      #
+      #   data/ohlcv/
+      #   data/collector/
+      #   data/collector_status.csv
+      #
+      # These files must survive workflow executions.
+      #
+      # ======================================================
 
       - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
 
-          # Always work from the current repository revision.
+        uses: actions/checkout@v4
+
+        with:
 
           fetch-depth: 1
 
-          # Do not keep GitHub credentials unnecessarily.
-
           persist-credentials: false
-
-          # IMPORTANT:
-          #
-          # Do NOT clean the workspace.
-          #
-          # data/ohlcv is ignored by Git and contains our
-          # cumulative local OHLCV history.
-          #
-          # If clean were enabled, ignored/untracked local
-          # files could be removed from the runner workspace.
-          #
-          # Therefore this MUST remain false.
 
           clean: false
 
@@ -180,14 +228,17 @@ jobs:
       # ======================================================
 
       - name: Show execution information
+
         shell: powershell
+
         run: |
+
           $ErrorActionPreference = "Stop"
 
           Write-Host ""
           Write-Host "============================================================"
-          Write-Host "UPBIT SURGE MONITOR - CLEAN V001"
-          Write-Host "EXECUTION INFORMATION"
+          Write-Host "UPBIT SURGE MONITOR"
+          Write-Host "COLLECTOR WORKFLOW - CLEAN V003"
           Write-Host "============================================================"
           Write-Host ""
 
@@ -201,6 +252,10 @@ jobs:
 
           Write-Host "Runner OS:"
           Write-Host "  $env:RUNNER_OS"
+          Write-Host ""
+
+          Write-Host "Runner architecture:"
+          Write-Host "  $env:RUNNER_ARCH"
           Write-Host ""
 
           Write-Host "Workspace:"
@@ -224,7 +279,22 @@ jobs:
           Write-Host ""
 
           Write-Host "Current directory:"
+
           Get-Location
+
+          Write-Host ""
+
+          Write-Host "Safety:"
+          Write-Host "  Existing OHLCV     : PRESERVE"
+          Write-Host "  Checkout clean     : FALSE"
+          Write-Host "  Git reset          : DISABLED"
+          Write-Host "  Git clean          : DISABLED"
+          Write-Host "  Git commit         : DISABLED"
+          Write-Host "  Git push           : DISABLED"
+          Write-Host "  Feature generation : DISABLED"
+          Write-Host "  256 Detector       : DISABLED"
+          Write-Host "  Prediction         : DISABLED"
+          Write-Host "  Trading            : DISABLED"
 
           Write-Host ""
           Write-Host "============================================================"
@@ -244,8 +314,11 @@ jobs:
       # ======================================================
 
       - name: Verify Python launcher
+
         shell: powershell
+
         run: |
+
           $ErrorActionPreference = "Stop"
 
           Write-Host ""
@@ -258,13 +331,13 @@ jobs:
 
           if ($null -eq $PyCommand) {
 
-              Write-Host "[ERROR] Windows Python launcher 'py' was not found."
+              Write-Host "[FAIL] Windows Python launcher 'py' was not found."
               Write-Host ""
               Write-Host "This project requires:"
               Write-Host ""
               Write-Host "  py"
               Write-Host ""
-              Write-Host "The workflow will stop."
+
               exit 1
           }
 
@@ -276,12 +349,33 @@ jobs:
           Write-Host ""
 
           Write-Host "Python version:"
+
           py --version
 
+          if ($LASTEXITCODE -ne 0) {
+
+              Write-Host ""
+              Write-Host "[FAIL] py --version failed."
+
+              exit $LASTEXITCODE
+          }
+
           Write-Host ""
+
           Write-Host "Python executable:"
+
           py -c "import sys; print(sys.executable)"
 
+          if ($LASTEXITCODE -ne 0) {
+
+              Write-Host ""
+              Write-Host "[FAIL] Python executable check failed."
+
+              exit $LASTEXITCODE
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Python environment ready."
           Write-Host ""
           Write-Host "============================================================"
 
@@ -292,8 +386,11 @@ jobs:
       # ======================================================
 
       - name: Verify project files
+
         shell: powershell
+
         run: |
+
           $ErrorActionPreference = "Stop"
 
           Write-Host ""
@@ -303,11 +400,17 @@ jobs:
           Write-Host ""
 
           $RequiredFiles = @(
+
               "collector.py",
+
               "validate_collector.py",
+
               "data_history_audit.py",
+
               "requirements.txt",
+
               "PROJECT_STATE.md",
+
               "README.md"
           )
 
@@ -323,6 +426,7 @@ jobs:
               else {
 
                   Write-Host "[FAIL] $File"
+
                   $Failed = $true
               }
           }
@@ -331,7 +435,8 @@ jobs:
 
           if ($Failed) {
 
-              Write-Host "[ERROR] One or more required project files are missing."
+              Write-Host "[FAIL] One or more required project files are missing."
+
               exit 1
           }
 
@@ -343,24 +448,83 @@ jobs:
 
       # ======================================================
       # STEP 5
-      # Install / verify dependencies
+      # Verify Collector Clean V003
       # ======================================================
-      #
-      # We intentionally use:
-      #
-      #   py -m pip
-      #
-      # and NOT:
-      #
-      #   pip
-      #   python -m pip
-      #   python3 -m pip
-      #
+
+      - name: Verify Collector Clean V003 source
+
+        shell: powershell
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY COLLECTOR CLEAN V003 SOURCE"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $CollectorSource = Get-Content `
+              -Path "collector.py" `
+              -Raw
+
+          $RequiredMarkers = @(
+
+              "Collector Clean V003",
+
+              "collector_checkpoint.json",
+
+              "CURRENT ACTIVE RUN ONLY",
+
+              "prepare_checkpoint",
+
+              "mark_job_success",
+
+              "checkpoint_job_completed"
+          )
+
+          $MissingMarkers = @()
+
+          foreach ($Marker in $RequiredMarkers) {
+
+              if (-not $CollectorSource.Contains($Marker)) {
+
+                  $MissingMarkers += $Marker
+              }
+          }
+
+          if ($MissingMarkers.Count -gt 0) {
+
+              Write-Host "[FAIL] collector.py does not appear to be Clean V003."
+              Write-Host ""
+
+              foreach ($Marker in $MissingMarkers) {
+
+                  Write-Host "Missing marker:"
+                  Write-Host "  $Marker"
+              }
+
+              exit 1
+          }
+
+          Write-Host "[PASS] collector.py Clean V003 markers verified."
+
+          Write-Host ""
+          Write-Host "============================================================"
+
+
+      # ======================================================
+      # STEP 6
+      # Install / verify dependencies
       # ======================================================
 
       - name: Install dependencies
+
         shell: powershell
+
         run: |
+
           $ErrorActionPreference = "Stop"
 
           Write-Host ""
@@ -374,7 +538,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
 
               Write-Host ""
-              Write-Host "[ERROR] Dependency installation failed."
+              Write-Host "[FAIL] Dependency installation failed."
+
               exit $LASTEXITCODE
           }
 
@@ -386,81 +551,16 @@ jobs:
 
 
       # ======================================================
-      # STEP 6
-      # Inspect existing local OHLCV data
-      # ======================================================
-      #
-      # This confirms whether the PC's cumulative dataset
-      # survived between workflow runs.
-      #
-      # ======================================================
-
-      - name: Inspect existing OHLCV data
-        shell: powershell
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          Write-Host ""
-          Write-Host "============================================================"
-          Write-Host "EXISTING LOCAL OHLCV DATA"
-          Write-Host "============================================================"
-          Write-Host ""
-
-          $Timeframes = @(
-              "h1",
-              "h4",
-              "d1"
-          )
-
-          foreach ($Tf in $Timeframes) {
-
-              $Directory = Join-Path "data\ohlcv" $Tf
-
-              if (Test-Path $Directory -PathType Container) {
-
-                  $Count = @(
-                      Get-ChildItem `
-                          -Path $Directory `
-                          -Filter "*.csv" `
-                          -File `
-                          -ErrorAction SilentlyContinue
-                  ).Count
-
-                  Write-Host "[$Tf] CSV files: $Count"
-
-              }
-              else {
-
-                  Write-Host "[$Tf] Directory does not exist yet."
-              }
-          }
-
-          Write-Host ""
-
-          $StatusFile = "data\collector_status.csv"
-
-          if (Test-Path $StatusFile -PathType Leaf) {
-
-              Write-Host "[INFO] collector_status.csv exists."
-
-          }
-          else {
-
-              Write-Host "[INFO] collector_status.csv does not exist yet."
-          }
-
-          Write-Host ""
-          Write-Host "============================================================"
-
-
-      # ======================================================
       # STEP 7
       # Validate Python source syntax
       # ======================================================
 
       - name: Validate Python source syntax
+
         shell: powershell
+
         run: |
+
           $ErrorActionPreference = "Stop"
 
           Write-Host ""
@@ -469,43 +569,35 @@ jobs:
           Write-Host "============================================================"
           Write-Host ""
 
-          Write-Host "Checking collector.py..."
-          py -m py_compile collector.py
+          $Files = @(
 
-          if ($LASTEXITCODE -ne 0) {
+              "collector.py",
 
+              "validate_collector.py",
+
+              "data_history_audit.py"
+          )
+
+          foreach ($File in $Files) {
+
+              Write-Host "Checking $File..."
+
+              py -m py_compile $File
+
+              if ($LASTEXITCODE -ne 0) {
+
+                  Write-Host ""
+                  Write-Host "[FAIL] Python syntax validation failed:"
+                  Write-Host "       $File"
+
+                  exit $LASTEXITCODE
+              }
+
+              Write-Host "[PASS] $File"
               Write-Host ""
-              Write-Host "[ERROR] collector.py syntax validation failed."
-              exit $LASTEXITCODE
           }
 
-          Write-Host "[PASS] collector.py syntax is valid."
-          Write-Host ""
-
-          Write-Host "Checking validate_collector.py..."
-          py -m py_compile validate_collector.py
-
-          if ($LASTEXITCODE -ne 0) {
-
-              Write-Host ""
-              Write-Host "[ERROR] validate_collector.py syntax validation failed."
-              exit $LASTEXITCODE
-          }
-
-          Write-Host "[PASS] validate_collector.py syntax is valid."
-          Write-Host ""
-
-          Write-Host "Checking data_history_audit.py..."
-          py -m py_compile data_history_audit.py
-
-          if ($LASTEXITCODE -ne 0) {
-
-              Write-Host ""
-              Write-Host "[ERROR] data_history_audit.py syntax validation failed."
-              exit $LASTEXITCODE
-          }
-
-          Write-Host "[PASS] data_history_audit.py syntax is valid."
+          Write-Host "[PASS] All Python source syntax checks passed."
 
           Write-Host ""
           Write-Host "============================================================"
@@ -513,18 +605,280 @@ jobs:
 
       # ======================================================
       # STEP 8
-      # Run Collector
+      # Inspect existing local OHLCV
       # ======================================================
 
-      - name: Run Collector V001
+      - name: Inspect existing OHLCV data
+
         shell: powershell
+
         run: |
+
           $ErrorActionPreference = "Stop"
 
           Write-Host ""
           Write-Host "============================================================"
-          Write-Host "RUN UPBIT DATA COLLECTOR - CLEAN V001"
+          Write-Host "EXISTING LOCAL OHLCV DATA"
           Write-Host "============================================================"
+          Write-Host ""
+
+          $TotalFiles = 0
+
+          foreach ($Tf in @("h1", "h4", "d1")) {
+
+              $Directory = Join-Path "data\ohlcv" $Tf
+
+              if (Test-Path $Directory -PathType Container) {
+
+                  $Files = @(
+
+                      Get-ChildItem `
+                          -Path $Directory `
+                          -Filter "KRW-*.csv" `
+                          -File `
+                          -ErrorAction SilentlyContinue
+                  )
+
+                  $Count = $Files.Count
+
+                  $TotalFiles += $Count
+
+                  Write-Host "[$Tf]"
+                  Write-Host "  Directory : $Directory"
+                  Write-Host "  CSV files : $Count"
+                  Write-Host ""
+
+              }
+              else {
+
+                  Write-Host "[$Tf]"
+                  Write-Host "  Directory : NOT FOUND"
+                  Write-Host "  CSV files : 0"
+                  Write-Host ""
+              }
+          }
+
+          Write-Host "Total OHLCV CSV files:"
+          Write-Host "  $TotalFiles"
+          Write-Host ""
+
+          if (Test-Path $env:COLLECTOR_STATUS -PathType Leaf) {
+
+              $StatusInfo = Get-Item $env:COLLECTOR_STATUS
+
+              Write-Host "Collector status:"
+              Write-Host "  EXISTS"
+              Write-Host "  Size: $($StatusInfo.Length) bytes"
+
+          }
+          else {
+
+              Write-Host "Collector status:"
+              Write-Host "  NOT CREATED YET"
+          }
+
+          Write-Host ""
+          Write-Host "============================================================"
+
+
+      # ======================================================
+      # STEP 9
+      # Inspect Collector checkpoint
+      # ======================================================
+      #
+      # IMPORTANT:
+      #
+      # Do NOT delete the checkpoint here.
+      #
+      # RUNNING:
+      #   Collector resumes the interrupted run.
+      #
+      # COMPLETED:
+      #   Collector creates a new run.
+      #
+      # ======================================================
+
+      - name: Inspect Collector Resume checkpoint
+
+        shell: powershell
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "COLLECTOR RESUME CHECKPOINT"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $CheckpointPath = $env:COLLECTOR_CHECKPOINT
+
+          Write-Host "Checkpoint:"
+          Write-Host "  $CheckpointPath"
+          Write-Host ""
+
+          if (-not (Test-Path $CheckpointPath -PathType Leaf)) {
+
+              Write-Host "[INFO] No Collector checkpoint exists."
+              Write-Host "[INFO] Collector will create a NEW run."
+              Write-Host ""
+
+              Write-Host "[PASS] Fresh Collector state."
+
+              exit 0
+          }
+
+          $CheckpointInfo = Get-Item $CheckpointPath
+
+          Write-Host "Checkpoint exists."
+          Write-Host "Size:"
+          Write-Host "  $($CheckpointInfo.Length) bytes"
+          Write-Host ""
+
+          if ($CheckpointInfo.Length -le 0) {
+
+              Write-Host "[FAIL] Collector checkpoint exists but is empty."
+              Write-Host "[SAFETY] The workflow will NOT delete it automatically."
+
+              exit 1
+          }
+
+          try {
+
+              $Checkpoint = Get-Content `
+                  -Path $CheckpointPath `
+                  -Raw |
+                  ConvertFrom-Json
+
+          }
+          catch {
+
+              Write-Host "[FAIL] Collector checkpoint JSON is invalid."
+              Write-Host ""
+              Write-Host "[SAFETY] Checkpoint was NOT deleted."
+              Write-Host "[SAFETY] OHLCV data was NOT modified by this step."
+
+              exit 1
+          }
+
+          $CompletedCount = 0
+          $FailedCount = 0
+
+          if ($null -ne $Checkpoint.completed_jobs) {
+
+              $CompletedCount = @(
+
+                  $Checkpoint.completed_jobs.PSObject.Properties
+
+              ).Count
+          }
+
+          if ($null -ne $Checkpoint.failed_jobs) {
+
+              $FailedCount = @(
+
+                  $Checkpoint.failed_jobs.PSObject.Properties
+
+              ).Count
+          }
+
+          Write-Host "Project:"
+          Write-Host "  $($Checkpoint.project)"
+          Write-Host ""
+
+          Write-Host "Version:"
+          Write-Host "  $($Checkpoint.version)"
+          Write-Host ""
+
+          Write-Host "Run ID:"
+          Write-Host "  $($Checkpoint.run_id)"
+          Write-Host ""
+
+          Write-Host "Run status:"
+          Write-Host "  $($Checkpoint.run_status)"
+          Write-Host ""
+
+          Write-Host "Markets:"
+          Write-Host "  $($Checkpoint.market_count)"
+          Write-Host ""
+
+          Write-Host "Total jobs:"
+          Write-Host "  $($Checkpoint.total_jobs)"
+          Write-Host ""
+
+          Write-Host "Completed jobs:"
+          Write-Host "  $CompletedCount"
+          Write-Host ""
+
+          Write-Host "Failed jobs:"
+          Write-Host "  $FailedCount"
+          Write-Host ""
+
+          Write-Host "Started UTC:"
+          Write-Host "  $($Checkpoint.started_utc)"
+          Write-Host ""
+
+          Write-Host "Updated UTC:"
+          Write-Host "  $($Checkpoint.updated_utc)"
+          Write-Host ""
+
+          if ($Checkpoint.run_status -eq "RUNNING") {
+
+              Write-Host "[RESUME] Interrupted/current run detected."
+              Write-Host "[RESUME] Collector Clean V003 will continue this run."
+              Write-Host "[RESUME] Completed jobs will be skipped."
+
+          }
+          elseif ($Checkpoint.run_status -eq "COMPLETED") {
+
+              Write-Host "[INFO] Previous Collector run completed."
+              Write-Host "[INFO] Collector Clean V003 will create a NEW run."
+              Write-Host "[INFO] All markets will be checked for newer candles."
+
+          }
+          else {
+
+              Write-Host "[INFO] Previous checkpoint is not RUNNING."
+              Write-Host "[INFO] Collector will decide the next safe run state."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Collector checkpoint inspection completed."
+
+          Write-Host ""
+          Write-Host "============================================================"
+
+
+      # ======================================================
+      # STEP 10
+      # Run Collector Clean V003
+      # ======================================================
+
+      - name: Run Collector Clean V003
+
+        shell: powershell
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "RUN UPBIT DATA COLLECTOR - CLEAN V003"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          Write-Host "Mode:"
+          Write-Host "  Dynamic KRW market discovery"
+          Write-Host "  h1 / h4 / d1"
+          Write-Host "  Incremental latest-candle collection"
+          Write-Host "  Current-run Resume enabled"
+          Write-Host ""
+
+          Write-Host "Important:"
+          Write-Host "  Existing OHLCV will be preserved."
+          Write-Host "  Checkpoint will NOT be deleted."
           Write-Host ""
 
           $StartTime = Get-Date
@@ -538,6 +892,7 @@ jobs:
           $CollectorExitCode = $LASTEXITCODE
 
           $EndTime = Get-Date
+
           $Elapsed = $EndTime - $StartTime
 
           Write-Host ""
@@ -548,51 +903,214 @@ jobs:
 
           Write-Host "Started:"
           Write-Host "  $($StartTime.ToString('yyyy-MM-dd HH:mm:ss'))"
-
           Write-Host ""
 
           Write-Host "Finished:"
           Write-Host "  $($EndTime.ToString('yyyy-MM-dd HH:mm:ss'))"
-
           Write-Host ""
 
           Write-Host "Elapsed:"
           Write-Host ("  {0:hh\:mm\:ss}" -f $Elapsed)
-
           Write-Host ""
 
           Write-Host "Exit code:"
           Write-Host "  $CollectorExitCode"
-
           Write-Host ""
 
           if ($CollectorExitCode -ne 0) {
 
-              Write-Host "[ERROR] Collector failed."
+              Write-Host "[FAIL] Collector Clean V003 did not complete."
+              Write-Host ""
+              Write-Host "[IMPORTANT]"
+              Write-Host "  Existing OHLCV remains preserved."
+              Write-Host "  Successful jobs remain checkpointed."
+              Write-Host "  Re-running this workflow can resume the active run."
+              Write-Host ""
+              Write-Host "[STOP] Validator and Audit will NOT run."
+
               exit $CollectorExitCode
           }
 
-          Write-Host "[PASS] Collector completed successfully."
+          Write-Host "[PASS] Collector Clean V003 completed successfully."
 
           Write-Host ""
           Write-Host "============================================================"
 
 
       # ======================================================
-      # STEP 9
-      # Verify Collector output
+      # STEP 11
+      # Verify Collector checkpoint after successful run
       # ======================================================
-      #
-      # This is a lightweight structural check.
-      #
-      # The full OHLCV integrity validation is performed
-      # separately in STEP 10.
-      #
+
+      - name: Verify completed Collector checkpoint
+
+        shell: powershell
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY COMPLETED COLLECTOR CHECKPOINT"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $CheckpointPath = $env:COLLECTOR_CHECKPOINT
+
+          if (-not (Test-Path $CheckpointPath -PathType Leaf)) {
+
+              Write-Host "[FAIL] Collector checkpoint was not created."
+
+              exit 1
+          }
+
+          try {
+
+              $Checkpoint = Get-Content `
+                  -Path $CheckpointPath `
+                  -Raw |
+                  ConvertFrom-Json
+
+          }
+          catch {
+
+              Write-Host "[FAIL] Collector checkpoint JSON is invalid."
+
+              exit 1
+          }
+
+          $CompletedCount = 0
+          $FailedCount = 0
+
+          if ($null -ne $Checkpoint.completed_jobs) {
+
+              $CompletedCount = @(
+
+                  $Checkpoint.completed_jobs.PSObject.Properties
+
+              ).Count
+          }
+
+          if ($null -ne $Checkpoint.failed_jobs) {
+
+              $FailedCount = @(
+
+                  $Checkpoint.failed_jobs.PSObject.Properties
+
+              ).Count
+          }
+
+          $MarketCount = [int]$Checkpoint.market_count
+
+          $ExpectedJobs = $MarketCount * 3
+
+          $RecordedJobs = [int]$Checkpoint.total_jobs
+
+          Write-Host "Run ID:"
+          Write-Host "  $($Checkpoint.run_id)"
+          Write-Host ""
+
+          Write-Host "Run status:"
+          Write-Host "  $($Checkpoint.run_status)"
+          Write-Host ""
+
+          Write-Host "KRW markets:"
+          Write-Host "  $MarketCount"
+          Write-Host ""
+
+          Write-Host "Timeframes:"
+          Write-Host "  3"
+          Write-Host ""
+
+          Write-Host "Expected jobs:"
+          Write-Host "  $ExpectedJobs"
+          Write-Host ""
+
+          Write-Host "Checkpoint total jobs:"
+          Write-Host "  $RecordedJobs"
+          Write-Host ""
+
+          Write-Host "Completed jobs:"
+          Write-Host "  $CompletedCount"
+          Write-Host ""
+
+          Write-Host "Failed jobs:"
+          Write-Host "  $FailedCount"
+          Write-Host ""
+
+          if ($Checkpoint.project -ne "Upbit Surge Monitor") {
+
+              Write-Host "[FAIL] Unexpected checkpoint project."
+
+              exit 1
+          }
+
+          if ($Checkpoint.version -ne "Collector Clean V003") {
+
+              Write-Host "[FAIL] Unexpected Collector checkpoint version."
+
+              exit 1
+          }
+
+          if ($Checkpoint.run_status -ne "COMPLETED") {
+
+              Write-Host "[FAIL] Collector checkpoint is not COMPLETED."
+
+              exit 1
+          }
+
+          if ($MarketCount -le 0) {
+
+              Write-Host "[FAIL] Invalid market count."
+
+              exit 1
+          }
+
+          if ($RecordedJobs -ne $ExpectedJobs) {
+
+              Write-Host "[FAIL] Checkpoint total_jobs mismatch."
+              Write-Host "       Expected: $ExpectedJobs"
+              Write-Host "       Actual  : $RecordedJobs"
+
+              exit 1
+          }
+
+          if ($CompletedCount -ne $ExpectedJobs) {
+
+              Write-Host "[FAIL] Collector completed job count mismatch."
+              Write-Host "       Expected: $ExpectedJobs"
+              Write-Host "       Actual  : $CompletedCount"
+
+              exit 1
+          }
+
+          if ($FailedCount -ne 0) {
+
+              Write-Host "[FAIL] Collector checkpoint contains failed jobs."
+
+              exit 1
+          }
+
+          Write-Host "[PASS] Collector checkpoint is complete."
+          Write-Host "[PASS] $CompletedCount / $ExpectedJobs jobs completed."
+          Write-Host "[PASS] No failed jobs remain."
+
+          Write-Host ""
+          Write-Host "============================================================"
+
+
+      # ======================================================
+      # STEP 12
+      # Verify Collector output structure
       # ======================================================
 
       - name: Verify Collector output
+
         shell: powershell
+
         run: |
+
           $ErrorActionPreference = "Stop"
 
           Write-Host ""
@@ -601,107 +1119,161 @@ jobs:
           Write-Host "============================================================"
           Write-Host ""
 
-          $Timeframes = @(
-              "h1",
-              "h4",
-              "d1"
-          )
-
           $Failed = $false
 
-          foreach ($Tf in $Timeframes) {
+          $Counts = @{}
+
+          foreach ($Tf in @("h1", "h4", "d1")) {
 
               $Directory = Join-Path "data\ohlcv" $Tf
 
               if (-not (Test-Path $Directory -PathType Container)) {
 
-                  Write-Host "[FAIL] Missing directory: $Directory"
+                  Write-Host "[FAIL] Missing directory:"
+                  Write-Host "       $Directory"
+                  Write-Host ""
+
                   $Failed = $true
+
                   continue
               }
 
               $Files = @(
+
                   Get-ChildItem `
                       -Path $Directory `
-                      -Filter "*.csv" `
+                      -Filter "KRW-*.csv" `
                       -File `
                       -ErrorAction SilentlyContinue
               )
 
               $Count = $Files.Count
 
-              Write-Host "[$Tf] CSV files: $Count"
+              $Counts[$Tf] = $Count
+
+              Write-Host "[$Tf]"
+              Write-Host "  CSV files : $Count"
+
+              $EmptyFiles = @(
+
+                  $Files |
+                  Where-Object {
+                      $_.Length -le 0
+                  }
+              )
+
+              Write-Host "  Empty     : $($EmptyFiles.Count)"
+              Write-Host ""
 
               if ($Count -eq 0) {
 
                   Write-Host "[FAIL] No CSV files found in $Directory"
+
+                  $Failed = $true
+              }
+
+              if ($EmptyFiles.Count -gt 0) {
+
+                  Write-Host "[FAIL] Empty CSV files found in $Directory"
+
                   $Failed = $true
               }
           }
 
-          Write-Host ""
+          if (
 
-          if (-not (Test-Path "data\collector_status.csv" -PathType Leaf)) {
+              $Counts.ContainsKey("h1") -and
+              $Counts.ContainsKey("h4") -and
+              $Counts.ContainsKey("d1")
 
-              Write-Host "[FAIL] data\collector_status.csv not found."
+          ) {
+
+              if (
+
+                  $Counts["h1"] -ne $Counts["h4"] -or
+                  $Counts["h1"] -ne $Counts["d1"]
+
+              ) {
+
+                  Write-Host "[FAIL] Cross-timeframe CSV counts differ."
+                  Write-Host ""
+                  Write-Host "  h1 : $($Counts['h1'])"
+                  Write-Host "  h4 : $($Counts['h4'])"
+                  Write-Host "  d1 : $($Counts['d1'])"
+                  Write-Host ""
+
+                  $Failed = $true
+              }
+          }
+
+          if (-not (Test-Path $env:COLLECTOR_STATUS -PathType Leaf)) {
+
+              Write-Host "[FAIL] Collector status file not found:"
+              Write-Host "       $env:COLLECTOR_STATUS"
+              Write-Host ""
+
               $Failed = $true
 
           }
           else {
 
-              Write-Host "[PASS] data\collector_status.csv found."
+              $StatusInfo = Get-Item $env:COLLECTOR_STATUS
+
+              if ($StatusInfo.Length -le 0) {
+
+                  Write-Host "[FAIL] Collector status file is empty."
+
+                  $Failed = $true
+
+              }
+              else {
+
+                  Write-Host "[PASS] Collector status file exists."
+              }
           }
 
           Write-Host ""
 
           if ($Failed) {
 
-              Write-Host "[ERROR] Collector output validation failed."
+              Write-Host "[FAIL] Collector output structural verification failed."
+
               exit 1
           }
 
-          Write-Host "[PASS] Collector output exists."
+          Write-Host "[PASS] Collector output structure verified."
 
           Write-Host ""
           Write-Host "============================================================"
 
 
       # ======================================================
-      # STEP 10
+      # STEP 13
       # Run Collector Data Validator
       # ======================================================
       #
       # validate_collector.py is READ ONLY.
       #
-      # It validates:
-      #
-      #   - Current Upbit KRW market coverage
-      #   - h1 / h4 / d1 market consistency
-      #   - Timestamp validity
-      #   - Duplicate timestamps
-      #   - Timestamp ordering
-      #   - Required OHLCV columns
-      #   - NaN / non-numeric values
-      #   - Negative OHLCV values
-      #   - Infinite values
-      #   - OHLC relationships
-      #
-      # Historical/non-current market CSV files are preserved.
-      #
-      # If Validator returns a non-zero exit code,
-      # this GitHub Actions job MUST fail.
+      # It validates the accumulated OHLCV dataset.
       #
       # ======================================================
 
       - name: Run Collector Data Validator
+
         shell: powershell
+
         run: |
+
           $ErrorActionPreference = "Stop"
 
           Write-Host ""
           Write-Host "============================================================"
-          Write-Host "RUN COLLECTOR DATA VALIDATOR - CLEAN V001"
+          Write-Host "RUN COLLECTOR DATA VALIDATOR"
           Write-Host "============================================================"
+          Write-Host ""
+
+          Write-Host "Safety:"
+          Write-Host "  Validator mode : READ ONLY"
           Write-Host ""
 
           $StartTime = Get-Date
@@ -715,6 +1287,7 @@ jobs:
           $ValidatorExitCode = $LASTEXITCODE
 
           $EndTime = Get-Date
+
           $Elapsed = $EndTime - $StartTime
 
           Write-Host ""
@@ -723,29 +1296,18 @@ jobs:
           Write-Host "------------------------------------------------------------"
           Write-Host ""
 
-          Write-Host "Started:"
-          Write-Host "  $($StartTime.ToString('yyyy-MM-dd HH:mm:ss'))"
-
-          Write-Host ""
-
-          Write-Host "Finished:"
-          Write-Host "  $($EndTime.ToString('yyyy-MM-dd HH:mm:ss'))"
-
-          Write-Host ""
-
           Write-Host "Elapsed:"
           Write-Host ("  {0:hh\:mm\:ss}" -f $Elapsed)
-
           Write-Host ""
 
           Write-Host "Exit code:"
           Write-Host "  $ValidatorExitCode"
-
           Write-Host ""
 
           if ($ValidatorExitCode -ne 0) {
 
-              Write-Host "[ERROR] Collector data validation failed."
+              Write-Host "[FAIL] Collector data validation failed."
+
               exit $ValidatorExitCode
           }
 
@@ -756,45 +1318,30 @@ jobs:
 
 
       # ======================================================
-      # STEP 11
+      # STEP 14
       # Run OHLCV Data History Audit
       # ======================================================
       #
       # data_history_audit.py is READ ONLY.
       #
-      # It measures:
-      #
-      #   - Row count per market
-      #   - First candle timestamp
-      #   - Last candle timestamp
-      #   - Actual accumulated history span
-      #   - Latest-candle age
-      #   - Shortest / median / average / longest history
-      #   - Relatively short-history markets
-      #   - Stale-data flags
-      #   - Cross-timeframe stored market coverage
-      #
-      # IMPORTANT:
-      #
-      # Short history is NOT automatically an error.
-      #
-      # Newly listed markets may naturally have shorter
-      # historical datasets.
-      #
-      # This step is used to measure the real data distribution
-      # before defining a research-ready minimum history.
-      #
       # ======================================================
 
       - name: Run OHLCV Data History Audit
+
         shell: powershell
+
         run: |
+
           $ErrorActionPreference = "Stop"
 
           Write-Host ""
           Write-Host "============================================================"
-          Write-Host "RUN OHLCV DATA HISTORY AUDIT - CLEAN V001"
+          Write-Host "RUN OHLCV DATA HISTORY AUDIT"
           Write-Host "============================================================"
+          Write-Host ""
+
+          Write-Host "Safety:"
+          Write-Host "  Audit mode : READ ONLY"
           Write-Host ""
 
           $StartTime = Get-Date
@@ -808,6 +1355,7 @@ jobs:
           $AuditExitCode = $LASTEXITCODE
 
           $EndTime = Get-Date
+
           $Elapsed = $EndTime - $StartTime
 
           Write-Host ""
@@ -816,29 +1364,18 @@ jobs:
           Write-Host "------------------------------------------------------------"
           Write-Host ""
 
-          Write-Host "Started:"
-          Write-Host "  $($StartTime.ToString('yyyy-MM-dd HH:mm:ss'))"
-
-          Write-Host ""
-
-          Write-Host "Finished:"
-          Write-Host "  $($EndTime.ToString('yyyy-MM-dd HH:mm:ss'))"
-
-          Write-Host ""
-
           Write-Host "Elapsed:"
           Write-Host ("  {0:hh\:mm\:ss}" -f $Elapsed)
-
           Write-Host ""
 
           Write-Host "Exit code:"
           Write-Host "  $AuditExitCode"
-
           Write-Host ""
 
           if ($AuditExitCode -ne 0) {
 
-              Write-Host "[ERROR] OHLCV data history audit failed."
+              Write-Host "[FAIL] OHLCV data history audit failed."
+
               exit $AuditExitCode
           }
 
@@ -849,44 +1386,35 @@ jobs:
 
 
       # ======================================================
-      # STEP 12
-      # Show final local dataset status
-      # ======================================================
-      #
-      # This step uses "if: always()" intentionally.
-      #
-      # Even if Collector, Validator, or Data History Audit
-      # fails, GitHub Actions should still show the final local
-      # dataset file counts.
-      #
+      # STEP 15
+      # Final Collector state
       # ======================================================
 
-      - name: Show final dataset status
+      - name: Show final Collector state
+
         if: always()
+
         shell: powershell
+
         run: |
+
           Write-Host ""
           Write-Host "============================================================"
-          Write-Host "FINAL LOCAL DATASET STATUS"
+          Write-Host "FINAL COLLECTOR STATE"
           Write-Host "============================================================"
           Write-Host ""
 
-          $Timeframes = @(
-              "h1",
-              "h4",
-              "d1"
-          )
-
-          foreach ($Tf in $Timeframes) {
+          foreach ($Tf in @("h1", "h4", "d1")) {
 
               $Directory = Join-Path "data\ohlcv" $Tf
 
               if (Test-Path $Directory -PathType Container) {
 
                   $Files = @(
+
                       Get-ChildItem `
                           -Path $Directory `
-                          -Filter "*.csv" `
+                          -Filter "KRW-*.csv" `
                           -File `
                           -ErrorAction SilentlyContinue
                   )
@@ -905,7 +1433,157 @@ jobs:
               }
           }
 
+          Write-Host "Collector checkpoint:"
+          Write-Host ""
+
+          if (Test-Path $env:COLLECTOR_CHECKPOINT -PathType Leaf) {
+
+              try {
+
+                  $Checkpoint = Get-Content `
+                      -Path $env:COLLECTOR_CHECKPOINT `
+                      -Raw |
+                      ConvertFrom-Json
+
+                  $CompletedCount = 0
+                  $FailedCount = 0
+
+                  if ($null -ne $Checkpoint.completed_jobs) {
+
+                      $CompletedCount = @(
+
+                          $Checkpoint.completed_jobs.PSObject.Properties
+
+                      ).Count
+                  }
+
+                  if ($null -ne $Checkpoint.failed_jobs) {
+
+                      $FailedCount = @(
+
+                          $Checkpoint.failed_jobs.PSObject.Properties
+
+                      ).Count
+                  }
+
+                  Write-Host "  Run ID         : $($Checkpoint.run_id)"
+                  Write-Host "  Status         : $($Checkpoint.run_status)"
+                  Write-Host "  Markets        : $($Checkpoint.market_count)"
+                  Write-Host "  Total jobs     : $($Checkpoint.total_jobs)"
+                  Write-Host "  Completed jobs : $CompletedCount"
+                  Write-Host "  Failed jobs    : $FailedCount"
+
+              }
+              catch {
+
+                  Write-Host "  [WARN] Checkpoint exists but could not be parsed."
+              }
+
+          }
+          else {
+
+              Write-Host "  NOT FOUND"
+          }
+
+          Write-Host ""
+          Write-Host "Safety:"
+          Write-Host "  OHLCV deletion : DISABLED"
+          Write-Host "  Git reset      : DISABLED"
+          Write-Host "  Git clean      : DISABLED"
+          Write-Host "  Git commit     : DISABLED"
+          Write-Host "  Git push       : DISABLED"
+
+          Write-Host ""
           Write-Host "============================================================"
-          Write-Host "UPBIT SURGE MONITOR - CLEAN V001"
-          Write-Host "COLLECTOR WORKFLOW FINISHED"
+          Write-Host "UPBIT SURGE MONITOR"
+          Write-Host "COLLECTOR WORKFLOW CLEAN V003 FINISHED"
+          Write-Host "============================================================"
+
+
+      # ======================================================
+      # STEP 16
+      # Final success summary
+      # ======================================================
+
+      - name: Collector Clean V003 success summary
+
+        if: success()
+
+        shell: powershell
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          $Checkpoint = Get-Content `
+              -Path $env:COLLECTOR_CHECKPOINT `
+              -Raw |
+              ConvertFrom-Json
+
+          $CompletedCount = @(
+
+              $Checkpoint.completed_jobs.PSObject.Properties
+
+          ).Count
+
+          $MarketCount = [int]$Checkpoint.market_count
+
+          $ExpectedJobs = $MarketCount * 3
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "FULL KRW COLLECTOR CLEAN V003 SUMMARY"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          Write-Host "Project          : Upbit Surge Monitor"
+          Write-Host "Version          : Collector Clean V003"
+          Write-Host "Execution mode   : FULL KRW MARKET"
+          Write-Host ""
+
+          Write-Host "Markets          : $MarketCount"
+          Write-Host "Timeframes       : 3"
+          Write-Host "Collector jobs   : $ExpectedJobs"
+          Write-Host "Completed jobs   : $CompletedCount"
+          Write-Host ""
+
+          Write-Host "Collection:"
+          Write-Host "  h1             : VERIFIED"
+          Write-Host "  h4             : VERIFIED"
+          Write-Host "  d1             : VERIFIED"
+          Write-Host ""
+
+          Write-Host "Resume:"
+          Write-Host "  Checkpoint     : ENABLED"
+          Write-Host "  Per-job save   : ENABLED"
+          Write-Host "  Interrupted run: RESUMABLE"
+          Write-Host "  Next normal run: NEW CANDLE CHECK"
+          Write-Host ""
+
+          Write-Host "Validation:"
+          Write-Host "  Collector Validator : PASSED"
+          Write-Host "  History Audit       : PASSED"
+          Write-Host ""
+
+          Write-Host "Safety:"
+          Write-Host "  Existing OHLCV : PRESERVED"
+          Write-Host "  Git reset      : DISABLED"
+          Write-Host "  Git clean      : DISABLED"
+          Write-Host "  Git commit     : DISABLED"
+          Write-Host "  Git push       : DISABLED"
+          Write-Host "  Feature build  : DISABLED"
+          Write-Host "  256 Detector   : DISABLED"
+          Write-Host "  Prediction     : DISABLED"
+          Write-Host "  Trading        : DISABLED"
+          Write-Host ""
+
+          Write-Host "============================================================"
+          Write-Host "[RESULT] FULL KRW COLLECTOR CLEAN V003 PASSED"
+          Write-Host "[PASS] $MarketCount KRW markets processed."
+          Write-Host "[PASS] $CompletedCount / $ExpectedJobs collector jobs completed."
+          Write-Host "[PASS] Existing OHLCV data preserved."
+          Write-Host "[PASS] Collector Resume checkpoint verified."
+          Write-Host "[PASS] Collector Validator passed."
+          Write-Host "[PASS] OHLCV Data History Audit passed."
+          Write-Host "[NEXT] Full OHLCV freshness / gap validation."
           Write-Host "============================================================"
