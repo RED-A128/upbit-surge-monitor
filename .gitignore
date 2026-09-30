@@ -298,6 +298,10 @@ data/detect_256_status.csv
 data/validate_256_status.csv
 data/validation/validate_256_checkpoint.json
 
+# Collector Clean V003 runtime data
+data/collector/
+data/collector_status.csv
+
 # ============================================================
 # END
 # ============================================================
