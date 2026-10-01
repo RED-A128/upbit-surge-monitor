@@ -1,6 +1,6 @@
 # ============================================================
 # Upbit Surge Monitor
-# Clean V001
+# Clean V003
 # .github/workflows/analyze_post_recovery_gaps_test.yml
 # ============================================================
 #
@@ -8,7 +8,7 @@
 # ------------------------------------------------------------
 # Validate:
 #
-#   analyze_post_recovery_gaps.py - Clean V001
+#   analyze_post_recovery_gaps.py - Clean V003
 #
 # This workflow verifies:
 #
@@ -42,10 +42,17 @@
 #   - generate future labels
 #   - run prediction
 #   - trade
-#   - git reset
 #   - git clean
 #   - git commit
 #   - git push
+#
+# NOTE
+# ------------------------------------------------------------
+# git reset --hard origin/main is used ONLY at the beginning
+# to synchronize the self-hosted runner working tree with the
+# repository source before the validation starts.
+#
+# The analyzer itself is READ ONLY with respect to OHLCV.
 #
 # ============================================================
 
@@ -308,10 +315,11 @@ jobs:
       # STEP 7
       # Record OHLCV SHA256 before analysis
       #
-      # NOTE:
-      # Do not use [System.IO.Path]::GetRelativePath().
-      # Windows PowerShell 5.1 / older .NET environments may
-      # not provide that method.
+      # Windows PowerShell 5.1 compatible.
+      # Do NOT use:
+      #
+      #   [System.IO.Path]::GetRelativePath()
+      #
       # ======================================================
 
       - name: Record OHLCV SHA256 before analysis
@@ -522,6 +530,12 @@ jobs:
       # ======================================================
       # STEP 12
       # Verify result JSON
+      #
+      # Clean V003 synchronization:
+      #
+      #   analyze_post_recovery_gaps.py
+      #       version = Clean V003
+      #
       # ======================================================
 
       - name: Verify analysis result JSON
@@ -548,10 +562,10 @@ jobs:
           }
 
           if ($result.program -ne "analyze_post_recovery_gaps.py") {
-              throw "Unexpected program value in result JSON."
+              throw "Unexpected program value in result JSON: $($result.program)"
           }
 
-          if ($result.version -ne "Clean V001") {
+          if ($result.version -ne "Clean V003") {
               throw "Unexpected version in result JSON: $($result.version)"
           }
 
@@ -583,6 +597,11 @@ jobs:
               throw "Safety violation: trading is not false."
           }
 
+          Write-Host "Program        : $($result.program)"
+          Write-Host "Version        : $($result.version)"
+          Write-Host "Execution mode : $($result.execution_mode)"
+          Write-Host "OHLCV total    : $($result.ohlcv_inventory.total)"
+
           Write-Host ""
           Write-Host "[PASS] Analysis result JSON verified."
 
@@ -590,6 +609,11 @@ jobs:
       # ======================================================
       # STEP 13
       # Verify persistent checkpoint
+      #
+      # Clean V003 synchronization:
+      #
+      #   checkpoint.version = Clean V003
+      #
       # ======================================================
 
       - name: Verify persistent analysis checkpoint
@@ -616,10 +640,10 @@ jobs:
           }
 
           if ($checkpoint.program -ne "analyze_post_recovery_gaps.py") {
-              throw "Checkpoint program mismatch."
+              throw "Checkpoint program mismatch: $($checkpoint.program)"
           }
 
-          if ($checkpoint.version -ne "Clean V001") {
+          if ($checkpoint.version -ne "Clean V003") {
               throw "Checkpoint version mismatch: $($checkpoint.version)"
           }
 
@@ -639,9 +663,15 @@ jobs:
       # STEP 14
       # Verify re-run behavior
       #
-      # V001 analyzer is deterministic/read-only.
-      # A second execution must succeed without damaging
-      # source OHLCV or invalidating outputs.
+      # Clean V003 analyzer is deterministic/read-only.
+      #
+      # A second execution must:
+      #
+      #   - complete successfully
+      #   - keep checkpoint COMPLETED
+      #   - keep version Clean V003
+      #   - not modify OHLCV
+      #
       # ======================================================
 
       - name: Verify re-run behavior
@@ -660,14 +690,34 @@ jobs:
 
           $checkpointPath = "data/validation/analyze_post_recovery_gaps_checkpoint.json"
 
+          if (-not (Test-Path $checkpointPath -PathType Leaf)) {
+              throw "Checkpoint missing after second analyzer execution."
+          }
+
           $checkpoint = Get-Content `
               $checkpointPath `
               -Raw |
               ConvertFrom-Json
 
+          if ($null -eq $checkpoint) {
+              throw "Unable to parse checkpoint after re-run."
+          }
+
+          if ($checkpoint.program -ne "analyze_post_recovery_gaps.py") {
+              throw "Checkpoint program changed after re-run."
+          }
+
+          if ($checkpoint.version -ne "Clean V003") {
+              throw "Checkpoint version changed after re-run: $($checkpoint.version)"
+          }
+
           if ($checkpoint.status -ne "COMPLETED") {
               throw "Checkpoint did not remain COMPLETED after re-run."
           }
+
+          Write-Host "Program : $($checkpoint.program)"
+          Write-Host "Version : $($checkpoint.version)"
+          Write-Host "Status  : $($checkpoint.status)"
 
           Write-Host ""
           Write-Host "[PASS] Re-run behavior verified."
@@ -762,14 +812,14 @@ jobs:
               Get-Content `
                   $beforePath `
                   -Raw |
-                  ConvertFrom-Json
+              ConvertFrom-Json
           )
 
           $after = @(
               Get-Content `
                   $afterPath `
                   -Raw |
-                  ConvertFrom-Json
+              ConvertFrom-Json
           )
 
           if ($before.Count -ne 870) {
@@ -881,10 +931,10 @@ jobs:
       # STEP 18
       # Final Git safety check
       #
-      # Ignore untracked runtime files only when they are
-      # properly ignored by .gitignore.
+      # Only TRACKED changes are considered a failure here.
       #
-      # Any tracked-file modification is a failure.
+      # Generated runtime outputs must already have passed
+      # STEP 17 .gitignore verification.
       # ======================================================
 
       - name: Verify final Git safety
@@ -936,10 +986,22 @@ jobs:
 
           $resultPath = "data/reports/post_recovery_analysis/post_recovery_analysis_result.json"
 
+          if (-not (Test-Path $resultPath -PathType Leaf)) {
+              throw "Final result JSON missing: $resultPath"
+          }
+
           $result = Get-Content `
               $resultPath `
               -Raw |
               ConvertFrom-Json
+
+          if ($null -eq $result) {
+              throw "Unable to parse final result JSON."
+          }
+
+          if ($result.version -ne "Clean V003") {
+              throw "Final result version mismatch: $($result.version)"
+          }
 
           $summary = $result.summary
 
@@ -993,6 +1055,8 @@ jobs:
           Write-Host "[RESULT] ANALYZE POST-RECOVERY GAPS TEST PASSED"
           Write-Host "============================================================"
 
+          Write-Host "[PASS] Workflow version Clean V003 verified."
+          Write-Host "[PASS] Analyzer version Clean V003 verified."
           Write-Host "[PASS] 290 markets verified."
           Write-Host "[PASS] 870 OHLCV files verified."
           Write-Host "[PASS] Pre/post recovery analysis verified."
@@ -1001,6 +1065,7 @@ jobs:
           Write-Host "[PASS] Second-pass targets verified."
           Write-Host "[PASS] All OHLCV source files remained unchanged."
           Write-Host "[PASS] Runtime outputs remained Git-ignored."
+
           Write-Host ""
           Write-Host "[NEXT] Review post-recovery analysis results before second-pass recovery planning."
           Write-Host "============================================================"
