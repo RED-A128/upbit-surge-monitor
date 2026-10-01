@@ -1,6 +1,6 @@
 # ============================================================
 # Upbit Surge Monitor
-# Clean V003
+# Clean V004
 # .github/workflows/analyze_post_recovery_gaps_test.yml
 # ============================================================
 #
@@ -9,6 +9,18 @@
 # Validate:
 #
 #   analyze_post_recovery_gaps.py - Clean V003
+#
+# Workflow revision:
+#
+#   Clean V004
+#
+# Main V004 change:
+#
+#   - Keep analyzer version validation at Clean V003
+#   - Replace PowerShell JSON-array SHA256 comparison
+#     with Python JSON comparison
+#   - Avoid Windows PowerShell 5.1 ConvertFrom-Json
+#     array/count behavior
 #
 # This workflow verifies:
 #
@@ -24,10 +36,11 @@
 #  10. Second-pass target output
 #  11. Result JSON output
 #  12. Persistent checkpoint
-#  13. Resume/re-run behavior
+#  13. Re-run behavior
 #  14. OHLCV SHA256 after analysis
 #  15. Source OHLCV immutability
 #  16. Generated runtime files remain Git-ignored
+#  17. Final Git safety
 #
 # IMPORTANT
 # ------------------------------------------------------------
@@ -49,10 +62,10 @@
 # NOTE
 # ------------------------------------------------------------
 # git reset --hard origin/main is used ONLY at the beginning
-# to synchronize the self-hosted runner working tree with the
-# repository source before the validation starts.
+# to synchronize the self-hosted runner working tree with
+# repository source.
 #
-# The analyzer itself is READ ONLY with respect to OHLCV.
+# The analyzer itself remains READ ONLY with respect to OHLCV.
 #
 # ============================================================
 
@@ -291,7 +304,7 @@ jobs:
 
       # ======================================================
       # STEP 6
-      # Create validation directory
+      # Prepare validation directory
       # ======================================================
 
       - name: Prepare validation directory
@@ -314,12 +327,6 @@ jobs:
       # ======================================================
       # STEP 7
       # Record OHLCV SHA256 before analysis
-      #
-      # Windows PowerShell 5.1 compatible.
-      # Do NOT use:
-      #
-      #   [System.IO.Path]::GetRelativePath()
-      #
       # ======================================================
 
       - name: Record OHLCV SHA256 before analysis
@@ -366,13 +373,20 @@ jobs:
               }
           }
 
-          $records |
-              ConvertTo-Json -Depth 4 |
-              Set-Content `
-                  -Encoding UTF8 `
-                  "data/validation/analyze_post_recovery_ohlcv_before.sha256.json"
+          $json = ConvertTo-Json `
+              -InputObject $records `
+              -Depth 4
+
+          Set-Content `
+              -Path "data/validation/analyze_post_recovery_ohlcv_before.sha256.json" `
+              -Value $json `
+              -Encoding UTF8
 
           Write-Host "Recorded files: $($records.Count)"
+
+          if ($records.Count -ne 870) {
+              throw "Before SHA256 record creation mismatch."
+          }
 
           Write-Host ""
           Write-Host "[PASS] OHLCV SHA256 recorded before analysis."
@@ -529,12 +543,11 @@ jobs:
 
       # ======================================================
       # STEP 12
-      # Verify result JSON
+      # Verify analysis result JSON
       #
-      # Clean V003 synchronization:
+      # Analyzer version:
       #
-      #   analyze_post_recovery_gaps.py
-      #       version = Clean V003
+      #   Clean V003
       #
       # ======================================================
 
@@ -609,11 +622,6 @@ jobs:
       # ======================================================
       # STEP 13
       # Verify persistent checkpoint
-      #
-      # Clean V003 synchronization:
-      #
-      #   checkpoint.version = Clean V003
-      #
       # ======================================================
 
       - name: Verify persistent analysis checkpoint
@@ -662,16 +670,6 @@ jobs:
       # ======================================================
       # STEP 14
       # Verify re-run behavior
-      #
-      # Clean V003 analyzer is deterministic/read-only.
-      #
-      # A second execution must:
-      #
-      #   - complete successfully
-      #   - keep checkpoint COMPLETED
-      #   - keep version Clean V003
-      #   - not modify OHLCV
-      #
       # ======================================================
 
       - name: Verify re-run behavior
@@ -772,13 +770,20 @@ jobs:
               }
           }
 
-          $records |
-              ConvertTo-Json -Depth 4 |
-              Set-Content `
-                  -Encoding UTF8 `
-                  "data/validation/analyze_post_recovery_ohlcv_after.sha256.json"
+          $json = ConvertTo-Json `
+              -InputObject $records `
+              -Depth 4
+
+          Set-Content `
+              -Path "data/validation/analyze_post_recovery_ohlcv_after.sha256.json" `
+              -Value $json `
+              -Encoding UTF8
 
           Write-Host "Recorded files: $($records.Count)"
+
+          if ($records.Count -ne 870) {
+              throw "After SHA256 record creation mismatch."
+          }
 
           Write-Host ""
           Write-Host "[PASS] OHLCV SHA256 recorded after analysis."
@@ -787,6 +792,17 @@ jobs:
       # ======================================================
       # STEP 16
       # Verify OHLCV remained unchanged
+      #
+      # Clean V004:
+      #
+      # PowerShell 5.1 ConvertFrom-Json can expose a JSON
+      # top-level array as a single pipeline object depending
+      # on how the expression is collected.
+      #
+      # Therefore Python is used here to parse both JSON files
+      # and perform an exact 870-record path/hash comparison.
+      #
+      # No OHLCV file is written by this step.
       # ======================================================
 
       - name: Verify all OHLCV files remained unchanged
@@ -795,90 +811,222 @@ jobs:
 
           Write-Host "============================================================"
           Write-Host "VERIFY ALL OHLCV FILES REMAINED UNCHANGED"
+          Write-Host "Clean V004 - Python JSON Comparison"
           Write-Host "============================================================"
 
           $beforePath = "data/validation/analyze_post_recovery_ohlcv_before.sha256.json"
           $afterPath  = "data/validation/analyze_post_recovery_ohlcv_after.sha256.json"
 
           if (-not (Test-Path $beforePath -PathType Leaf)) {
-              throw "Before SHA256 file missing."
+              throw "Before SHA256 file missing: $beforePath"
           }
 
           if (-not (Test-Path $afterPath -PathType Leaf)) {
-              throw "After SHA256 file missing."
+              throw "After SHA256 file missing: $afterPath"
           }
 
-          $before = @(
-              Get-Content `
-                  $beforePath `
-                  -Raw |
-              ConvertFrom-Json
+          @'
+          import json
+          import sys
+          from pathlib import Path
+
+          BEFORE_PATH = Path(
+              "data/validation/analyze_post_recovery_ohlcv_before.sha256.json"
           )
 
-          $after = @(
-              Get-Content `
-                  $afterPath `
-                  -Raw |
-              ConvertFrom-Json
+          AFTER_PATH = Path(
+              "data/validation/analyze_post_recovery_ohlcv_after.sha256.json"
           )
 
-          if ($before.Count -ne 870) {
-              throw "Before SHA256 record count mismatch. expected=870 found=$($before.Count)"
+          EXPECTED_COUNT = 870
+
+
+          def load_records(path: Path):
+              if not path.is_file():
+                  raise RuntimeError(f"SHA256 file missing: {path}")
+
+              try:
+                  with path.open(
+                      "r",
+                      encoding="utf-8-sig"
+                  ) as f:
+                      data = json.load(f)
+              except Exception as exc:
+                  raise RuntimeError(
+                      f"Unable to parse SHA256 JSON: {path}: {exc}"
+                  ) from exc
+
+              if not isinstance(data, list):
+                  raise RuntimeError(
+                      f"SHA256 JSON root must be a list: "
+                      f"{path} type={type(data).__name__}"
+                  )
+
+              if len(data) != EXPECTED_COUNT:
+                  raise RuntimeError(
+                      f"SHA256 record count mismatch: "
+                      f"{path} "
+                      f"expected={EXPECTED_COUNT} "
+                      f"found={len(data)}"
+                  )
+
+              result = {}
+
+              for index, item in enumerate(data, start=1):
+                  if not isinstance(item, dict):
+                      raise RuntimeError(
+                          f"Invalid SHA256 record at "
+                          f"{path} index={index}"
+                      )
+
+                  file_path = item.get("path")
+                  sha256 = item.get("sha256")
+
+                  if not isinstance(file_path, str):
+                      raise RuntimeError(
+                          f"Missing/invalid path at "
+                          f"{path} index={index}"
+                      )
+
+                  if not isinstance(sha256, str):
+                      raise RuntimeError(
+                          f"Missing/invalid sha256 at "
+                          f"{path} index={index}"
+                      )
+
+                  file_path = file_path.strip()
+                  sha256 = sha256.strip().upper()
+
+                  if not file_path:
+                      raise RuntimeError(
+                          f"Empty path at "
+                          f"{path} index={index}"
+                      )
+
+                  if len(sha256) != 64:
+                      raise RuntimeError(
+                          f"Invalid SHA256 length at "
+                          f"{path} index={index} "
+                          f"path={file_path}"
+                      )
+
+                  if file_path in result:
+                      raise RuntimeError(
+                          f"Duplicate SHA256 path in "
+                          f"{path}: {file_path}"
+                      )
+
+                  result[file_path] = sha256
+
+              if len(result) != EXPECTED_COUNT:
+                  raise RuntimeError(
+                      f"Unique SHA256 path count mismatch: "
+                      f"{path} "
+                      f"expected={EXPECTED_COUNT} "
+                      f"found={len(result)}"
+                  )
+
+              return result
+
+
+          try:
+              before = load_records(BEFORE_PATH)
+              after = load_records(AFTER_PATH)
+
+              before_paths = set(before)
+              after_paths = set(after)
+
+              missing_after = sorted(
+                  before_paths - after_paths
+              )
+
+              new_after = sorted(
+                  after_paths - before_paths
+              )
+
+              hash_changed = sorted(
+                  path
+                  for path in before_paths & after_paths
+                  if before[path] != after[path]
+              )
+
+              print(
+                  f"Before SHA256 records : {len(before)}"
+              )
+
+              print(
+                  f"After SHA256 records  : {len(after)}"
+              )
+
+              print(
+                  f"Missing after         : {len(missing_after)}"
+              )
+
+              print(
+                  f"New after             : {len(new_after)}"
+              )
+
+              print(
+                  f"Hash changed          : {len(hash_changed)}"
+              )
+
+              problems = []
+
+              for path in missing_after:
+                  problems.append(
+                      f"MISSING_AFTER: {path}"
+                  )
+
+              for path in new_after:
+                  problems.append(
+                      f"NEW_AFTER: {path}"
+                  )
+
+              for path in hash_changed:
+                  problems.append(
+                      f"HASH_CHANGED: {path}"
+                  )
+
+              if problems:
+                  print()
+                  print(
+                      "OHLCV changes detected:",
+                      file=sys.stderr
+                  )
+
+                  for problem in problems:
+                      print(
+                          problem,
+                          file=sys.stderr
+                      )
+
+                  raise RuntimeError(
+                      "OHLCV source files changed during "
+                      "post-recovery analysis."
+                  )
+
+              print()
+              print(
+                  "[PASS] Exact 870-file SHA256 comparison completed."
+              )
+
+              print(
+                  "[PASS] All 870 OHLCV source files remained unchanged."
+              )
+
+          except Exception as exc:
+              print(
+                  f"[ERROR] {type(exc).__name__}: {exc}",
+                  file=sys.stderr
+              )
+              sys.exit(1)
+
+          sys.exit(0)
+          '@ | py -
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "OHLCV SHA256 comparison failed with exit code $LASTEXITCODE."
           }
-
-          if ($after.Count -ne 870) {
-              throw "After SHA256 record count mismatch. expected=870 found=$($after.Count)"
-          }
-
-          $beforeMap = @{}
-
-          foreach ($item in $before) {
-              $beforeMap[$item.path] = $item.sha256
-          }
-
-          $afterMap = @{}
-
-          foreach ($item in $after) {
-              $afterMap[$item.path] = $item.sha256
-          }
-
-          $changed = @()
-
-          foreach ($path in $beforeMap.Keys) {
-
-              if (-not $afterMap.ContainsKey($path)) {
-
-                  $changed += "MISSING_AFTER: $path"
-                  continue
-              }
-
-              if ($beforeMap[$path] -ne $afterMap[$path]) {
-
-                  $changed += "HASH_CHANGED: $path"
-              }
-          }
-
-          foreach ($path in $afterMap.Keys) {
-
-              if (-not $beforeMap.ContainsKey($path)) {
-
-                  $changed += "NEW_AFTER: $path"
-              }
-          }
-
-          if ($changed.Count -gt 0) {
-
-              Write-Host ""
-              Write-Host "OHLCV changes detected:"
-
-              foreach ($item in $changed) {
-                  Write-Host $item
-              }
-
-              throw "OHLCV source files changed during post-recovery analysis."
-          }
-
-          Write-Host "Verified files: 870"
 
           Write-Host ""
           Write-Host "[PASS] All 870 OHLCV files remained unchanged."
@@ -931,10 +1079,9 @@ jobs:
       # STEP 18
       # Final Git safety check
       #
-      # Only TRACKED changes are considered a failure here.
+      # Only tracked changes are considered a failure.
       #
-      # Generated runtime outputs must already have passed
-      # STEP 17 .gitignore verification.
+      # Runtime outputs must already have passed STEP 17.
       # ======================================================
 
       - name: Verify final Git safety
@@ -982,6 +1129,8 @@ jobs:
 
           Write-Host "============================================================"
           Write-Host "ANALYZE POST-RECOVERY GAPS TEST SUMMARY"
+          Write-Host "Workflow : Clean V004"
+          Write-Host "Analyzer : Clean V003"
           Write-Host "============================================================"
 
           $resultPath = "data/reports/post_recovery_analysis/post_recovery_analysis_result.json"
@@ -999,8 +1148,20 @@ jobs:
               throw "Unable to parse final result JSON."
           }
 
+          if ($result.program -ne "analyze_post_recovery_gaps.py") {
+              throw "Final result program mismatch: $($result.program)"
+          }
+
           if ($result.version -ne "Clean V003") {
               throw "Final result version mismatch: $($result.version)"
+          }
+
+          if ($result.execution_mode -ne "READ_ONLY_ANALYSIS") {
+              throw "Final result execution mode mismatch: $($result.execution_mode)"
+          }
+
+          if ($result.ohlcv_inventory.total -ne 870) {
+              throw "Final OHLCV inventory mismatch."
           }
 
           $summary = $result.summary
@@ -1055,16 +1216,19 @@ jobs:
           Write-Host "[RESULT] ANALYZE POST-RECOVERY GAPS TEST PASSED"
           Write-Host "============================================================"
 
-          Write-Host "[PASS] Workflow version Clean V003 verified."
-          Write-Host "[PASS] Analyzer version Clean V003 verified."
+          Write-Host "[PASS] Workflow Clean V004 completed."
+          Write-Host "[PASS] Analyzer Clean V003 verified."
           Write-Host "[PASS] 290 markets verified."
           Write-Host "[PASS] 870 OHLCV files verified."
           Write-Host "[PASS] Pre/post recovery analysis verified."
+          Write-Host "[PASS] Analysis result JSON verified."
           Write-Host "[PASS] Persistent checkpoint verified."
           Write-Host "[PASS] Re-run behavior verified."
           Write-Host "[PASS] Second-pass targets verified."
+          Write-Host "[PASS] Exact 870-file SHA256 comparison verified."
           Write-Host "[PASS] All OHLCV source files remained unchanged."
           Write-Host "[PASS] Runtime outputs remained Git-ignored."
+          Write-Host "[PASS] Final Git safety verified."
 
           Write-Host ""
           Write-Host "[NEXT] Review post-recovery analysis results before second-pass recovery planning."
