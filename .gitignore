@@ -314,6 +314,9 @@ data/validation/gap_report_ohlcv_*.sha256
 
 data/collector_status_clean_v002.csv
 
+data/recovery/
+data/recover_history_gaps_status.csv
+
 # ============================================================
 # END
 # ============================================================
