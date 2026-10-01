@@ -326,6 +326,18 @@ data/validation/classifier_gap_report_before.sha256
 data/validation/classifier_gap_summary_before.sha256
 data/validation/classifier_ohlcv_before.sha256
 
+# History Gap Classification Review - Clean V001 runtime files
+data/recovery/history_gap_recovery_targets.csv
+data/recovery/history_gap_recovery_plan.json
+data/reports/history_gap_classification_review_summary.csv
+data/reports/history_gap_classification_review_detail.csv
+data/reports/history_gap_structural.csv
+data/reports/history_gap_manual_review.csv
+data/validation/review_history_gap_classification_checkpoint.json
+data/review_history_gap_classification_status.csv
+data/validation/review_classifier_source_before.sha256
+data/validation/review_ohlcv_before.sha256.json
+
 # ============================================================
 # END
 # ============================================================
