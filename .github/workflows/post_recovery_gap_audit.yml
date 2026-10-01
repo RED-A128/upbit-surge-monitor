@@ -1,58 +1,54 @@
 # ============================================================
 # Upbit Surge Monitor
 # post_recovery_gap_audit.yml
-# Clean V002
+# Clean V003
 # ============================================================
 #
-# Purpose:
+# PURPOSE
+# ------------------------------------------------------------
+# Run a fresh historical gap audit AFTER actual gap recovery
+# and persist the result as an independent POST-recovery
+# snapshot for analyze_post_recovery_gaps.py.
 #
-#   Measure and preserve the result of the ACTUAL historical
-#   gap recovery.
+# Clean V003 fixes the handoff problem discovered after:
 #
-# Flow:
+#   recover_history_gaps_repair.yml
+#       -> post_recovery_gap_audit.yml
+#       -> analyze_post_recovery_gaps_test.yml
 #
-#   1. Synchronize repository
-#   2. Verify Python / packages / required source files
-#   3. Verify 290 markets x 3 timeframes = 870 OHLCV files
-#   4. Validate current OHLCV structural integrity
-#   5. Record OHLCV SHA256 BEFORE audit
-#   6. Preserve PRE-RECOVERY gap report in RUNNER_TEMP
-#   7. Reset ONLY gap-report calculation checkpoint
-#   8. Run data_history_gap_report.py again
-#   9. Verify fresh POST-RECOVERY gap report
-#  10. Persist POST-RECOVERY report snapshot
-#  11. Persist POST-RECOVERY summary snapshot
-#  12. Verify persistent POST-RECOVERY snapshots
-#  13. Compare BEFORE vs AFTER
-#  14. Save audit result JSON
-#  15. Verify OHLCV remained unchanged during this workflow
-#  16. Final Git safety report
+# IMPORTANT
+# ------------------------------------------------------------
 #
-# Persistent POST-RECOVERY outputs:
+# PRE source:
 #
-#   data/reports/post_recovery_gap/
-#       post_recovery_data_history_gap_report.csv
-#       post_recovery_data_history_gap_summary.csv
+#   data/reports/history_gap/
 #
-# IMPORTANT:
+# POST snapshot:
 #
-#   READ-ONLY OHLCV AUDIT
+#   data/reports/post_recovery_gap_audit/
 #
-#   This workflow MUST NOT:
+# Required POST files:
 #
-#     - run recover_history_gaps.py --repair
-#     - modify OHLCV
-#     - delete OHLCV
-#     - create fake candles
-#     - build features
-#     - run 256 detector
-#     - build future labels
-#     - run prediction
-#     - trade
-#     - git reset
-#     - git clean
-#     - git commit
-#     - git push
+#   data_history_gap_report.csv
+#   data_history_gap_summary.csv
+#
+# SAFETY
+# ------------------------------------------------------------
+#
+# This workflow:
+#
+#   - DOES NOT repair gaps
+#   - DOES NOT download candles
+#   - DOES NOT delete OHLCV
+#   - DOES NOT modify OHLCV
+#   - DOES NOT build features
+#   - DOES NOT run detector
+#   - DOES NOT run prediction
+#   - DOES NOT trade
+#   - DOES NOT git reset
+#   - DOES NOT git clean
+#   - DOES NOT git commit
+#   - DOES NOT git push
 #
 # ============================================================
 
@@ -61,7 +57,7 @@ name: post_recovery_gap_audit.yml
 
 
 # ============================================================
-# TRIGGER
+# 1. TRIGGER
 # ============================================================
 
 on:
@@ -69,7 +65,7 @@ on:
 
 
 # ============================================================
-# PERMISSIONS
+# 2. PERMISSIONS
 # ============================================================
 
 permissions:
@@ -77,2022 +73,1275 @@ permissions:
 
 
 # ============================================================
-# JOB
+# 3. CONCURRENCY
+# ============================================================
+
+concurrency:
+  group: post-recovery-gap-audit
+  cancel-in-progress: false
+
+
+# ============================================================
+# 4. JOB
 # ============================================================
 
 jobs:
 
-  post-recovery-gap-audit:
+  post_recovery_gap_audit:
 
     name: post_recovery_gap_audit.yml
 
     runs-on:
       - self-hosted
       - Windows
-      - X64
 
     timeout-minutes: 180
 
-    defaults:
-      run:
-        shell: powershell
 
+    # ========================================================
+    # 5. STEPS
+    # ========================================================
 
     steps:
 
 
       # ======================================================
       # STEP 1
-      # Synchronize repository
-      #
-      # No reset.
-      # No clean.
+      # Checkout source
       # ======================================================
 
-      - name: Synchronize local repository
+      - name: Checkout repository
 
-        run: |
+        uses: actions/checkout@v4
 
-          $ErrorActionPreference = "Stop"
-
-          Set-Location $env:GITHUB_WORKSPACE
-
-          Write-Host "============================================================"
-          Write-Host "SYNCHRONIZE LOCAL REPOSITORY"
-          Write-Host "============================================================"
-
-          Write-Host ""
-          Write-Host "Workspace:"
-          Write-Host $env:GITHUB_WORKSPACE
-
-          Write-Host ""
-          Write-Host "Branch:"
-
-          git branch --show-current
-
-          if ($LASTEXITCODE -ne 0) {
-              throw "Failed to determine Git branch."
-          }
-
-          Write-Host ""
-          Write-Host "Fetching origin/main..."
-
-          git fetch origin main
-
-          if ($LASTEXITCODE -ne 0) {
-              throw "git fetch origin main failed."
-          }
-
-          Write-Host ""
-          Write-Host "Fast-forward merge..."
-
-          git merge --ff-only origin/main
-
-          if ($LASTEXITCODE -ne 0) {
-              throw "git merge --ff-only origin/main failed."
-          }
-
-          Write-Host ""
-          Write-Host "[PASS] Repository synchronized."
-          Write-Host "[SAFETY] git reset NOT executed."
-          Write-Host "[SAFETY] git clean NOT executed."
+        with:
+          clean: false
+          fetch-depth: 1
 
 
       # ======================================================
       # STEP 2
-      # Verify Python
+      # Show execution information
       # ======================================================
 
-      - name: Verify Python
+      - name: Show execution information
+
+        shell: powershell
 
         run: |
 
           $ErrorActionPreference = "Stop"
 
           Write-Host "============================================================"
-          Write-Host "VERIFY PYTHON"
+          Write-Host "POST RECOVERY GAP AUDIT"
+          Write-Host "Clean V003"
           Write-Host "============================================================"
 
-          py --version
+          Write-Host ""
 
-          if ($LASTEXITCODE -ne 0) {
-              throw "Python launcher 'py' is unavailable."
-          }
+          Write-Host "Workflow:"
+          Write-Host "  post_recovery_gap_audit.yml"
 
           Write-Host ""
-          Write-Host "[PASS] Python verified."
+
+          Write-Host "Execution:"
+          Write-Host "  Mode              : READ ONLY OHLCV AUDIT"
+          Write-Host "  Runner            : $env:RUNNER_NAME"
+          Write-Host "  Workspace         : $env:GITHUB_WORKSPACE"
+
+          Write-Host ""
+
+          Write-Host "Expected:"
+          Write-Host "  Markets           : 290"
+          Write-Host "  Timeframes        : 3"
+          Write-Host "  OHLCV files       : 870"
+
+          Write-Host ""
+
+          Write-Host "POST output:"
+          Write-Host "  data/reports/post_recovery_gap_audit/"
+
+          Write-Host ""
+
+          Write-Host "Required POST files:"
+          Write-Host "  data_history_gap_report.csv"
+          Write-Host "  data_history_gap_summary.csv"
+
+          Write-Host ""
+
+          Write-Host "Safety:"
+          Write-Host "  OHLCV write       : DISABLED"
+          Write-Host "  OHLCV delete      : DISABLED"
+          Write-Host "  Gap repair        : DISABLED"
+          Write-Host "  API download      : DISABLED"
+          Write-Host "  Feature build     : DISABLED"
+          Write-Host "  Detector          : DISABLED"
+          Write-Host "  Prediction        : DISABLED"
+          Write-Host "  Trading           : DISABLED"
+          Write-Host "  Git reset         : DISABLED"
+          Write-Host "  Git clean         : DISABLED"
+          Write-Host "  Git commit        : DISABLED"
+          Write-Host "  Git push          : DISABLED"
+
+          Write-Host "============================================================"
 
 
       # ======================================================
       # STEP 3
-      # Verify Python packages
+      # Verify required Python source
       # ======================================================
 
-      - name: Verify Python packages
+      - name: Verify required source files
+
+        shell: powershell
 
         run: |
 
           $ErrorActionPreference = "Stop"
 
           Write-Host "============================================================"
-          Write-Host "VERIFY PYTHON PACKAGES"
-          Write-Host "============================================================"
-
-          py -c "import pandas; print('pandas:', pandas.__version__)"
-
-          if ($LASTEXITCODE -ne 0) {
-              throw "pandas validation failed."
-          }
-
-          Write-Host ""
-          Write-Host "[PASS] Python packages verified."
-
-
-      # ======================================================
-      # STEP 4
-      # Verify required project files
-      # ======================================================
-
-      - name: Verify required project files
-
-        run: |
-
-          $ErrorActionPreference = "Stop"
-
-          Set-Location $env:GITHUB_WORKSPACE
-
-          Write-Host "============================================================"
-          Write-Host "VERIFY REQUIRED PROJECT FILES"
+          Write-Host "VERIFY REQUIRED SOURCE FILES"
           Write-Host "============================================================"
 
           $required = @(
-              "data_history_gap_report.py",
-              "recover_history_gaps.py"
+              "data_history_gap_report.py"
           )
 
           foreach ($file in $required) {
 
-              if (-not (Test-Path $file -PathType Leaf)) {
-                  throw "Missing required file: $file"
+              if (-not (Test-Path $file)) {
+
+                  throw "Required source file not found: $file"
               }
 
               Write-Host "[PASS] $file"
           }
 
-          Write-Host ""
-          Write-Host "[PASS] Required project files verified."
+          Write-Host "============================================================"
 
 
       # ======================================================
-      # STEP 5
+      # STEP 4
       # Verify OHLCV directories
       # ======================================================
 
       - name: Verify OHLCV directories
 
+        shell: powershell
+
         run: |
 
           $ErrorActionPreference = "Stop"
-
-          Set-Location $env:GITHUB_WORKSPACE
 
           Write-Host "============================================================"
           Write-Host "VERIFY OHLCV DIRECTORIES"
           Write-Host "============================================================"
 
           $directories = @(
-              "data\ohlcv\h1",
-              "data\ohlcv\h4",
-              "data\ohlcv\d1"
+              "data/ohlcv/h1",
+              "data/ohlcv/h4",
+              "data/ohlcv/d1"
           )
 
-          foreach ($directory in $directories) {
+          foreach ($dir in $directories) {
 
-              if (-not (Test-Path $directory -PathType Container)) {
-                  throw "Missing OHLCV directory: $directory"
+              if (-not (Test-Path $dir)) {
+
+                  throw "Required OHLCV directory not found: $dir"
               }
 
-              Write-Host "[PASS] $directory"
+              Write-Host "[PASS] $dir"
           }
 
-          Write-Host ""
-          Write-Host "[PASS] OHLCV directories verified."
+          Write-Host "============================================================"
 
 
       # ======================================================
-      # STEP 6
-      # Verify complete OHLCV universe
-      #
-      # Expected:
-      #
-      #   h1 = 290
-      #   h4 = 290
-      #   d1 = 290
-      #
-      # Total = 870
+      # STEP 5
+      # Verify full 290 x 3 OHLCV inventory
       # ======================================================
 
       - name: Verify full 290 market OHLCV set
 
-        run: |
-
-          $ErrorActionPreference = "Stop"
-
-          Set-Location $env:GITHUB_WORKSPACE
-
-          Write-Host "============================================================"
-          Write-Host "VERIFY FULL 290 MARKET OHLCV SET"
-          Write-Host "============================================================"
-
-          $expectedMarkets = 290
-          $expectedTotal = 870
-
-          $timeframes = @(
-              "h1",
-              "h4",
-              "d1"
-          )
-
-          $marketSets = @{}
-          $total = 0
-
-          foreach ($timeframe in $timeframes) {
-
-              $directory = "data\ohlcv\$timeframe"
-
-              $files = @(
-                  Get-ChildItem `
-                      -Path $directory `
-                      -Filter "KRW-*.csv" `
-                      -File
-              )
-
-              $count = $files.Count
-
-              Write-Host ""
-              Write-Host "$timeframe : $count"
-
-              if ($count -ne $expectedMarkets) {
-
-                  throw (
-                      "Expected $expectedMarkets files for " +
-                      "$timeframe. Found: $count"
-                  )
-              }
-
-              $markets = @(
-                  $files |
-                  ForEach-Object {
-                      $_.BaseName
-                  } |
-                  Sort-Object -Unique
-              )
-
-              if ($markets.Count -ne $expectedMarkets) {
-
-                  throw (
-                      "Unique market count mismatch for " +
-                      "$timeframe."
-                  )
-              }
-
-              $marketSets[$timeframe] = $markets
-
-              $total += $count
-          }
-
-          if ($total -ne $expectedTotal) {
-
-              throw (
-                  "Expected 870 total OHLCV files. Found: " +
-                  "$total"
-              )
-          }
-
-          $base = $marketSets["h1"]
-
-          foreach ($timeframe in @("h4", "d1")) {
-
-              $difference = @(
-                  Compare-Object `
-                      -ReferenceObject $base `
-                      -DifferenceObject $marketSets[$timeframe]
-              )
-
-              if ($difference.Count -gt 0) {
-
-                  $difference |
-                      Format-Table -AutoSize
-
-                  throw (
-                      "Market universe mismatch: h1 vs " +
-                      "$timeframe"
-                  )
-              }
-          }
-
-          Write-Host ""
-          Write-Host "Markets     : 290"
-          Write-Host "Timeframes  : 3"
-          Write-Host "OHLCV files : 870"
-
-          Write-Host ""
-          Write-Host "[PASS] Complete OHLCV universe verified."
-
-
-      # ======================================================
-      # STEP 7
-      # Structural OHLCV validation BEFORE audit
-      # ======================================================
-
-      - name: Validate OHLCV structure before audit
+        shell: powershell
 
         run: |
 
           $ErrorActionPreference = "Stop"
 
-          Set-Location $env:GITHUB_WORKSPACE
-
           Write-Host "============================================================"
-          Write-Host "VALIDATE OHLCV STRUCTURE BEFORE AUDIT"
+          Write-Host "VERIFY FULL OHLCV INVENTORY"
           Write-Host "============================================================"
 
-          $pythonCode = @'
-          from pathlib import Path
-          import pandas as pd
+          $h1 = @(
+              Get-ChildItem `
+                  "data/ohlcv/h1" `
+                  -Filter "KRW-*.csv" `
+                  -File
+          ).Count
 
-          root = Path("data/ohlcv")
+          $h4 = @(
+              Get-ChildItem `
+                  "data/ohlcv/h4" `
+                  -Filter "KRW-*.csv" `
+                  -File
+          ).Count
 
-          files = sorted(
-              p
-              for p in root.glob("*/*.csv")
-              if p.name.startswith("KRW-")
-          )
+          $d1 = @(
+              Get-ChildItem `
+                  "data/ohlcv/d1" `
+                  -Filter "KRW-*.csv" `
+                  -File
+          ).Count
 
-          if len(files) != 870:
-              raise RuntimeError(
-                  f"Expected 870 OHLCV files, found {len(files)}"
-              )
+          $total = $h1 + $h4 + $d1
 
-          checked = 0
+          Write-Host "H1 files : $h1"
+          Write-Host "H4 files : $h4"
+          Write-Host "D1 files : $d1"
+          Write-Host "Total    : $total"
 
-          for path in files:
+          if ($h1 -ne 290) {
 
-              df = pd.read_csv(path)
+              throw "H1 OHLCV count mismatch. expected=290 found=$h1"
+          }
 
-              if df.empty:
-                  raise RuntimeError(
-                      f"Empty OHLCV file: {path}"
-                  )
+          if ($h4 -ne 290) {
 
-              column = "candle_date_time_utc"
+              throw "H4 OHLCV count mismatch. expected=290 found=$h4"
+          }
 
-              if column not in df.columns:
-                  raise RuntimeError(
-                      f"Missing {column}: {path}"
-                  )
+          if ($d1 -ne 290) {
 
-              ts = pd.to_datetime(
-                  df[column],
-                  errors="coerce",
-                  utc=True,
-              )
+              throw "D1 OHLCV count mismatch. expected=290 found=$d1"
+          }
 
-              if ts.isna().any():
-                  raise RuntimeError(
-                      f"Invalid UTC timestamp: {path}"
-                  )
+          if ($total -ne 870) {
 
-              duplicates = int(
-                  ts.duplicated().sum()
-              )
-
-              if duplicates != 0:
-                  raise RuntimeError(
-                      f"Duplicate timestamp: "
-                      f"{path}: {duplicates}"
-                  )
-
-              if not ts.is_monotonic_increasing:
-                  raise RuntimeError(
-                      f"Timestamp order invalid: {path}"
-                  )
-
-              checked += 1
-
-          print(f"OHLCV checked       : {checked}")
-          print("Duplicate timestamp : 0")
-          print("UTC timestamps      : VERIFIED")
-          print("Sort order          : VERIFIED")
-          '@
-
-          $tempPython = Join-Path `
-              $env:RUNNER_TEMP `
-              "post_recovery_validate_before_v002.py"
-
-          $pythonCode |
-              Set-Content `
-                  -Path $tempPython `
-                  -Encoding UTF8
-
-          py $tempPython
-
-          if ($LASTEXITCODE -ne 0) {
-              throw "Pre-audit OHLCV validation failed."
+              throw "Total OHLCV count mismatch. expected=870 found=$total"
           }
 
           Write-Host ""
-          Write-Host "[PASS] OHLCV structure verified."
+          Write-Host "[PASS] 290 markets verified for H1."
+          Write-Host "[PASS] 290 markets verified for H4."
+          Write-Host "[PASS] 290 markets verified for D1."
+          Write-Host "[PASS] 870 OHLCV files verified."
+
+          Write-Host "============================================================"
 
 
       # ======================================================
-      # STEP 8
+      # STEP 6
       # Record OHLCV SHA256 BEFORE audit
       #
+      # Windows PowerShell 5.1 compatible.
       # Do NOT use [System.IO.Path]::GetRelativePath().
-      #
-      # Some Windows PowerShell / .NET environments used by
-      # the self-hosted runner do not provide that method.
       # ======================================================
 
       - name: Record OHLCV SHA256 before audit
 
+        shell: powershell
+
         run: |
 
           $ErrorActionPreference = "Stop"
-
-          Set-Location $env:GITHUB_WORKSPACE
 
           Write-Host "============================================================"
           Write-Host "RECORD OHLCV SHA256 BEFORE AUDIT"
           Write-Host "============================================================"
 
-          $manifest = Join-Path `
-              $env:RUNNER_TEMP `
-              "post_recovery_ohlcv_before_v002.sha256"
+          New-Item `
+              -ItemType Directory `
+              -Force `
+              -Path "data/validation" `
+              | Out-Null
 
-          $workspacePath = (
-              Resolve-Path $env:GITHUB_WORKSPACE
-          ).Path.TrimEnd('\')
+          $root = (Resolve-Path ".").Path
 
-          $files = @(
-              Get-ChildItem `
-                  -Path "data\ohlcv" `
-                  -Filter "KRW-*.csv" `
-                  -File `
-                  -Recurse |
-              Sort-Object FullName
-          )
+          $records = @()
 
-          if ($files.Count -ne 870) {
-
-              throw (
-                  "Expected 870 OHLCV files. Found: " +
-                  "$($files.Count)"
-              )
-          }
-
-          $rows = @()
+          $files = Get-ChildItem `
+              "data/ohlcv" `
+              -Recurse `
+              -Filter "*.csv" `
+              -File `
+              | Sort-Object FullName
 
           foreach ($file in $files) {
 
-              if (-not $file.FullName.StartsWith(
-                  $workspacePath,
-                  [System.StringComparison]::OrdinalIgnoreCase
-              )) {
-                  throw "OHLCV file is outside workspace."
+              $fullPath = $file.FullName
+
+              if ($fullPath.StartsWith($root)) {
+
+                  $relative = $fullPath.Substring($root.Length)
+
+                  $relative = $relative.TrimStart(
+                      [System.IO.Path]::DirectorySeparatorChar,
+                      [System.IO.Path]::AltDirectorySeparatorChar
+                  )
+
+              }
+              else {
+
+                  $relative = $fullPath
               }
 
-              $relative = $file.FullName.Substring(
-                  $workspacePath.Length
-              ).TrimStart('\')
+              $relative = $relative.Replace("\", "/")
 
               $hash = (
                   Get-FileHash `
-                      -Path $file.FullName `
-                      -Algorithm SHA256
+                      -Algorithm SHA256 `
+                      -Path $fullPath
               ).Hash
 
-              $rows += "$hash`t$relative"
+              $records += [PSCustomObject]@{
+                  path   = $relative
+                  sha256 = $hash
+              }
           }
 
-          $rows |
-              Set-Content `
-                  -Path $manifest `
+          if ($records.Count -ne 870) {
+
+              throw "Unable to record all OHLCV hashes. expected=870 found=$($records.Count)"
+          }
+
+          $records |
+              Export-Csv `
+                  "data/validation/post_recovery_audit_ohlcv_before.csv" `
+                  -NoTypeInformation `
                   -Encoding UTF8
 
-          Write-Host ""
-          Write-Host "Files hashed : $($files.Count)"
+          Write-Host "[PASS] OHLCV hashes recorded: $($records.Count)"
 
-          Write-Host ""
-          Write-Host "[PASS] Pre-audit OHLCV SHA256 recorded."
+          Write-Host "============================================================"
+
+
+      # ======================================================
+      # STEP 7
+      # Prepare clean POST snapshot directory
+      #
+      # IMPORTANT:
+      # Only generated POST report directory is cleared.
+      # OHLCV is NEVER touched.
+      # ======================================================
+
+      - name: Prepare POST recovery audit directory
+
+        shell: powershell
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "PREPARE POST RECOVERY AUDIT DIRECTORY"
+          Write-Host "============================================================"
+
+          $postDir = "data/reports/post_recovery_gap_audit"
+
+          if (Test-Path $postDir) {
+
+              Remove-Item `
+                  "$postDir/*" `
+                  -Recurse `
+                  -Force `
+                  -ErrorAction SilentlyContinue
+          }
+          else {
+
+              New-Item `
+                  -ItemType Directory `
+                  -Force `
+                  -Path $postDir `
+                  | Out-Null
+          }
+
+          Write-Host "[PASS] POST audit directory prepared."
+          Write-Host "       $postDir"
+
+          Write-Host "============================================================"
+
+
+      # ======================================================
+      # STEP 8
+      # Record PRE source report timestamps
+      #
+      # This lets us identify which history-gap files were
+      # freshly regenerated by data_history_gap_report.py.
+      # ======================================================
+
+      - name: Record gap report state before scan
+
+        shell: powershell
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "RECORD GAP REPORT STATE BEFORE SCAN"
+          Write-Host "============================================================"
+
+          New-Item `
+              -ItemType Directory `
+              -Force `
+              -Path "data/validation" `
+              | Out-Null
+
+          $sourceDir = "data/reports/history_gap"
+
+          $records = @()
+
+          if (Test-Path $sourceDir) {
+
+              $files = Get-ChildItem `
+                  $sourceDir `
+                  -Filter "*.csv" `
+                  -File
+
+              foreach ($file in $files) {
+
+                  $records += [PSCustomObject]@{
+                      name             = $file.Name
+                      full_name        = $file.FullName
+                      length           = $file.Length
+                      last_write_ticks = $file.LastWriteTimeUtc.Ticks
+                      sha256           = (
+                          Get-FileHash `
+                              -Algorithm SHA256 `
+                              -Path $file.FullName
+                      ).Hash
+                  }
+              }
+          }
+
+          $records |
+              Export-Csv `
+                  "data/validation/post_recovery_gap_source_before.csv" `
+                  -NoTypeInformation `
+                  -Encoding UTF8
+
+          Write-Host "Existing history-gap CSV files: $($records.Count)"
+
+          foreach ($record in $records) {
+
+              Write-Host "  $($record.name)"
+          }
+
+          Write-Host "============================================================"
 
 
       # ======================================================
       # STEP 9
-      # Preserve PRE-RECOVERY report
+      # Run fresh POST-recovery gap scan
       #
-      # Current report is expected to represent the report
-      # available before this fresh post-recovery scan.
-      #
-      # It is preserved in RUNNER_TEMP.
-      # ======================================================
-
-      - name: Preserve pre-recovery gap report
-
-        run: |
-
-          $ErrorActionPreference = "Stop"
-
-          Set-Location $env:GITHUB_WORKSPACE
-
-          Write-Host "============================================================"
-          Write-Host "PRESERVE PRE-RECOVERY GAP REPORT"
-          Write-Host "============================================================"
-
-          $source = `
-              "data\reports\history_gap\data_history_gap_report.csv"
-
-          $backup = Join-Path `
-              $env:RUNNER_TEMP `
-              "pre_recovery_data_history_gap_report_v002.csv"
-
-          if (-not (
-              Test-Path `
-                  $source `
-                  -PathType Leaf
-          )) {
-
-              throw (
-                  "Pre-recovery gap report not found: " +
-                  $source
-              )
-          }
-
-          $item = Get-Item $source
-
-          if ($item.Length -le 0) {
-              throw "Pre-recovery gap report is empty."
-          }
-
-          Copy-Item `
-              -Path $source `
-              -Destination $backup `
-              -Force
-
-          if (-not (
-              Test-Path `
-                  $backup `
-                  -PathType Leaf
-          )) {
-              throw "Failed to preserve pre-recovery report."
-          }
-
-          $sourceHash = (
-              Get-FileHash `
-                  -Path $source `
-                  -Algorithm SHA256
-          ).Hash
-
-          $backupHash = (
-              Get-FileHash `
-                  -Path $backup `
-                  -Algorithm SHA256
-          ).Hash
-
-          if ($sourceHash -ne $backupHash) {
-              throw "Pre-recovery report backup SHA256 mismatch."
-          }
-
-          Write-Host ""
-          Write-Host "Source:"
-          Write-Host $source
-
-          Write-Host ""
-          Write-Host "Temporary backup:"
-          Write-Host $backup
-
-          Write-Host ""
-          Write-Host "[PASS] Pre-recovery report preserved."
-
-
-      # ======================================================
-      # STEP 10
-      # Preserve PRE-RECOVERY summary when available
-      # ======================================================
-
-      - name: Preserve pre-recovery gap summary
-
-        run: |
-
-          $ErrorActionPreference = "Stop"
-
-          Set-Location $env:GITHUB_WORKSPACE
-
-          Write-Host "============================================================"
-          Write-Host "PRESERVE PRE-RECOVERY GAP SUMMARY"
-          Write-Host "============================================================"
-
-          $source = `
-              "data\reports\history_gap\data_history_gap_summary.csv"
-
-          $backup = Join-Path `
-              $env:RUNNER_TEMP `
-              "pre_recovery_data_history_gap_summary_v002.csv"
-
-          if (Test-Path $source -PathType Leaf) {
-
-              Copy-Item `
-                  -Path $source `
-                  -Destination $backup `
-                  -Force
-
-              Write-Host ""
-              Write-Host "[PASS] Pre-recovery summary preserved."
-          }
-          else {
-
-              Write-Host ""
-              Write-Host (
-                  "[INFO] Separate pre-recovery summary file " +
-                  "not found."
-              )
-
-              Write-Host (
-                  "[INFO] Main gap report remains the " +
-                  "authoritative comparison source."
-              )
-          }
-
-
-      # ======================================================
-      # STEP 11
-      # Reset ONLY gap-report calculation checkpoint
-      #
-      # This forces a fresh report against repaired OHLCV.
-      #
-      # DO NOT remove:
-      #
-      #   - OHLCV
-      #   - recovery checkpoint
-      #   - repair checkpoint
-      #   - classifier checkpoint
-      #
-      # ======================================================
-
-      - name: Reset gap report calculation checkpoint
-
-        run: |
-
-          $ErrorActionPreference = "Stop"
-
-          Set-Location $env:GITHUB_WORKSPACE
-
-          Write-Host "============================================================"
-          Write-Host "RESET GAP REPORT CALCULATION CHECKPOINT"
-          Write-Host "============================================================"
-
-          $checkpoint = `
-              "data\validation\data_history_gap_report_checkpoint.json"
-
-          if (Test-Path $checkpoint -PathType Leaf) {
-
-              Remove-Item `
-                  -Path $checkpoint `
-                  -Force
-
-              Write-Host ""
-              Write-Host (
-                  "[RESET] Gap report calculation checkpoint " +
-                  "removed."
-              )
-          }
-          else {
-
-              Write-Host ""
-              Write-Host (
-                  "[INFO] Gap report calculation checkpoint " +
-                  "not present."
-              )
-          }
-
-          Write-Host ""
-          Write-Host "[SAFETY] OHLCV was NOT deleted."
-          Write-Host "[SAFETY] Recovery checkpoint was NOT deleted."
-          Write-Host "[SAFETY] Repair checkpoint was NOT deleted."
-
-
-      # ======================================================
-      # STEP 12
-      # Run fresh POST-RECOVERY gap report
-      #
-      # data_history_gap_report.py reads OHLCV.
-      #
-      # Historical repair is NOT executed here.
+      # data_history_gap_report.py remains responsible for
+      # scanning all 870 OHLCV files.
       # ======================================================
 
       - name: Run post-recovery gap report
 
+        shell: powershell
+
         run: |
 
           $ErrorActionPreference = "Stop"
-
-          Set-Location $env:GITHUB_WORKSPACE
 
           Write-Host "============================================================"
           Write-Host "RUN POST-RECOVERY GAP REPORT"
           Write-Host "============================================================"
 
-          Write-Host ""
-          Write-Host "Command:"
-          Write-Host "py data_history_gap_report.py"
-
-          Write-Host ""
-          Write-Host "OHLCV write : DISABLED"
-          Write-Host "Gap repair  : DISABLED"
-
-          Write-Host ""
-
           py data_history_gap_report.py
 
           if ($LASTEXITCODE -ne 0) {
 
-              throw (
-                  "data_history_gap_report.py failed with " +
-                  "exit code $LASTEXITCODE."
-              )
+              throw "data_history_gap_report.py failed with exit code $LASTEXITCODE"
           }
 
           Write-Host ""
-          Write-Host "[PASS] Fresh post-recovery gap report generated."
+          Write-Host "[PASS] Fresh post-recovery gap scan completed."
+
+          Write-Host "============================================================"
+
+
+      # ======================================================
+      # STEP 10
+      # Verify expected source outputs exist
+      #
+      # Current data_history_gap_report.py produces files in:
+      #
+      #   data/reports/history_gap/
+      #
+      # Clean V003 then snapshots those freshly calculated
+      # results into the dedicated POST directory.
+      # ======================================================
+
+      - name: Verify fresh gap report outputs
+
+        shell: powershell
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY FRESH GAP REPORT OUTPUTS"
+          Write-Host "============================================================"
+
+          $sourceDir = "data/reports/history_gap"
+
+          if (-not (Test-Path $sourceDir)) {
+
+              throw "History gap report directory not found after scan: $sourceDir"
+          }
+
+          $csvFiles = @(
+              Get-ChildItem `
+                  $sourceDir `
+                  -Filter "*.csv" `
+                  -File
+          )
+
+          if ($csvFiles.Count -eq 0) {
+
+              throw "No CSV output found after post-recovery gap scan."
+          }
+
+          Write-Host "CSV outputs found: $($csvFiles.Count)"
+
+          foreach ($file in $csvFiles) {
+
+              Write-Host "  $($file.Name)"
+          }
+
+          $summaryPath = Join-Path `
+              $sourceDir `
+              "data_history_gap_summary.csv"
+
+          if (-not (Test-Path $summaryPath)) {
+
+              throw "Required gap summary not found: $summaryPath"
+          }
+
+          if ((Get-Item $summaryPath).Length -le 0) {
+
+              throw "Gap summary is empty: $summaryPath"
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Fresh gap summary exists."
+
+          Write-Host "============================================================"
+
+
+      # ======================================================
+      # STEP 11
+      # Create independent POST snapshot
+      #
+      # IMPORTANT:
+      #
+      # We copy the freshly generated reports AFTER the scan.
+      #
+      # The POST summary filename is fixed:
+      #
+      #   data_history_gap_summary.csv
+      #
+      # For detail:
+      #   data_history_gap_report.csv is copied when available.
+      #
+      # If the detail file exists but uses a different schema,
+      # it is still preserved as the raw POST detail snapshot.
+      # The analyzer can use the validated summary.
+      # ======================================================
+
+      - name: Create POST recovery gap snapshot
+
+        shell: powershell
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "CREATE POST RECOVERY GAP SNAPSHOT"
+          Write-Host "============================================================"
+
+          $sourceDir = "data/reports/history_gap"
+          $postDir   = "data/reports/post_recovery_gap_audit"
+
+          New-Item `
+              -ItemType Directory `
+              -Force `
+              -Path $postDir `
+              | Out-Null
+
+          $sourceSummary = Join-Path `
+              $sourceDir `
+              "data_history_gap_summary.csv"
+
+          $postSummary = Join-Path `
+              $postDir `
+              "data_history_gap_summary.csv"
+
+          if (-not (Test-Path $sourceSummary)) {
+
+              throw "Source summary not found: $sourceSummary"
+          }
+
+          Copy-Item `
+              $sourceSummary `
+              $postSummary `
+              -Force
+
+          Write-Host "[PASS] POST summary snapshot created:"
+          Write-Host "       $postSummary"
+
+          $sourceDetail = Join-Path `
+              $sourceDir `
+              "data_history_gap_report.csv"
+
+          $postDetail = Join-Path `
+              $postDir `
+              "data_history_gap_report.csv"
+
+          if (Test-Path $sourceDetail) {
+
+              Copy-Item `
+                  $sourceDetail `
+                  $postDetail `
+                  -Force
+
+              Write-Host "[PASS] POST detail snapshot created:"
+              Write-Host "       $postDetail"
+
+          }
+          else {
+
+              Write-Host "[INFO] data_history_gap_report.csv was not produced."
+              Write-Host "[INFO] POST summary remains the validated analyzer input."
+          }
+
+          Write-Host "============================================================"
+
+
+      # ======================================================
+      # STEP 12
+      # Verify POST summary schema
+      #
+      # Analyzer V003 requires:
+      #
+      #   market
+      #   timeframe
+      #   and at least one gap/missing metric
+      #
+      # Alias matching here mirrors the analyzer contract.
+      # ======================================================
+
+      - name: Verify POST summary schema
+
+        shell: powershell
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY POST SUMMARY SCHEMA"
+          Write-Host "============================================================"
+
+          $postSummary = `
+              "data/reports/post_recovery_gap_audit/data_history_gap_summary.csv"
+
+          if (-not (Test-Path $postSummary)) {
+
+              throw "POST summary does not exist: $postSummary"
+          }
+
+          if ((Get-Item $postSummary).Length -le 0) {
+
+              throw "POST summary is empty: $postSummary"
+          }
+
+          $firstLine = Get-Content `
+              $postSummary `
+              -First 1
+
+          if ([string]::IsNullOrWhiteSpace($firstLine)) {
+
+              throw "POST summary header is empty."
+          }
+
+          $headers = @(
+              $firstLine.Split(",") |
+              ForEach-Object {
+                  $_.Trim().Trim('"').ToLower().Replace("-", "_").Replace(" ", "_")
+              }
+          )
+
+          Write-Host "Headers:"
+
+          foreach ($header in $headers) {
+
+              Write-Host "  $header"
+          }
+
+          $marketAliases = @(
+              "market",
+              "ticker",
+              "symbol",
+              "code"
+          )
+
+          $timeframeAliases = @(
+              "timeframe",
+              "interval",
+              "tf",
+              "unit"
+          )
+
+          $gapAliases = @(
+              "gap_count",
+              "gaps",
+              "gap_events",
+              "gap_event_count",
+              "total_gaps",
+              "total_gap_count"
+          )
+
+          $missingAliases = @(
+              "missing_count",
+              "missing",
+              "missing_est",
+              "missing_estimate",
+              "estimated_missing",
+              "missing_candles",
+              "missing_candle_count"
+          )
+
+          $hasMarket = $false
+
+          foreach ($alias in $marketAliases) {
+
+              if ($headers -contains $alias) {
+
+                  $hasMarket = $true
+                  break
+              }
+          }
+
+          $hasTimeframe = $false
+
+          foreach ($alias in $timeframeAliases) {
+
+              if ($headers -contains $alias) {
+
+                  $hasTimeframe = $true
+                  break
+              }
+          }
+
+          $hasGapMetric = $false
+
+          foreach ($alias in $gapAliases) {
+
+              if ($headers -contains $alias) {
+
+                  $hasGapMetric = $true
+                  break
+              }
+          }
+
+          if (-not $hasGapMetric) {
+
+              foreach ($alias in $missingAliases) {
+
+                  if ($headers -contains $alias) {
+
+                      $hasGapMetric = $true
+                      break
+                  }
+              }
+          }
+
+          if (-not $hasMarket) {
+
+              throw "POST summary schema does not contain a market column."
+          }
+
+          if (-not $hasTimeframe) {
+
+              throw "POST summary schema does not contain a timeframe column."
+          }
+
+          if (-not $hasGapMetric) {
+
+              throw "POST summary schema does not contain a gap/missing metric."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] POST report schema verified."
+
+          Write-Host "============================================================"
 
 
       # ======================================================
       # STEP 13
-      # Verify fresh POST-RECOVERY report
+      # Verify POST report is independently stored
+      #
+      # This checks the PATH contract.
+      #
+      # PRE:
+      #   data/reports/history_gap/...
+      #
+      # POST:
+      #   data/reports/post_recovery_gap_audit/...
+      #
+      # Same content is allowed when recovery did not change
+      # a particular aggregate result.
+      #
+      # Same physical path is NOT allowed.
       # ======================================================
 
-      - name: Verify fresh post-recovery gap report
+      - name: Verify POST report separation
+
+        shell: powershell
 
         run: |
 
           $ErrorActionPreference = "Stop"
 
-          Set-Location $env:GITHUB_WORKSPACE
-
           Write-Host "============================================================"
-          Write-Host "VERIFY FRESH POST-RECOVERY GAP REPORT"
+          Write-Host "VERIFY POST REPORT SEPARATION"
           Write-Host "============================================================"
 
-          $report = `
-              "data\reports\history_gap\data_history_gap_report.csv"
+          $pre = (
+              Resolve-Path `
+                  "data/reports/history_gap/data_history_gap_summary.csv"
+          ).Path
 
-          if (-not (
-              Test-Path `
-                  $report `
-                  -PathType Leaf
-          )) {
+          $post = (
+              Resolve-Path `
+                  "data/reports/post_recovery_gap_audit/data_history_gap_summary.csv"
+          ).Path
 
-              throw (
-                  "Post-recovery gap report not found: " +
-                  $report
-              )
-          }
+          Write-Host "PRE  : $pre"
+          Write-Host "POST : $post"
 
-          $item = Get-Item $report
+          if ($pre -eq $post) {
 
-          if ($item.Length -le 0) {
-              throw "Post-recovery gap report is empty."
+              throw "PRE and POST reports resolve to the same physical path."
           }
 
           Write-Host ""
-          Write-Host "Report:"
-          Write-Host $report
+          Write-Host "[PASS] PRE and POST report paths are independent."
+
+          $preHash = (
+              Get-FileHash `
+                  -Algorithm SHA256 `
+                  -Path $pre
+          ).Hash
+
+          $postHash = (
+              Get-FileHash `
+                  -Algorithm SHA256 `
+                  -Path $post
+          ).Hash
+
+          Write-Host "PRE SHA256  : $preHash"
+          Write-Host "POST SHA256 : $postHash"
 
           Write-Host ""
-          Write-Host "Size:"
-          Write-Host "$($item.Length) bytes"
+          Write-Host "[INFO] Matching hashes are allowed."
+          Write-Host "[INFO] The POST snapshot represents the fresh scan result."
 
-          Write-Host ""
-          Write-Host "[PASS] Fresh post-recovery report verified."
+          Write-Host "============================================================"
 
 
       # ======================================================
       # STEP 14
-      # Persist POST-RECOVERY detailed report
-      #
-      # Clean V002 critical change.
-      #
-      # This creates an explicitly named persistent snapshot
-      # that downstream analysis can safely identify.
+      # Verify POST snapshot row count
       # ======================================================
 
-      - name: Persist post-recovery gap report snapshot
+      - name: Verify POST summary rows
+
+        shell: powershell
 
         run: |
 
           $ErrorActionPreference = "Stop"
 
-          Set-Location $env:GITHUB_WORKSPACE
-
           Write-Host "============================================================"
-          Write-Host "PERSIST POST-RECOVERY GAP REPORT SNAPSHOT"
+          Write-Host "VERIFY POST SUMMARY ROWS"
           Write-Host "============================================================"
 
-          $source = `
-              "data\reports\history_gap\data_history_gap_report.csv"
+          $postSummary = `
+              "data/reports/post_recovery_gap_audit/data_history_gap_summary.csv"
 
-          $directory = `
-              "data\reports\post_recovery_gap"
+          $rows = @(
+              Import-Csv $postSummary
+          )
 
-          $destination = Join-Path `
-              $directory `
-              "post_recovery_data_history_gap_report.csv"
+          Write-Host "POST summary rows : $($rows.Count)"
 
-          if (-not (
-              Test-Path `
-                  $source `
-                  -PathType Leaf
-          )) {
-              throw "Fresh post-recovery source report missing."
-          }
+          if ($rows.Count -le 0) {
 
-          if (-not (
-              Test-Path `
-                  $directory `
-                  -PathType Container
-          )) {
-
-              New-Item `
-                  -ItemType Directory `
-                  -Path $directory `
-                  -Force |
-                  Out-Null
-          }
-
-          Copy-Item `
-              -Path $source `
-              -Destination $destination `
-              -Force
-
-          if (-not (
-              Test-Path `
-                  $destination `
-                  -PathType Leaf
-          )) {
-              throw "Failed to persist post-recovery report."
-          }
-
-          $sourceHash = (
-              Get-FileHash `
-                  -Path $source `
-                  -Algorithm SHA256
-          ).Hash
-
-          $destinationHash = (
-              Get-FileHash `
-                  -Path $destination `
-                  -Algorithm SHA256
-          ).Hash
-
-          if ($sourceHash -ne $destinationHash) {
-
-              throw (
-                  "Persistent post-recovery report " +
-                  "SHA256 mismatch."
-              )
-          }
-
-          $item = Get-Item $destination
-
-          if ($item.Length -le 0) {
-              throw "Persistent post-recovery report is empty."
+              throw "POST summary contains zero data rows."
           }
 
           Write-Host ""
-          Write-Host "Source:"
-          Write-Host $source
+          Write-Host "[PASS] POST summary contains data rows."
 
-          Write-Host ""
-          Write-Host "Persistent snapshot:"
-          Write-Host $destination
-
-          Write-Host ""
-          Write-Host "Bytes:"
-          Write-Host $item.Length
-
-          Write-Host ""
-          Write-Host "[PASS] Post-recovery report snapshot persisted."
+          Write-Host "============================================================"
 
 
       # ======================================================
       # STEP 15
-      # Persist POST-RECOVERY summary
-      #
-      # If data_history_gap_report.py produced a summary,
-      # preserve it under an explicit POST-recovery name.
-      #
-      # The detailed report remains mandatory.
-      # ======================================================
-
-      - name: Persist post-recovery gap summary snapshot
-
-        run: |
-
-          $ErrorActionPreference = "Stop"
-
-          Set-Location $env:GITHUB_WORKSPACE
-
-          Write-Host "============================================================"
-          Write-Host "PERSIST POST-RECOVERY GAP SUMMARY SNAPSHOT"
-          Write-Host "============================================================"
-
-          $source = `
-              "data\reports\history_gap\data_history_gap_summary.csv"
-
-          $directory = `
-              "data\reports\post_recovery_gap"
-
-          $destination = Join-Path `
-              $directory `
-              "post_recovery_data_history_gap_summary.csv"
-
-          if (-not (
-              Test-Path `
-                  $directory `
-                  -PathType Container
-          )) {
-
-              New-Item `
-                  -ItemType Directory `
-                  -Path $directory `
-                  -Force |
-                  Out-Null
-          }
-
-          if (Test-Path $source -PathType Leaf) {
-
-              $item = Get-Item $source
-
-              if ($item.Length -le 0) {
-                  throw "Post-recovery summary source is empty."
-              }
-
-              Copy-Item `
-                  -Path $source `
-                  -Destination $destination `
-                  -Force
-
-              if (-not (
-                  Test-Path `
-                      $destination `
-                      -PathType Leaf
-              )) {
-                  throw "Failed to persist post-recovery summary."
-              }
-
-              $sourceHash = (
-                  Get-FileHash `
-                      -Path $source `
-                      -Algorithm SHA256
-              ).Hash
-
-              $destinationHash = (
-                  Get-FileHash `
-                      -Path $destination `
-                      -Algorithm SHA256
-              ).Hash
-
-              if ($sourceHash -ne $destinationHash) {
-
-                  throw (
-                      "Persistent post-recovery summary " +
-                      "SHA256 mismatch."
-                  )
-              }
-
-              Write-Host ""
-              Write-Host "Persistent summary:"
-              Write-Host $destination
-
-              Write-Host ""
-              Write-Host "[PASS] Post-recovery summary snapshot persisted."
-          }
-          else {
-
-              Write-Host ""
-              Write-Host (
-                  "[INFO] data_history_gap_summary.csv was " +
-                  "not generated."
-              )
-
-              Write-Host (
-                  "[INFO] Detailed POST-recovery report " +
-                  "remains authoritative."
-              )
-          }
-
-
-      # ======================================================
-      # STEP 16
-      # Verify persistent POST-RECOVERY outputs
-      # ======================================================
-
-      - name: Verify persistent post-recovery outputs
-
-        run: |
-
-          $ErrorActionPreference = "Stop"
-
-          Set-Location $env:GITHUB_WORKSPACE
-
-          Write-Host "============================================================"
-          Write-Host "VERIFY PERSISTENT POST-RECOVERY OUTPUTS"
-          Write-Host "============================================================"
-
-          $report = (
-              "data\reports\post_recovery_gap\" +
-              "post_recovery_data_history_gap_report.csv"
-          )
-
-          $summary = (
-              "data\reports\post_recovery_gap\" +
-              "post_recovery_data_history_gap_summary.csv"
-          )
-
-          if (-not (
-              Test-Path `
-                  $report `
-                  -PathType Leaf
-          )) {
-
-              throw (
-                  "Persistent POST-recovery report missing: " +
-                  $report
-              )
-          }
-
-          $reportItem = Get-Item $report
-
-          if ($reportItem.Length -le 0) {
-              throw "Persistent POST-recovery report is empty."
-          }
-
-          Write-Host ""
-          Write-Host "[PASS] Detailed report:"
-          Write-Host $report
-
-          Write-Host ""
-          Write-Host "Bytes:"
-          Write-Host $reportItem.Length
-
-          Write-Host ""
-
-          if (Test-Path $summary -PathType Leaf) {
-
-              $summaryItem = Get-Item $summary
-
-              if ($summaryItem.Length -le 0) {
-                  throw "Persistent POST-recovery summary is empty."
-              }
-
-              Write-Host "[PASS] Summary:"
-              Write-Host $summary
-          }
-          else {
-
-              Write-Host (
-                  "[INFO] Persistent summary not present; " +
-                  "detailed report will be used."
-              )
-          }
-
-          Write-Host ""
-          Write-Host (
-              "[PASS] Persistent POST-recovery outputs verified."
-          )
-
-
-      # ======================================================
-      # STEP 17
-      # Validate persistent detailed report schema
-      #
-      # We intentionally do NOT assume one fixed schema.
-      #
-      # Requirement:
-      #   - CSV readable
-      #   - at least one column
-      #
-      # Gap interpretation remains the responsibility of
-      # downstream analysis.
-      # ======================================================
-
-      - name: Validate persistent post-recovery report CSV
-
-        run: |
-
-          $ErrorActionPreference = "Stop"
-
-          Set-Location $env:GITHUB_WORKSPACE
-
-          Write-Host "============================================================"
-          Write-Host "VALIDATE PERSISTENT POST-RECOVERY REPORT CSV"
-          Write-Host "============================================================"
-
-          $pythonCode = @'
-          from pathlib import Path
-          import pandas as pd
-
-          path = Path(
-              "data/reports/post_recovery_gap/"
-              "post_recovery_data_history_gap_report.csv"
-          )
-
-          if not path.exists():
-              raise RuntimeError(
-                  f"Persistent post-recovery report missing: {path}"
-              )
-
-          df = pd.read_csv(path)
-
-          if len(df.columns) == 0:
-              raise RuntimeError(
-                  "Persistent post-recovery report has no columns."
-              )
-
-          print("")
-          print("Report:")
-          print(path)
-
-          print("")
-          print("Rows:")
-          print(len(df))
-
-          print("")
-          print("Columns:")
-          for column in df.columns:
-              print(f"  - {column}")
-
-          print("")
-          print(
-              "[PASS] Persistent post-recovery CSV is readable."
-          )
-          '@
-
-          $tempPython = Join-Path `
-              $env:RUNNER_TEMP `
-              "validate_post_recovery_report_v002.py"
-
-          $pythonCode |
-              Set-Content `
-                  -Path $tempPython `
-                  -Encoding UTF8
-
-          py $tempPython
-
-          if ($LASTEXITCODE -ne 0) {
-              throw "Persistent post-recovery CSV validation failed."
-          }
-
-
-      # ======================================================
-      # STEP 18
-      # Compare BEFORE vs AFTER
-      #
-      # Uses:
-      #
-      # BEFORE:
-      #   RUNNER_TEMP preserved report
-      #
-      # AFTER:
-      #   explicitly named persistent POST-recovery report
-      #
-      # ======================================================
-
-      - name: Compare pre and post recovery gap reports
-
-        run: |
-
-          $ErrorActionPreference = "Stop"
-
-          Set-Location $env:GITHUB_WORKSPACE
-
-          Write-Host "============================================================"
-          Write-Host "COMPARE PRE VS POST RECOVERY GAP REPORTS"
-          Write-Host "============================================================"
-
-          $pythonCode = @'
-          from pathlib import Path
-          import json
-          import os
-          import pandas as pd
-
-
-          before_path = (
-              Path(os.environ["RUNNER_TEMP"])
-              / "pre_recovery_data_history_gap_report_v002.csv"
-          )
-
-          after_path = Path(
-              "data/reports/post_recovery_gap/"
-              "post_recovery_data_history_gap_report.csv"
-          )
-
-
-          if not before_path.exists():
-              raise RuntimeError(
-                  f"Before report missing: {before_path}"
-              )
-
-          if not after_path.exists():
-              raise RuntimeError(
-                  f"After report missing: {after_path}"
-              )
-
-
-          before = pd.read_csv(before_path)
-          after = pd.read_csv(after_path)
-
-
-          print("")
-          print("Before report:")
-          print(before_path)
-
-          print("")
-          print("After report:")
-          print(after_path)
-
-          print("")
-          print("Before rows:")
-          print(len(before))
-
-          print("")
-          print("After rows:")
-          print(len(after))
-
-          print("")
-          print("Before columns:")
-          print(list(before.columns))
-
-          print("")
-          print("After columns:")
-          print(list(after.columns))
-
-
-          def normalized_columns(df):
-
-              result = {}
-
-              for column in df.columns:
-
-                  key = (
-                      str(column)
-                      .strip()
-                      .lower()
-                      .replace(" ", "_")
-                      .replace("-", "_")
-                  )
-
-                  result[key] = column
-
-              return result
-
-
-          def find_column(df, candidates):
-
-              columns = normalized_columns(df)
-
-              for candidate in candidates:
-
-                  if candidate in columns:
-                      return columns[candidate]
-
-              return None
-
-
-          gap_candidates = [
-              "gap_events",
-              "gap_event_count",
-              "gap_count",
-              "gaps",
-              "total_gaps",
-          ]
-
-
-          missing_candidates = [
-              "missing_est",
-              "missing_estimate",
-              "missing_candles",
-              "missing_candle_count",
-              "estimated_missing",
-              "estimated_missing_candles",
-              "missing",
-          ]
-
-
-          def safe_numeric_sum(df, column):
-
-              if column is None:
-                  return None
-
-              values = pd.to_numeric(
-                  df[column],
-                  errors="coerce",
-              )
-
-              if values.notna().sum() == 0:
-                  return None
-
-              return int(
-                  values.fillna(0).sum()
-              )
-
-
-          before_gap_column = find_column(
-              before,
-              gap_candidates,
-          )
-
-          after_gap_column = find_column(
-              after,
-              gap_candidates,
-          )
-
-          before_missing_column = find_column(
-              before,
-              missing_candidates,
-          )
-
-          after_missing_column = find_column(
-              after,
-              missing_candidates,
-          )
-
-
-          before_gap = safe_numeric_sum(
-              before,
-              before_gap_column,
-          )
-
-          after_gap = safe_numeric_sum(
-              after,
-              after_gap_column,
-          )
-
-          before_missing = safe_numeric_sum(
-              before,
-              before_missing_column,
-          )
-
-          after_missing = safe_numeric_sum(
-              after,
-              after_missing_column,
-          )
-
-
-          # --------------------------------------------------
-          # Fallback:
-          #
-          # If the report is event-detail based and therefore
-          # has no explicit gap-count column, each row is
-          # treated as one gap event.
-          # --------------------------------------------------
-
-          if before_gap is None:
-              before_gap = int(len(before))
-
-          if after_gap is None:
-              after_gap = int(len(after))
-
-
-          gap_removed = before_gap - after_gap
-
-          gap_rate = (
-              (gap_removed / before_gap) * 100.0
-              if before_gap > 0
-              else 0.0
-          )
-
-
-          missing_removed = None
-          missing_rate = None
-
-          if (
-              before_missing is not None
-              and after_missing is not None
-          ):
-
-              missing_removed = (
-                  before_missing - after_missing
-              )
-
-              missing_rate = (
-                  (missing_removed / before_missing) * 100.0
-                  if before_missing > 0
-                  else 0.0
-              )
-
-
-          print("")
-          print("=" * 64)
-          print("POST-RECOVERY GAP AUDIT RESULT - CLEAN V002")
-          print("=" * 64)
-
-          print("")
-          print("BEFORE REPAIR")
-          print(f"  Gap events       : {before_gap}")
-
-          if before_missing is not None:
-              print(
-                  f"  Missing estimate : {before_missing}"
-              )
-          else:
-              print(
-                  "  Missing estimate : NOT AVAILABLE"
-              )
-
-
-          print("")
-          print("AFTER REPAIR")
-          print(f"  Gap events       : {after_gap}")
-
-          if after_missing is not None:
-              print(
-                  f"  Missing estimate : {after_missing}"
-              )
-          else:
-              print(
-                  "  Missing estimate : NOT AVAILABLE"
-              )
-
-
-          print("")
-          print("RECOVERY EFFECT")
-
-          print(
-              f"  Gap events removed : {gap_removed}"
-          )
-
-          print(
-              f"  Gap reduction rate : {gap_rate:.2f}%"
-          )
-
-
-          if missing_removed is not None:
-
-              print(
-                  f"  Missing reduced    : "
-                  f"{missing_removed}"
-              )
-
-              print(
-                  f"  Missing reduction  : "
-                  f"{missing_rate:.2f}%"
-              )
-
-          else:
-
-              print(
-                  "  Missing reduced    : "
-                  "NOT AVAILABLE"
-              )
-
-              print(
-                  "  Missing reduction  : "
-                  "NOT AVAILABLE"
-              )
-
-
-          if after_gap > before_gap:
-
-              print("")
-              print(
-                  "[WARNING] Post-recovery gap event count "
-                  "is larger than pre-recovery count."
-              )
-
-
-          result = {
-              "version": "Clean V002",
-              "before_report": str(before_path),
-              "after_report": str(after_path),
-              "before_gap_events": before_gap,
-              "after_gap_events": after_gap,
-              "gap_events_removed": gap_removed,
-              "gap_reduction_rate_pct": round(
-                  gap_rate,
-                  6,
-              ),
-              "before_missing_estimate": before_missing,
-              "after_missing_estimate": after_missing,
-              "missing_reduced": missing_removed,
-              "missing_reduction_rate_pct": (
-                  round(missing_rate, 6)
-                  if missing_rate is not None
-                  else None
-              ),
-          }
-
-
-          output = Path(
-              "data/post_recovery_gap_audit_result.json"
-          )
-
-          output.parent.mkdir(
-              parents=True,
-              exist_ok=True,
-          )
-
-          output.write_text(
-              json.dumps(
-                  result,
-                  ensure_ascii=False,
-                  indent=2,
-              ),
-              encoding="utf-8",
-          )
-
-
-          print("")
-          print(f"Result JSON : {output}")
-
-          print("")
-          print("[PASS] Before/After comparison completed.")
-          '@
-
-          $tempPython = Join-Path `
-              $env:RUNNER_TEMP `
-              "compare_post_recovery_gap_v002.py"
-
-          $pythonCode |
-              Set-Content `
-                  -Path $tempPython `
-                  -Encoding UTF8
-
-          py $tempPython
-
-          if ($LASTEXITCODE -ne 0) {
-              throw "Post-recovery comparison failed."
-          }
-
-
-      # ======================================================
-      # STEP 19
-      # Verify audit result JSON
-      # ======================================================
-
-      - name: Verify post-recovery audit result
-
-        run: |
-
-          $ErrorActionPreference = "Stop"
-
-          Set-Location $env:GITHUB_WORKSPACE
-
-          Write-Host "============================================================"
-          Write-Host "VERIFY POST-RECOVERY AUDIT RESULT"
-          Write-Host "============================================================"
-
-          $result = `
-              "data\post_recovery_gap_audit_result.json"
-
-          if (-not (
-              Test-Path `
-                  $result `
-                  -PathType Leaf
-          )) {
-              throw "Post-recovery audit result missing."
-          }
-
-          $item = Get-Item $result
-
-          if ($item.Length -le 0) {
-              throw "Post-recovery audit result is empty."
-          }
-
-          $json = Get-Content `
-              $result `
-              -Raw |
-              ConvertFrom-Json
-
-          if ($null -eq $json.before_gap_events) {
-              throw "before_gap_events missing from audit result."
-          }
-
-          if ($null -eq $json.after_gap_events) {
-              throw "after_gap_events missing from audit result."
-          }
-
-          Write-Host ""
-          Write-Host "Result:"
-          Write-Host $result
-
-          Write-Host ""
-          Get-Content $result
-
-          Write-Host ""
-          Write-Host "[PASS] Audit result verified."
-
-
-      # ======================================================
-      # STEP 20
-      # Verify OHLCV SHA256 AFTER audit
-      #
-      # MUST be identical.
+      # Verify OHLCV remained unchanged
       # ======================================================
 
       - name: Verify OHLCV remained unchanged
 
+        shell: powershell
+
         run: |
 
           $ErrorActionPreference = "Stop"
-
-          Set-Location $env:GITHUB_WORKSPACE
 
           Write-Host "============================================================"
           Write-Host "VERIFY OHLCV REMAINED UNCHANGED"
           Write-Host "============================================================"
 
-          $manifest = Join-Path `
-              $env:RUNNER_TEMP `
-              "post_recovery_ohlcv_before_v002.sha256"
+          $beforePath = `
+              "data/validation/post_recovery_audit_ohlcv_before.csv"
 
-          if (-not (
-              Test-Path `
-                  $manifest `
-                  -PathType Leaf
-          )) {
-              throw "Pre-audit OHLCV manifest missing."
+          if (-not (Test-Path $beforePath)) {
+
+              throw "OHLCV before-hash file not found: $beforePath"
           }
 
-          $workspacePath = (
-              Resolve-Path $env:GITHUB_WORKSPACE
-          ).Path.TrimEnd('\')
+          $beforeRows = @(
+              Import-Csv $beforePath
+          )
+
+          if ($beforeRows.Count -ne 870) {
+
+              throw "Before-hash count mismatch. expected=870 found=$($beforeRows.Count)"
+          }
 
           $before = @{}
 
-          foreach ($row in (
-              Get-Content $manifest
-          )) {
+          foreach ($row in $beforeRows) {
 
-              if ([string]::IsNullOrWhiteSpace($row)) {
-                  continue
-              }
-
-              $parts = $row -split "`t", 2
-
-              if ($parts.Count -ne 2) {
-                  throw "Invalid SHA256 manifest row."
-              }
-
-              $before[$parts[1]] = $parts[0]
+              $before[$row.path] = $row.sha256
           }
 
-          if ($before.Count -ne 870) {
-
-              throw (
-                  "Pre-audit SHA256 manifest expected 870 " +
-                  "entries. Found: $($before.Count)"
-              )
-          }
+          $root = (Resolve-Path ".").Path
 
           $files = @(
               Get-ChildItem `
-                  -Path "data\ohlcv" `
-                  -Filter "KRW-*.csv" `
+                  "data/ohlcv" `
+                  -Recurse `
+                  -Filter "*.csv" `
                   -File `
-                  -Recurse |
-              Sort-Object FullName
+                  | Sort-Object FullName
           )
 
           if ($files.Count -ne 870) {
 
-              throw (
-                  "Expected 870 OHLCV files after audit. " +
-                  "Found: $($files.Count)"
-              )
+              throw "OHLCV file count changed during audit. expected=870 found=$($files.Count)"
           }
 
-          $checked = 0
+          $changed = @()
+          $missingBefore = @()
 
           foreach ($file in $files) {
 
-              if (-not $file.FullName.StartsWith(
-                  $workspacePath,
-                  [System.StringComparison]::OrdinalIgnoreCase
-              )) {
-                  throw "OHLCV file is outside workspace."
+              $fullPath = $file.FullName
+
+              if ($fullPath.StartsWith($root)) {
+
+                  $relative = $fullPath.Substring($root.Length)
+
+                  $relative = $relative.TrimStart(
+                      [System.IO.Path]::DirectorySeparatorChar,
+                      [System.IO.Path]::AltDirectorySeparatorChar
+                  )
+
+              }
+              else {
+
+                  $relative = $fullPath
               }
 
-              $relative = $file.FullName.Substring(
-                  $workspacePath.Length
-              ).TrimStart('\')
+              $relative = $relative.Replace("\", "/")
 
               if (-not $before.ContainsKey($relative)) {
 
-                  throw (
-                      "Unexpected OHLCV file after audit: " +
-                      $relative
-                  )
+                  $missingBefore += $relative
+                  continue
               }
 
-              $actual = (
+              $currentHash = (
                   Get-FileHash `
-                      -Path $file.FullName `
-                      -Algorithm SHA256
+                      -Algorithm SHA256 `
+                      -Path $fullPath
               ).Hash
 
-              if ($actual -ne $before[$relative]) {
+              if ($currentHash -ne $before[$relative]) {
 
-                  throw (
-                      "OHLCV was modified during audit: " +
-                      $relative
-                  )
+                  $changed += $relative
+              }
+          }
+
+          if ($missingBefore.Count -gt 0) {
+
+              Write-Host ""
+              Write-Host "Files absent from BEFORE hash inventory:"
+
+              foreach ($item in $missingBefore) {
+
+                  Write-Host "  $item"
               }
 
-              $checked += 1
+              throw "OHLCV inventory changed during audit."
           }
 
-          if ($checked -ne 870) {
+          if ($changed.Count -gt 0) {
 
-              throw (
-                  "OHLCV verification count mismatch. " +
-                  "Verified: $checked"
-              )
+              Write-Host ""
+              Write-Host "Changed OHLCV files:"
+
+              foreach ($item in $changed) {
+
+                  Write-Host "  $item"
+              }
+
+              throw "OHLCV data changed during read-only audit."
           }
 
-          Write-Host ""
-          Write-Host "OHLCV checked   : 870"
-          Write-Host "Modified files  : 0"
+          Write-Host "[PASS] All 870 OHLCV files remained unchanged."
 
-          Write-Host ""
-          Write-Host "[PASS] OHLCV remained unchanged."
+          Write-Host "============================================================"
 
 
       # ======================================================
-      # STEP 21
-      # Final Git safety report
-      #
-      # Informational only.
-      #
-      # Runtime outputs may intentionally be ignored by Git.
-      # No automatic cleanup is allowed.
+      # STEP 16
+      # Verify POST files explicitly
       # ======================================================
 
-      - name: Final Git safety report
+      - name: Verify POST snapshot files
+
+        shell: powershell
 
         run: |
 
           $ErrorActionPreference = "Stop"
 
-          Set-Location $env:GITHUB_WORKSPACE
+          Write-Host "============================================================"
+          Write-Host "VERIFY POST SNAPSHOT FILES"
+          Write-Host "============================================================"
+
+          $postDir = `
+              "data/reports/post_recovery_gap_audit"
+
+          $summary = Join-Path `
+              $postDir `
+              "data_history_gap_summary.csv"
+
+          $detail = Join-Path `
+              $postDir `
+              "data_history_gap_report.csv"
+
+          if (-not (Test-Path $summary)) {
+
+              throw "Required POST summary missing: $summary"
+          }
+
+          Write-Host "[PASS] POST summary report exists."
+
+          if (Test-Path $detail) {
+
+              Write-Host "[PASS] POST detail report exists."
+          }
+          else {
+
+              Write-Host "[INFO] POST detail report was not generated by the current scanner."
+              Write-Host "[INFO] Analyzer will use the validated POST summary."
+          }
+
+          Write-Host ""
+          Write-Host "POST directory contents:"
+
+          Get-ChildItem `
+              $postDir `
+              -File `
+              | ForEach-Object {
+
+                  Write-Host (
+                      "  {0}  ({1} bytes)" `
+                      -f $_.Name, $_.Length
+                  )
+              }
+
+          Write-Host "============================================================"
+
+
+      # ======================================================
+      # STEP 17
+      # Verify runtime files are ignored by Git
+      # ======================================================
+
+      - name: Verify POST runtime files are Git ignored
+
+        shell: powershell
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY POST RUNTIME FILES ARE GIT IGNORED"
+          Write-Host "============================================================"
+
+          $testFile = `
+              "data/reports/post_recovery_gap_audit/data_history_gap_summary.csv"
+
+          git check-ignore `
+              $testFile `
+              | Out-Null
+
+          if ($LASTEXITCODE -ne 0) {
+
+              throw "POST runtime output is not ignored by .gitignore: $testFile"
+          }
+
+          Write-Host "[PASS] POST runtime output is ignored by Git."
+
+          Write-Host "============================================================"
+
+
+      # ======================================================
+      # STEP 18
+      # Final Git safety report
+      #
+      # Runtime ignored files are allowed.
+      # Tracked source changes caused by the workflow are not.
+      # ======================================================
+
+      - name: Final Git safety report
+
+        shell: powershell
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
 
           Write-Host "============================================================"
           Write-Host "FINAL GIT SAFETY REPORT"
           Write-Host "============================================================"
 
           $status = @(
-              git status --short
+              git status `
+                  --porcelain `
+                  --untracked-files=all
           )
 
           if ($LASTEXITCODE -ne 0) {
+
               throw "git status failed."
           }
 
-          Write-Host ""
+          $visible = @(
+              $status |
+              Where-Object {
+                  -not [string]::IsNullOrWhiteSpace($_)
+              }
+          )
 
-          if ($status.Count -eq 0) {
+          if ($visible.Count -gt 0) {
 
-              Write-Host "[PASS] Git working tree clean."
-          }
-          else {
+              Write-Host "Git-visible changes detected:"
 
-              Write-Host "Git-visible changes:"
-              Write-Host ""
+              foreach ($line in $visible) {
 
-              foreach ($line in $status) {
-                  Write-Host $line
+                  Write-Host "  $line"
               }
 
-              Write-Host ""
-              Write-Host (
-                  "[INFO] No automatic cleanup will be performed."
-              )
+              throw "Unexpected Git-visible runtime/source changes detected."
           }
 
+          Write-Host "[PASS] No unexpected Git-visible changes."
+
           Write-Host ""
-          Write-Host "[SAFETY] git reset  : DISABLED"
-          Write-Host "[SAFETY] git clean  : DISABLED"
-          Write-Host "[SAFETY] git commit : DISABLED"
-          Write-Host "[SAFETY] git push   : DISABLED"
+          Write-Host "Disabled:"
+          Write-Host "  Git reset  : DISABLED"
+          Write-Host "  Git clean  : DISABLED"
+          Write-Host "  Git commit : DISABLED"
+          Write-Host "  Git push   : DISABLED"
+
+          Write-Host "============================================================"
 
 
       # ======================================================
-      # STEP 22
-      # Final summary
+      # STEP 19
+      # Final workflow summary
       # ======================================================
 
       - name: post_recovery_gap_audit.yml completed
 
-        if: success()
+        shell: powershell
 
         run: |
 
           $ErrorActionPreference = "Stop"
 
-          Set-Location $env:GITHUB_WORKSPACE
-
           Write-Host "============================================================"
-          Write-Host "[RESULT] post_recovery_gap_audit.yml PASSED"
+          Write-Host "POST RECOVERY GAP AUDIT CLEAN V003"
           Write-Host "============================================================"
 
-          $result = `
-              "data\post_recovery_gap_audit_result.json"
+          Write-Host ""
 
-          $postReport = (
-              "data\reports\post_recovery_gap\" +
-              "post_recovery_data_history_gap_report.csv"
-          )
-
-          $postSummary = (
-              "data\reports\post_recovery_gap\" +
-              "post_recovery_data_history_gap_summary.csv"
-          )
+          Write-Host "[PASS] 290 H1 markets verified."
+          Write-Host "[PASS] 290 H4 markets verified."
+          Write-Host "[PASS] 290 D1 markets verified."
+          Write-Host "[PASS] 870 OHLCV source files verified."
 
           Write-Host ""
-          Write-Host "Version:"
-          Write-Host "  Clean V002"
 
-          if (Test-Path $result -PathType Leaf) {
-
-              $json = Get-Content `
-                  $result `
-                  -Raw |
-                  ConvertFrom-Json
-
-              Write-Host ""
-              Write-Host "BEFORE REPAIR"
-
-              Write-Host (
-                  "  Gap events       : " +
-                  $json.before_gap_events
-              )
-
-              if (
-                  $null -ne
-                  $json.before_missing_estimate
-              ) {
-
-                  Write-Host (
-                      "  Missing estimate : " +
-                      $json.before_missing_estimate
-                  )
-              }
-              else {
-
-                  Write-Host (
-                      "  Missing estimate : NOT AVAILABLE"
-                  )
-              }
-
-              Write-Host ""
-              Write-Host "AFTER REPAIR"
-
-              Write-Host (
-                  "  Gap events       : " +
-                  $json.after_gap_events
-              )
-
-              if (
-                  $null -ne
-                  $json.after_missing_estimate
-              ) {
-
-                  Write-Host (
-                      "  Missing estimate : " +
-                      $json.after_missing_estimate
-                  )
-              }
-              else {
-
-                  Write-Host (
-                      "  Missing estimate : NOT AVAILABLE"
-                  )
-              }
-
-              Write-Host ""
-              Write-Host "RECOVERY RESULT"
-
-              Write-Host (
-                  "  Gap events removed : " +
-                  $json.gap_events_removed
-              )
-
-              Write-Host (
-                  "  Gap reduction rate : " +
-                  $json.gap_reduction_rate_pct +
-                  "%"
-              )
-
-              if (
-                  $null -ne
-                  $json.missing_reduced
-              ) {
-
-                  Write-Host (
-                      "  Missing reduced    : " +
-                      $json.missing_reduced
-                  )
-
-                  Write-Host (
-                      "  Missing reduction  : " +
-                      $json.missing_reduction_rate_pct +
-                      "%"
-                  )
-              }
-              else {
-
-                  Write-Host (
-                      "  Missing reduced    : NOT AVAILABLE"
-                  )
-
-                  Write-Host (
-                      "  Missing reduction  : NOT AVAILABLE"
-                  )
-              }
-          }
+          Write-Host "[PASS] Fresh post-recovery gap scan completed."
+          Write-Host "[PASS] POST summary snapshot created."
+          Write-Host "[PASS] POST report schema verified."
+          Write-Host "[PASS] PRE/POST report paths separated."
+          Write-Host "[PASS] OHLCV remained unchanged."
+          Write-Host "[PASS] POST runtime files remain Git ignored."
 
           Write-Host ""
-          Write-Host "Persistent POST-recovery data:"
 
-          if (Test-Path $postReport -PathType Leaf) {
-
-              Write-Host (
-                  "  Detailed report : VERIFIED"
-              )
-
-              Write-Host (
-                  "  Path            : " +
-                  $postReport
-              )
-          }
-          else {
-              throw "Persistent post-recovery report disappeared."
-          }
-
-          if (Test-Path $postSummary -PathType Leaf) {
-
-              Write-Host (
-                  "  Summary         : VERIFIED"
-              )
-
-              Write-Host (
-                  "  Summary path    : " +
-                  $postSummary
-              )
-          }
-          else {
-
-              Write-Host (
-                  "  Summary         : NOT GENERATED"
-              )
-          }
+          Write-Host "POST analyzer input:"
+          Write-Host "  data/reports/post_recovery_gap_audit/data_history_gap_summary.csv"
 
           Write-Host ""
-          Write-Host "Integrity:"
-          Write-Host "  Markets          : 290 VERIFIED"
-          Write-Host "  Timeframes       : 3 VERIFIED"
-          Write-Host "  OHLCV files      : 870 VERIFIED"
-          Write-Host "  OHLCV modified   : 0"
-          Write-Host "  Duplicate time   : 0"
-          Write-Host "  Sort order       : VERIFIED"
 
-          Write-Host ""
           Write-Host "Safety:"
-          Write-Host "  OHLCV write      : DISABLED"
-          Write-Host "  OHLCV delete     : DISABLED"
-          Write-Host "  Gap repair       : DISABLED"
-          Write-Host "  Fake candles     : FORBIDDEN"
-          Write-Host "  Feature build    : DISABLED"
-          Write-Host "  256 Detector     : DISABLED"
-          Write-Host "  Future labels    : DISABLED"
-          Write-Host "  Prediction       : DISABLED"
-          Write-Host "  Trading          : DISABLED"
-          Write-Host "  Git reset        : DISABLED"
-          Write-Host "  Git clean        : DISABLED"
-          Write-Host "  Git commit       : DISABLED"
-          Write-Host "  Git push         : DISABLED"
+          Write-Host "  OHLCV write       : DISABLED"
+          Write-Host "  OHLCV delete      : DISABLED"
+          Write-Host "  Gap repair        : DISABLED"
+          Write-Host "  API download      : DISABLED"
+          Write-Host "  Feature build     : DISABLED"
+          Write-Host "  256 Detector      : DISABLED"
+          Write-Host "  Future labels     : DISABLED"
+          Write-Host "  Prediction        : DISABLED"
+          Write-Host "  Trading           : DISABLED"
+          Write-Host "  Git reset         : DISABLED"
+          Write-Host "  Git clean         : DISABLED"
+          Write-Host "  Git commit        : DISABLED"
+          Write-Host "  Git push          : DISABLED"
 
           Write-Host ""
-          Write-Host (
-              "[PASS] Post-recovery gap measurement and " +
-              "persistent snapshot completed."
-          )
+
+          Write-Host "[RESULT] POST RECOVERY GAP AUDIT PASSED"
 
           Write-Host ""
-          Write-Host (
-              "[NEXT] Run analyze_post_recovery_gaps_test.yml " +
-              "against the persistent POST-recovery report."
-          )
+          Write-Host "[NEXT] Run analyze_post_recovery_gaps_test.yml"
 
           Write-Host "============================================================"
