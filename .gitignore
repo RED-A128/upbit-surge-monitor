@@ -317,6 +317,10 @@ data/collector_status_clean_v002.csv
 data/recovery/
 data/recover_history_gaps_status.csv
 
+# History Gap Classifier runtime data
+data/reports/history_gap_classification/
+data/validation/classify_history_gaps_checkpoint.json
+
 # ============================================================
 # END
 # ============================================================
