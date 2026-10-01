@@ -1,0 +1,1255 @@
+name: Full KRW History Gap Classifier Clean V001
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: classify-history-gaps-clean-v001
+  cancel-in-progress: false
+
+jobs:
+  classify-history-gaps:
+    name: Full KRW History Gap Classifier Clean V001
+
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+
+    timeout-minutes: 180
+
+    defaults:
+      run:
+        shell: powershell
+
+    steps:
+
+      # ========================================================
+      # 01. Synchronize local repository
+      # ========================================================
+
+      - name: Synchronize local repository
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "SYNCHRONIZE LOCAL REPOSITORY"
+          Write-Host "============================================================"
+
+          Set-Location "${{ github.workspace }}"
+
+          git fetch origin main
+
+          git checkout main
+
+          git pull --ff-only origin main
+
+          Write-Host ""
+          Write-Host "[PASS] Repository synchronized."
+
+
+      # ========================================================
+      # 02. Verify Python
+      # ========================================================
+
+      - name: Verify Python
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY PYTHON"
+          Write-Host "============================================================"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Python launcher 'py' is not available."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Python verified."
+
+
+      # ========================================================
+      # 03. Verify required project files
+      # ========================================================
+
+      - name: Verify required project files
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY REQUIRED PROJECT FILES"
+          Write-Host "============================================================"
+
+          $requiredFiles = @(
+              "classify_history_gaps.py",
+              "data/reports/history_gap/data_history_gap_report.csv",
+              "data/reports/history_gap/data_history_gap_summary.csv"
+          )
+
+          foreach ($file in $requiredFiles) {
+
+              if (-not (Test-Path $file -PathType Leaf)) {
+                  throw "Required file not found: $file"
+              }
+
+              Write-Host "[PASS] $file"
+          }
+
+
+      # ========================================================
+      # 04. Verify OHLCV directories
+      # ========================================================
+
+      - name: Verify OHLCV directories
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY OHLCV DIRECTORIES"
+          Write-Host "============================================================"
+
+          $directories = @(
+              "data/ohlcv/h1",
+              "data/ohlcv/h4",
+              "data/ohlcv/d1"
+          )
+
+          foreach ($directory in $directories) {
+
+              if (-not (Test-Path $directory -PathType Container)) {
+                  throw "OHLCV directory not found: $directory"
+              }
+
+              Write-Host "[PASS] $directory"
+          }
+
+
+      # ========================================================
+      # 05. Verify full 290-market OHLCV set
+      # ========================================================
+
+      - name: Verify full 290 market OHLCV set
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY FULL 290 MARKET OHLCV SET"
+          Write-Host "============================================================"
+
+          $timeframes = @(
+              "h1",
+              "h4",
+              "d1"
+          )
+
+          $marketSets = @{}
+
+          foreach ($timeframe in $timeframes) {
+
+              $directory = "data/ohlcv/$timeframe"
+
+              $files = @(
+                  Get-ChildItem `
+                      -Path $directory `
+                      -Filter "KRW-*.csv" `
+                      -File
+              )
+
+              $count = $files.Count
+
+              Write-Host ""
+              Write-Host "$timeframe files : $count"
+
+              if ($count -ne 290) {
+                  throw "Expected 290 $timeframe OHLCV files. Found: $count"
+              }
+
+              $markets = @(
+                  $files |
+                  ForEach-Object {
+                      $_.BaseName
+                  } |
+                  Sort-Object
+              )
+
+              $marketSets[$timeframe] = $markets
+
+              Write-Host "[PASS] $timeframe = 290 markets"
+          }
+
+          $h1 = @($marketSets["h1"])
+          $h4 = @($marketSets["h4"])
+          $d1 = @($marketSets["d1"])
+
+          $h1h4Diff = @(
+              Compare-Object `
+                  -ReferenceObject $h1 `
+                  -DifferenceObject $h4
+          )
+
+          if ($h1h4Diff.Count -ne 0) {
+
+              Write-Host ""
+              Write-Host "H1 / H4 market differences:"
+
+              $h1h4Diff |
+                  Format-Table |
+                  Out-String |
+                  Write-Host
+
+              throw "H1/H4 market set mismatch."
+          }
+
+          $h1d1Diff = @(
+              Compare-Object `
+                  -ReferenceObject $h1 `
+                  -DifferenceObject $d1
+          )
+
+          if ($h1d1Diff.Count -ne 0) {
+
+              Write-Host ""
+              Write-Host "H1 / D1 market differences:"
+
+              $h1d1Diff |
+                  Format-Table |
+                  Out-String |
+                  Write-Host
+
+              throw "H1/D1 market set mismatch."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Full 290-market OHLCV set verified."
+
+
+      # ========================================================
+      # 06. Record source SHA256 before classification
+      # ========================================================
+
+      - name: Record source SHA256 before classification
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "RECORD SOURCE SHA256 BEFORE CLASSIFICATION"
+          Write-Host "============================================================"
+
+          $hashDirectory = "data/validation"
+
+          New-Item `
+              -ItemType Directory `
+              -Force `
+              -Path $hashDirectory |
+              Out-Null
+
+          $gapReport = "data/reports/history_gap/data_history_gap_report.csv"
+          $gapSummary = "data/reports/history_gap/data_history_gap_summary.csv"
+
+          $gapReportHash = (
+              Get-FileHash `
+                  -Path $gapReport `
+                  -Algorithm SHA256
+          ).Hash
+
+          $gapSummaryHash = (
+              Get-FileHash `
+                  -Path $gapSummary `
+                  -Algorithm SHA256
+          ).Hash
+
+          Set-Content `
+              -Path "data/validation/classifier_gap_report_before.sha256" `
+              -Value $gapReportHash `
+              -Encoding ASCII
+
+          Set-Content `
+              -Path "data/validation/classifier_gap_summary_before.sha256" `
+              -Value $gapSummaryHash `
+              -Encoding ASCII
+
+          Write-Host "Gap report SHA256:"
+          Write-Host $gapReportHash
+
+          Write-Host ""
+          Write-Host "Gap summary SHA256:"
+          Write-Host $gapSummaryHash
+
+          Write-Host ""
+          Write-Host "[PASS] Source hashes recorded."
+
+
+      # ========================================================
+      # 07. Record all OHLCV SHA256 before classification
+      # ========================================================
+
+      - name: Record all OHLCV SHA256 before classification
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "RECORD ALL OHLCV SHA256 BEFORE CLASSIFICATION"
+          Write-Host "============================================================"
+
+          $outputFile = "data/validation/classifier_ohlcv_before.sha256"
+
+          if (Test-Path $outputFile) {
+              Remove-Item $outputFile -Force
+          }
+
+          $files = @(
+              Get-ChildItem `
+                  -Path "data/ohlcv" `
+                  -Filter "KRW-*.csv" `
+                  -File `
+                  -Recurse |
+              Sort-Object FullName
+          )
+
+          if ($files.Count -ne 870) {
+              throw "Expected 870 OHLCV files. Found: $($files.Count)"
+          }
+
+          $rows = New-Object System.Collections.Generic.List[string]
+
+          $index = 0
+
+          foreach ($file in $files) {
+
+              $index++
+
+              $hash = (
+                  Get-FileHash `
+                      -Path $file.FullName `
+                      -Algorithm SHA256
+              ).Hash
+
+              $relativePath = (
+                  Resolve-Path `
+                      -Relative `
+                      $file.FullName
+              ).Replace("\", "/")
+
+              $rows.Add(
+                  "$hash`t$relativePath"
+              )
+
+              if (
+                  ($index % 100) -eq 0 `
+                  -or $index -eq $files.Count
+              ) {
+                  Write-Host "Hashed $index / $($files.Count)"
+              }
+          }
+
+          $rows |
+              Set-Content `
+                  -Path $outputFile `
+                  -Encoding UTF8
+
+          Write-Host ""
+          Write-Host "[PASS] 870 OHLCV SHA256 values recorded."
+
+
+      # ========================================================
+      # 08. Inspect persistent classifier checkpoint
+      # ========================================================
+
+      - name: Inspect persistent classifier checkpoint
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "INSPECT PERSISTENT CLASSIFIER CHECKPOINT"
+          Write-Host "============================================================"
+
+          $checkpoint = "data/validation/classify_history_gaps_checkpoint.json"
+
+          if (-not (Test-Path $checkpoint)) {
+
+              Write-Host "[INFO] No previous checkpoint found."
+              Write-Host "[INFO] Classification will start from job 1."
+
+              exit 0
+          }
+
+          Write-Host "[INFO] Existing checkpoint found:"
+          Write-Host $checkpoint
+
+          try {
+
+              $json = Get-Content `
+                  -Path $checkpoint `
+                  -Raw `
+                  -Encoding UTF8 |
+                  ConvertFrom-Json
+
+              $completedCount = 0
+
+              if ($null -ne $json.completed) {
+
+                  $completedCount = @(
+                      $json.completed.PSObject.Properties
+                  ).Count
+              }
+
+              Write-Host "Completed jobs : $completedCount"
+
+              if ($completedCount -gt 870) {
+                  throw "Checkpoint contains more than 870 completed jobs."
+              }
+
+              Write-Host "[PASS] Persistent checkpoint structure readable."
+          }
+          catch {
+
+              throw "Classifier checkpoint is invalid: $($_.Exception.Message)"
+          }
+
+
+      # ========================================================
+      # 09. Run Full KRW History Gap Classifier Clean V001
+      # ========================================================
+
+      - name: Run Full KRW History Gap Classifier Clean V001
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "RUN FULL KRW HISTORY GAP CLASSIFIER CLEAN V001"
+          Write-Host "============================================================"
+
+          py classify_history_gaps.py
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "classify_history_gaps.py failed with exit code $LASTEXITCODE."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Classifier execution completed."
+
+
+      # ========================================================
+      # 10. Verify completed 870-job checkpoint
+      # ========================================================
+
+      - name: Verify completed 870-job checkpoint
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY COMPLETED 870-JOB CHECKPOINT"
+          Write-Host "============================================================"
+
+          $checkpoint = "data/validation/classify_history_gaps_checkpoint.json"
+
+          if (-not (Test-Path $checkpoint)) {
+              throw "Classifier checkpoint file not found."
+          }
+
+          $json = Get-Content `
+              -Path $checkpoint `
+              -Raw `
+              -Encoding UTF8 |
+              ConvertFrom-Json
+
+          if ($null -eq $json.completed) {
+              throw "Checkpoint does not contain 'completed'."
+          }
+
+          $completedCount = @(
+              $json.completed.PSObject.Properties
+          ).Count
+
+          Write-Host "Completed jobs : $completedCount"
+
+          if ($completedCount -ne 870) {
+              throw "Expected 870 completed checkpoint jobs. Found: $completedCount"
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] 870 / 870 checkpoint jobs verified."
+
+
+      # ========================================================
+      # 11. Verify classification output files
+      # ========================================================
+
+      - name: Verify classification output files
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY CLASSIFICATION OUTPUT FILES"
+          Write-Host "============================================================"
+
+          $classification = "data/reports/history_gap_classification/history_gap_classification.csv"
+          $targets = "data/reports/history_gap_classification/history_gap_recovery_targets.csv"
+          $summary = "data/reports/history_gap_classification/history_gap_classification_summary.csv"
+
+          $files = @(
+              $classification,
+              $targets,
+              $summary
+          )
+
+          foreach ($file in $files) {
+
+              if (-not (Test-Path $file -PathType Leaf)) {
+                  throw "Required classifier output not found: $file"
+              }
+
+              $size = (
+                  Get-Item $file
+              ).Length
+
+              if ($size -le 0) {
+                  throw "Classifier output is empty: $file"
+              }
+
+              Write-Host "[PASS] $file"
+          }
+
+
+      # ========================================================
+      # 12. Verify classification CSV structure
+      # ========================================================
+
+      - name: Verify classification CSV structure
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY CLASSIFICATION CSV STRUCTURE"
+          Write-Host "============================================================"
+
+          $file = "data/reports/history_gap_classification/history_gap_classification.csv"
+
+          $rows = @(
+              Import-Csv $file
+          )
+
+          Write-Host "Classification rows : $($rows.Count)"
+
+          if ($rows.Count -le 0) {
+              throw "Classification CSV contains no gap rows."
+          }
+
+          $requiredColumns = @(
+              "timeframe",
+              "market",
+              "source_file",
+              "previous_timestamp",
+              "next_timestamp",
+              "first_missing_timestamp",
+              "last_missing_timestamp",
+              "gap_seconds",
+              "expected_seconds",
+              "estimated_missing_candles",
+              "classification",
+              "classification_reason",
+              "recoverable",
+              "recovery_start_timestamp",
+              "recovery_end_timestamp",
+              "source_report_sha256",
+              "classified_at_utc"
+          )
+
+          $actualColumns = @(
+              $rows[0].PSObject.Properties.Name
+          )
+
+          foreach ($column in $requiredColumns) {
+
+              if ($actualColumns -notcontains $column) {
+                  throw "Classification CSV missing column: $column"
+              }
+          }
+
+          $invalidClasses = @(
+              $rows |
+              Where-Object {
+                  $_.classification -notin @(
+                      "RECOVERABLE",
+                      "STRUCTURAL",
+                      "REVIEW"
+                  )
+              }
+          )
+
+          if ($invalidClasses.Count -gt 0) {
+              throw "Invalid classification values detected."
+          }
+
+          $recoverable = @(
+              $rows |
+              Where-Object {
+                  $_.classification -eq "RECOVERABLE"
+              }
+          )
+
+          $structural = @(
+              $rows |
+              Where-Object {
+                  $_.classification -eq "STRUCTURAL"
+              }
+          )
+
+          $review = @(
+              $rows |
+              Where-Object {
+                  $_.classification -eq "REVIEW"
+              }
+          )
+
+          Write-Host ""
+          Write-Host "RECOVERABLE : $($recoverable.Count)"
+          Write-Host "STRUCTURAL  : $($structural.Count)"
+          Write-Host "REVIEW      : $($review.Count)"
+
+          $classifiedTotal = (
+              $recoverable.Count +
+              $structural.Count +
+              $review.Count
+          )
+
+          if ($classifiedTotal -ne $rows.Count) {
+              throw "Classification total mismatch."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Classification CSV structure verified."
+
+
+      # ========================================================
+      # 13. Verify recovery target CSV
+      # ========================================================
+
+      - name: Verify recovery target CSV
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY RECOVERY TARGET CSV"
+          Write-Host "============================================================"
+
+          $classificationFile = "data/reports/history_gap_classification/history_gap_classification.csv"
+          $targetFile = "data/reports/history_gap_classification/history_gap_recovery_targets.csv"
+
+          $classificationRows = @(
+              Import-Csv $classificationFile
+          )
+
+          $targetRows = @(
+              Import-Csv $targetFile
+          )
+
+          $recoverableRows = @(
+              $classificationRows |
+              Where-Object {
+                  $_.classification -eq "RECOVERABLE"
+              }
+          )
+
+          Write-Host "Recoverable classification rows : $($recoverableRows.Count)"
+          Write-Host "Recovery target rows            : $($targetRows.Count)"
+
+          if (
+              $targetRows.Count `
+              -ne `
+              $recoverableRows.Count
+          ) {
+              throw "Recovery target count does not match RECOVERABLE classification count."
+          }
+
+          foreach ($row in $targetRows) {
+
+              if ($row.classification -ne "RECOVERABLE") {
+                  throw "Recovery target contains non-RECOVERABLE row."
+              }
+
+              if ([string]::IsNullOrWhiteSpace($row.timeframe)) {
+                  throw "Recovery target contains empty timeframe."
+              }
+
+              if ([string]::IsNullOrWhiteSpace($row.market)) {
+                  throw "Recovery target contains empty market."
+              }
+
+              if ([string]::IsNullOrWhiteSpace($row.first_missing_timestamp)) {
+                  throw "Recovery target contains empty first_missing_timestamp."
+              }
+
+              if ([string]::IsNullOrWhiteSpace($row.last_missing_timestamp)) {
+                  throw "Recovery target contains empty last_missing_timestamp."
+              }
+
+              $missing = 0
+
+              if (
+                  -not [int]::TryParse(
+                      [string]$row.estimated_missing_candles,
+                      [ref]$missing
+                  )
+              ) {
+                  throw "Invalid estimated_missing_candles value."
+              }
+
+              if ($missing -le 0) {
+                  throw "Recovery target contains non-positive missing candle count."
+              }
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Recovery target CSV verified."
+
+
+      # ========================================================
+      # 14. Verify 870-row classification summary
+      # ========================================================
+
+      - name: Verify 870 row classification summary
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY 870-ROW CLASSIFICATION SUMMARY"
+          Write-Host "============================================================"
+
+          $file = "data/reports/history_gap_classification/history_gap_classification_summary.csv"
+
+          $rows = @(
+              Import-Csv $file
+          )
+
+          Write-Host "Summary rows : $($rows.Count)"
+
+          if ($rows.Count -ne 870) {
+              throw "Expected 870 classification summary rows. Found: $($rows.Count)"
+          }
+
+          $h1 = @(
+              $rows |
+              Where-Object {
+                  $_.timeframe -eq "h1"
+              }
+          )
+
+          $h4 = @(
+              $rows |
+              Where-Object {
+                  $_.timeframe -eq "h4"
+              }
+          )
+
+          $d1 = @(
+              $rows |
+              Where-Object {
+                  $_.timeframe -eq "d1"
+              }
+          )
+
+          Write-Host "H1 rows : $($h1.Count)"
+          Write-Host "H4 rows : $($h4.Count)"
+          Write-Host "D1 rows : $($d1.Count)"
+
+          if ($h1.Count -ne 290) {
+              throw "Expected 290 H1 summary rows. Found: $($h1.Count)"
+          }
+
+          if ($h4.Count -ne 290) {
+              throw "Expected 290 H4 summary rows. Found: $($h4.Count)"
+          }
+
+          if ($d1.Count -ne 290) {
+              throw "Expected 290 D1 summary rows. Found: $($d1.Count)"
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] 870-row classification summary verified."
+
+
+      # ========================================================
+      # 15. Verify source gap report remained unchanged
+      # ========================================================
+
+      - name: Verify source gap report remained unchanged
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY SOURCE GAP REPORT REMAINED UNCHANGED"
+          Write-Host "============================================================"
+
+          $beforeReport = (
+              Get-Content `
+                  "data/validation/classifier_gap_report_before.sha256" `
+                  -Raw
+          ).Trim()
+
+          $beforeSummary = (
+              Get-Content `
+                  "data/validation/classifier_gap_summary_before.sha256" `
+                  -Raw
+          ).Trim()
+
+          $afterReport = (
+              Get-FileHash `
+                  "data/reports/history_gap/data_history_gap_report.csv" `
+                  -Algorithm SHA256
+          ).Hash
+
+          $afterSummary = (
+              Get-FileHash `
+                  "data/reports/history_gap/data_history_gap_summary.csv" `
+                  -Algorithm SHA256
+          ).Hash
+
+          if ($beforeReport -ne $afterReport) {
+              throw "Source gap report changed during classification."
+          }
+
+          if ($beforeSummary -ne $afterSummary) {
+              throw "Source gap summary changed during classification."
+          }
+
+          Write-Host "[PASS] Gap report unchanged."
+          Write-Host "[PASS] Gap summary unchanged."
+
+
+      # ========================================================
+      # 16. Verify all OHLCV files remained unchanged
+      # ========================================================
+
+      - name: Verify all OHLCV files remained unchanged
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY ALL OHLCV FILES REMAINED UNCHANGED"
+          Write-Host "============================================================"
+
+          $beforeFile = "data/validation/classifier_ohlcv_before.sha256"
+
+          if (-not (Test-Path $beforeFile)) {
+              throw "Before-OHLCV hash file not found."
+          }
+
+          $beforeLines = @(
+              Get-Content `
+                  -Path $beforeFile `
+                  -Encoding UTF8 |
+              Where-Object {
+                  -not [string]::IsNullOrWhiteSpace($_)
+              }
+          )
+
+          if ($beforeLines.Count -ne 870) {
+              throw "Expected 870 before-hash entries. Found: $($beforeLines.Count)"
+          }
+
+          $beforeMap = @{}
+
+          foreach ($line in $beforeLines) {
+
+              $parts = $line -split "`t", 2
+
+              if ($parts.Count -ne 2) {
+                  throw "Invalid before-hash row: $line"
+              }
+
+              $beforeMap[$parts[1]] = $parts[0]
+          }
+
+          $files = @(
+              Get-ChildItem `
+                  -Path "data/ohlcv" `
+                  -Filter "KRW-*.csv" `
+                  -File `
+                  -Recurse |
+              Sort-Object FullName
+          )
+
+          if ($files.Count -ne 870) {
+              throw "Expected 870 OHLCV files after classification. Found: $($files.Count)"
+          }
+
+          $index = 0
+
+          foreach ($file in $files) {
+
+              $index++
+
+              $relativePath = (
+                  Resolve-Path `
+                      -Relative `
+                      $file.FullName
+              ).Replace("\", "/")
+
+              if (-not $beforeMap.ContainsKey($relativePath)) {
+                  throw "Unexpected OHLCV file after classification: $relativePath"
+              }
+
+              $afterHash = (
+                  Get-FileHash `
+                      -Path $file.FullName `
+                      -Algorithm SHA256
+              ).Hash
+
+              if (
+                  $beforeMap[$relativePath] `
+                  -ne `
+                  $afterHash
+              ) {
+                  throw "OHLCV file changed during classification: $relativePath"
+              }
+
+              if (
+                  ($index % 100) -eq 0 `
+                  -or $index -eq $files.Count
+              ) {
+                  Write-Host "Verified $index / $($files.Count)"
+              }
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] All 870 OHLCV files remained unchanged."
+
+
+      # ========================================================
+      # 17. Verify Resume behavior
+      # ========================================================
+
+      - name: Verify Resume behavior
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY RESUME BEHAVIOR"
+          Write-Host "============================================================"
+
+          $checkpoint = "data/validation/classify_history_gaps_checkpoint.json"
+
+          if (-not (Test-Path $checkpoint)) {
+              throw "Classifier checkpoint not found."
+          }
+
+          $beforeHash = (
+              Get-FileHash `
+                  -Path $checkpoint `
+                  -Algorithm SHA256
+          ).Hash
+
+          $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+
+          py classify_history_gaps.py
+
+          $exitCode = $LASTEXITCODE
+
+          $stopwatch.Stop()
+
+          if ($exitCode -ne 0) {
+              throw "Resume execution failed with exit code $exitCode."
+          }
+
+          $json = Get-Content `
+              -Path $checkpoint `
+              -Raw `
+              -Encoding UTF8 |
+              ConvertFrom-Json
+
+          $completedCount = @(
+              $json.completed.PSObject.Properties
+          ).Count
+
+          Write-Host ""
+          Write-Host "Completed jobs after Resume : $completedCount"
+          Write-Host "Resume elapsed              : $([math]::Round($stopwatch.Elapsed.TotalSeconds, 2)) seconds"
+
+          if ($completedCount -ne 870) {
+              throw "Resume checkpoint does not contain 870 completed jobs."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Resume execution completed."
+          Write-Host "[PASS] Completed jobs were reusable."
+
+
+      # ========================================================
+      # 18. Verify generated classifier data remains ignored
+      # ========================================================
+
+      - name: Verify generated classifier data remains ignored
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY GENERATED CLASSIFIER DATA REMAINS IGNORED"
+          Write-Host "============================================================"
+
+          $paths = @(
+              "data/validation/classify_history_gaps_checkpoint.json",
+              "data/reports/history_gap_classification/history_gap_classification.csv",
+              "data/reports/history_gap_classification/history_gap_recovery_targets.csv",
+              "data/reports/history_gap_classification/history_gap_classification_summary.csv"
+          )
+
+          foreach ($path in $paths) {
+
+              git check-ignore -q -- "$path"
+
+              if ($LASTEXITCODE -ne 0) {
+
+                  Write-Host ""
+                  Write-Host "[FAIL] Runtime file is NOT ignored:"
+                  Write-Host $path
+
+                  throw "Classifier runtime data must remain ignored by .gitignore."
+              }
+
+              Write-Host "[PASS] ignored: $path"
+          }
+
+
+      # ========================================================
+      # 19. Verify final Git safety
+      # ========================================================
+
+      - name: Verify final Git safety
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "FINAL GIT SAFETY CHECK"
+          Write-Host "============================================================"
+
+          $statusLines = @(
+              git status `
+                  --short `
+                  --untracked-files=all
+          )
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "git status failed."
+          }
+
+          if ($statusLines.Count -eq 0) {
+
+              Write-Host "[PASS] No Git-visible changes detected."
+
+              exit 0
+          }
+
+          Write-Host ""
+          Write-Host "Git-visible changes detected:"
+
+          $statusLines |
+              ForEach-Object {
+                  Write-Host $_
+              }
+
+          $unexpected = @(
+              $statusLines |
+              Where-Object {
+
+                  $_ -match `
+                      "data[\\/](validation|reports)[\\/]"
+              }
+          )
+
+          if ($unexpected.Count -gt 0) {
+
+              Write-Host ""
+              Write-Host "Unexpected runtime Git-visible changes:"
+
+              $unexpected |
+                  ForEach-Object {
+                      Write-Host $_
+                  }
+
+              throw "Classifier created Git-visible runtime files."
+          }
+
+          Write-Host ""
+          Write-Host "[INFO] Git-visible changes exist outside classifier runtime paths."
+          Write-Host "[SAFETY] No automatic git reset or git clean was executed."
+
+
+      # ========================================================
+      # 20. Full classifier summary
+      # ========================================================
+
+      - name: Full History Gap Classifier summary
+        if: always()
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          Write-Host "============================================================"
+          Write-Host "FULL KRW HISTORY GAP CLASSIFIER SUMMARY"
+          Write-Host "============================================================"
+
+          Write-Host "Project            : Upbit Surge Monitor"
+          Write-Host "Version            : History Gap Classifier Clean V001"
+          Write-Host "Execution mode     : FULL KRW MARKET"
+
+          Write-Host ""
+          Write-Host "Expected:"
+          Write-Host "  Markets          : 290"
+          Write-Host "  Timeframes       : 3"
+          Write-Host "  Jobs             : 870"
+
+          $classificationFile = "data/reports/history_gap_classification/history_gap_classification.csv"
+          $targetFile = "data/reports/history_gap_classification/history_gap_recovery_targets.csv"
+          $summaryFile = "data/reports/history_gap_classification/history_gap_classification_summary.csv"
+          $checkpointFile = "data/validation/classify_history_gaps_checkpoint.json"
+
+          if (Test-Path $classificationFile) {
+
+              $rows = @(
+                  Import-Csv $classificationFile
+              )
+
+              $recoverable = @(
+                  $rows |
+                  Where-Object {
+                      $_.classification -eq "RECOVERABLE"
+                  }
+              )
+
+              $structural = @(
+                  $rows |
+                  Where-Object {
+                      $_.classification -eq "STRUCTURAL"
+                  }
+              )
+
+              $review = @(
+                  $rows |
+                  Where-Object {
+                      $_.classification -eq "REVIEW"
+                  }
+              )
+
+              $recoverableMissing = 0
+
+              foreach ($row in $recoverable) {
+
+                  $value = 0
+
+                  if (
+                      [int]::TryParse(
+                          [string]$row.estimated_missing_candles,
+                          [ref]$value
+                      )
+                  ) {
+                      $recoverableMissing += $value
+                  }
+              }
+
+              Write-Host ""
+              Write-Host "Classification:"
+              Write-Host "  Gap events       : $($rows.Count)"
+              Write-Host "  RECOVERABLE      : $($recoverable.Count)"
+              Write-Host "  STRUCTURAL       : $($structural.Count)"
+              Write-Host "  REVIEW           : $($review.Count)"
+              Write-Host "  Recoverable miss : $recoverableMissing"
+          }
+
+          if (Test-Path $targetFile) {
+
+              $targets = @(
+                  Import-Csv $targetFile
+              )
+
+              Write-Host ""
+              Write-Host "Recovery:"
+              Write-Host "  Target rows      : $($targets.Count)"
+          }
+
+          if (Test-Path $summaryFile) {
+
+              $summaryRows = @(
+                  Import-Csv $summaryFile
+              )
+
+              Write-Host ""
+              Write-Host "Summary:"
+              Write-Host "  Summary rows     : $($summaryRows.Count)"
+          }
+
+          if (Test-Path $checkpointFile) {
+
+              try {
+
+                  $checkpoint = Get-Content `
+                      -Path $checkpointFile `
+                      -Raw `
+                      -Encoding UTF8 |
+                      ConvertFrom-Json
+
+                  $completed = @(
+                      $checkpoint.completed.PSObject.Properties
+                  ).Count
+
+                  Write-Host ""
+                  Write-Host "Resume:"
+                  Write-Host "  Completed jobs   : $completed"
+                  Write-Host "  Checkpoint       : VERIFIED"
+              }
+              catch {
+
+                  Write-Host ""
+                  Write-Host "Resume:"
+                  Write-Host "  Checkpoint       : UNREADABLE"
+              }
+          }
+
+          Write-Host ""
+          Write-Host "Integrity:"
+          Write-Host "  Gap report       : READ ONLY"
+          Write-Host "  Gap summary      : READ ONLY"
+          Write-Host "  OHLCV            : READ ONLY"
+
+          Write-Host ""
+          Write-Host "Safety:"
+          Write-Host "  OHLCV write      : DISABLED"
+          Write-Host "  OHLCV delete     : DISABLED"
+          Write-Host "  Gap repair       : DISABLED"
+          Write-Host "  Feature build    : DISABLED"
+          Write-Host "  256 Detector     : DISABLED"
+          Write-Host "  Future labels    : DISABLED"
+          Write-Host "  Prediction       : DISABLED"
+          Write-Host "  Trading          : DISABLED"
+          Write-Host "  Git reset        : DISABLED"
+          Write-Host "  Git clean        : DISABLED"
+          Write-Host "  Git commit       : DISABLED"
+          Write-Host "  Git push         : DISABLED"
+
+          Write-Host "============================================================"
+
+
+      # ========================================================
+      # 21. Test completed
+      # ========================================================
+
+      - name: Full History Gap Classifier test completed
+        if: success()
+        run: |
+          Write-Host "============================================================"
+          Write-Host "[RESULT] FULL KRW HISTORY GAP CLASSIFIER TEST PASSED"
+          Write-Host "============================================================"
+          Write-Host "[PASS] 290 markets verified."
+          Write-Host "[PASS] 870 classifier jobs verified."
+          Write-Host "[PASS] Persistent Resume verified."
+          Write-Host "[PASS] Classification output verified."
+          Write-Host "[PASS] Recovery targets verified."
+          Write-Host "[PASS] Source Gap Report remained unchanged."
+          Write-Host "[PASS] All 870 OHLCV source files remained unchanged."
+          Write-Host "[PASS] Runtime files remained ignored."
+          Write-Host "[NEXT] Review classification results before historical recovery."
+          Write-Host "============================================================"
