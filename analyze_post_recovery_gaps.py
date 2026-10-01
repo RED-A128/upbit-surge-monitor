@@ -1,14 +1,22 @@
 # ============================================================
 # Upbit Surge Monitor
 # analyze_post_recovery_gaps.py
-# Clean V002
+# Clean V003
 # ============================================================
 #
 # PURPOSE
 # ------------------------------------------------------------
 # Analyze historical OHLCV gaps AFTER real historical recovery.
 #
-# Clean V002 fixes unsafe/incorrect report discovery from V001.
+# Clean V003:
+#
+#   - Fixes POST-recovery report handoff/discovery.
+#   - Accepts validated post-recovery audit outputs.
+#   - Does NOT require the filename itself to contain
+#     "post_recovery" when the file is inside the trusted
+#     post_recovery_gap_audit directory.
+#   - Keeps recovery-target/classification files forbidden.
+#   - Keeps OHLCV strictly READ ONLY.
 #
 # IMPORTANT:
 #
@@ -24,7 +32,7 @@
 #   1. Verify 290 x 3 = 870 OHLCV files
 #   2. Discover pre-recovery gap report
 #   3. Discover post-recovery gap report
-#   4. Validate candidate report schema BEFORE selection
+#   4. Validate report schema before selection
 #   5. Reject recovery-target / classification files
 #   6. Compare pre/post gap state
 #   7. Calculate recovery performance
@@ -54,7 +62,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 # 1. VERSION
 # ============================================================
 
-VERSION = "Clean V002"
+VERSION = "Clean V003"
 PROGRAM_NAME = "analyze_post_recovery_gaps.py"
 
 
@@ -74,6 +82,16 @@ D1_DIR = OHLCV_DIR / "d1"
 REPORTS_DIR = DATA_DIR / "reports"
 VALIDATION_DIR = DATA_DIR / "validation"
 RECOVERY_DIR = DATA_DIR / "recovery"
+
+HISTORY_GAP_DIR = (
+    REPORTS_DIR
+    / "history_gap"
+)
+
+POST_AUDIT_DIR = (
+    REPORTS_DIR
+    / "post_recovery_gap_audit"
+)
 
 ANALYSIS_DIR = (
     REPORTS_DIR
@@ -170,6 +188,7 @@ GAP_COUNT_ALIASES = [
     "gap_events",
     "gap_event_count",
     "total_gaps",
+    "total_gap_count",
 ]
 
 MISSING_COUNT_ALIASES = [
@@ -179,6 +198,7 @@ MISSING_COUNT_ALIASES = [
     "missing_estimate",
     "estimated_missing",
     "missing_candles",
+    "missing_candle_count",
 ]
 
 GAP_START_ALIASES = [
@@ -215,11 +235,6 @@ RECOVERABLE_ALIASES = [
 # 6. REPORT DISCOVERY CONFIGURATION
 # ============================================================
 
-# ------------------------------------------------------------
-# Files that are known to be classification / recovery targets
-# and therefore MUST NOT be treated as a gap report.
-# ------------------------------------------------------------
-
 FORBIDDEN_REPORT_NAME_PARTS = [
     "recovery_targets",
     "second_pass_targets",
@@ -240,77 +255,77 @@ FORBIDDEN_REPORT_NAME_PARTS = [
 
 
 # ------------------------------------------------------------
-# Explicit PRE-recovery candidates.
-#
-# Ordered by priority.
+# PRE-recovery report candidates
 # ------------------------------------------------------------
 
 PRE_REPORT_CANDIDATES = [
-    REPORTS_DIR
-    / "history_gap"
+    HISTORY_GAP_DIR
     / "data_history_gap_report_before_recovery.csv",
 
-    REPORTS_DIR
-    / "history_gap"
+    HISTORY_GAP_DIR
     / "pre_recovery_gap_report.csv",
 
-    REPORTS_DIR
-    / "post_recovery_gap_audit"
+    POST_AUDIT_DIR
     / "pre_recovery_gap_report.csv",
 
-    REPORTS_DIR
-    / "history_gap"
+    HISTORY_GAP_DIR
     / "data_history_gap_report.csv",
 
-    REPORTS_DIR
-    / "history_gap"
+    HISTORY_GAP_DIR
     / "history_gap_report.csv",
 
-    REPORTS_DIR
-    / "history_gap"
+    HISTORY_GAP_DIR
     / "history_gap_detail.csv",
+
+    HISTORY_GAP_DIR
+    / "data_history_gap_summary.csv",
 ]
 
 
 # ------------------------------------------------------------
-# Explicit POST-recovery candidates.
+# POST-recovery report candidates
 #
-# The post-recovery audit directory always has priority.
+# Clean V003 intentionally includes several safe filenames.
+#
+# The file does NOT need "post_recovery" in its filename when
+# it lives inside POST_AUDIT_DIR.
 # ------------------------------------------------------------
 
 POST_REPORT_CANDIDATES = [
-    REPORTS_DIR
-    / "post_recovery_gap_audit"
+    POST_AUDIT_DIR
     / "data_history_gap_report.csv",
 
-    REPORTS_DIR
-    / "post_recovery_gap_audit"
+    POST_AUDIT_DIR
     / "post_recovery_gap_report.csv",
 
-    REPORTS_DIR
-    / "post_recovery_gap_audit"
+    POST_AUDIT_DIR
     / "history_gap_report.csv",
 
-    REPORTS_DIR
-    / "post_recovery_gap_audit"
+    POST_AUDIT_DIR
     / "history_gap_detail.csv",
 
-    REPORTS_DIR
-    / "history_gap"
+    POST_AUDIT_DIR
+    / "data_history_gap_summary.csv",
+
+    POST_AUDIT_DIR
+    / "post_recovery_gap_summary.csv",
+
+    POST_AUDIT_DIR
+    / "history_gap_summary.csv",
+
+    HISTORY_GAP_DIR
     / "post_recovery_gap_report.csv",
 
-    REPORTS_DIR
-    / "history_gap"
+    HISTORY_GAP_DIR
     / "data_history_gap_report_after_recovery.csv",
 
-    REPORTS_DIR
-    / "history_gap"
+    HISTORY_GAP_DIR
     / "after_recovery_gap_report.csv",
 ]
 
 
 # ============================================================
-# 7. BASIC UTILITY FUNCTIONS
+# 7. BASIC UTILITIES
 # ============================================================
 
 def utc_now_iso() -> str:
@@ -345,65 +360,34 @@ def normalize_text(value: Any) -> str:
     return str(value).strip()
 
 
-def normalize_column_name(
-    value: str,
-) -> str:
+def normalize_column_name(value: str) -> str:
+    value = normalize_text(value).lower()
 
-    value = normalize_text(
-        value
-    ).lower()
-
-    value = value.replace(
-        "-",
-        "_",
-    )
-
-    value = value.replace(
-        " ",
-        "_",
-    )
-
-    value = value.replace(
-        ".",
-        "_",
-    )
+    value = value.replace("-", "_")
+    value = value.replace(" ", "_")
+    value = value.replace(".", "_")
 
     while "__" in value:
-        value = value.replace(
-            "__",
-            "_",
-        )
+        value = value.replace("__", "_")
 
     return value.strip("_")
 
 
-def safe_int(
-    value: Any,
-) -> int:
-
-    text = normalize_text(
-        value
-    )
+def safe_int(value: Any) -> int:
+    text = normalize_text(value)
 
     if not text:
         return 0
 
     try:
-        return int(
-            float(text)
-        )
+        return int(float(text))
 
     except Exception:
         return 0
 
 
-def safe_bool(
-    value: Any,
-) -> Optional[bool]:
-
-    text = normalize_text(
-        value
-    ).lower()
+def safe_bool(value: Any) -> Optional[bool]:
+    text = normalize_text(value).lower()
 
     if text in {
         "1",
@@ -428,16 +412,10 @@ def safe_bool(
     return None
 
 
-def file_sha256(
-    path: Path,
-) -> str:
-
+def file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
 
-    with path.open(
-        "rb"
-    ) as handle:
-
+    with path.open("rb") as handle:
         while True:
             block = handle.read(
                 1024 * 1024
@@ -446,17 +424,12 @@ def file_sha256(
             if not block:
                 break
 
-            digest.update(
-                block
-            )
+            digest.update(block)
 
     return digest.hexdigest()
 
 
-def count_csv_files(
-    directory: Path,
-) -> int:
-
+def count_csv_files(directory: Path) -> int:
     if not directory.exists():
         return 0
 
@@ -467,6 +440,37 @@ def count_csv_files(
             )
         )
     )
+
+
+def same_path(
+    left: Path,
+    right: Path,
+) -> bool:
+    try:
+        return (
+            left.resolve()
+            == right.resolve()
+        )
+
+    except Exception:
+        return (
+            str(left)
+            == str(right)
+        )
+
+
+def path_is_inside(
+    path: Path,
+    parent: Path,
+) -> bool:
+    try:
+        path.resolve().relative_to(
+            parent.resolve()
+        )
+        return True
+
+    except Exception:
+        return False
 
 
 # ============================================================
@@ -594,9 +598,7 @@ def read_csv_header(
                     )
 
                 return [
-                    normalize_text(
-                        value
-                    )
+                    normalize_text(value)
                     for value in header
                 ]
 
@@ -641,9 +643,7 @@ def write_csv(
         writer.writeheader()
 
         for row in rows:
-            writer.writerow(
-                row
-            )
+            writer.writerow(row)
 
 
 # ============================================================
@@ -669,10 +669,7 @@ def detect_column(
             )
         )
 
-        if (
-            normalized_alias
-            in normalized_map
-        ):
+        if normalized_alias in normalized_map:
             return normalized_map[
                 normalized_alias
             ]
@@ -774,21 +771,11 @@ def is_forbidden_report(
         path.name.lower()
     )
 
-    lower_full = (
-        str(path).lower()
-    )
-
-    for part in (
-        FORBIDDEN_REPORT_NAME_PARTS
-    ):
+    for part in FORBIDDEN_REPORT_NAME_PARTS:
 
         part_lower = part.lower()
 
-        if (
-            part_lower in lower_name
-            or
-            part_lower in lower_full
-        ):
+        if part_lower in lower_name:
             return (
                 True,
                 f"forbidden-name:{part}",
@@ -827,10 +814,7 @@ def validate_gap_report_candidate(
             None,
         )
 
-    if (
-        path.suffix.lower()
-        != ".csv"
-    ):
+    if path.suffix.lower() != ".csv":
         return (
             False,
             "not-csv",
@@ -926,36 +910,23 @@ def select_explicit_candidate(
     ] = None,
 ) -> Optional[Path]:
 
-    excluded_resolved = set()
-
-    if excluded_paths:
-
-        for item in excluded_paths:
-
-            try:
-                excluded_resolved.add(
-                    item.resolve()
-                )
-
-            except Exception:
-                pass
+    excluded_paths = (
+        excluded_paths
+        or []
+    )
 
     for path in candidates:
 
         if not path.exists():
             continue
 
-        try:
-            resolved = (
-                path.resolve()
+        if any(
+            same_path(
+                path,
+                excluded,
             )
-
-        except Exception:
-            resolved = path
-
-        if (
-            resolved
-            in excluded_resolved
+            for excluded
+            in excluded_paths
         ):
             print_candidate_result(
                 label,
@@ -1025,13 +996,8 @@ def score_pre_report(
     path: Path,
 ) -> int:
 
-    text = str(
-        path
-    ).lower()
-
-    name = (
-        path.name.lower()
-    )
+    text = str(path).lower()
+    name = path.name.lower()
 
     score = 0
 
@@ -1040,6 +1006,9 @@ def score_pre_report(
 
     if "data_history_gap_report" in name:
         score += 40
+
+    if "data_history_gap_summary" in name:
+        score += 25
 
     if "pre_recovery" in text:
         score += 100
@@ -1066,18 +1035,19 @@ def score_post_report(
     path: Path,
 ) -> int:
 
-    text = str(
-        path
-    ).lower()
-
-    name = (
-        path.name.lower()
-    )
+    text = str(path).lower()
+    name = path.name.lower()
 
     score = 0
 
+    if path_is_inside(
+        path,
+        POST_AUDIT_DIR,
+    ):
+        score += 1000
+
     if "post_recovery_gap_audit" in text:
-        score += 300
+        score += 500
 
     if "post_recovery" in text:
         score += 200
@@ -1086,22 +1056,28 @@ def score_post_report(
         score += 150
 
     if "data_history_gap_report" in name:
-        score += 50
+        score += 80
 
     if "history_gap_report" in name:
-        score += 40
+        score += 70
+
+    if "data_history_gap_summary" in name:
+        score += 60
+
+    if "history_gap_summary" in name:
+        score += 50
 
     if "history_gap" in text:
         score += 20
 
     if "pre_recovery" in text:
-        score -= 300
+        score -= 500
 
     if "before_recovery" in text:
-        score -= 300
+        score -= 500
 
     if "classification" in text:
-        score -= 200
+        score -= 500
 
     if "recovery_targets" in text:
         score -= 1000
@@ -1155,6 +1131,11 @@ def discover_pre_report() -> Path:
         path
         for path in candidates
         if (
+            not path_is_inside(
+                path,
+                POST_AUDIT_DIR,
+            )
+            and
             "post_recovery"
             not in str(path).lower()
             and
@@ -1171,9 +1152,7 @@ def discover_pre_report() -> Path:
 
     candidates.sort(
         key=lambda path: (
-            score_pre_report(
-                path
-            ),
+            score_pre_report(path),
             path.stat().st_mtime,
         ),
         reverse=True,
@@ -1212,6 +1191,11 @@ def discover_post_report(
         "============================================================"
     )
 
+    # --------------------------------------------------------
+    # Stage 1
+    # Explicit known POST candidates
+    # --------------------------------------------------------
+
     direct = select_explicit_candidate(
         "POST",
         POST_REPORT_CANDIDATES,
@@ -1229,13 +1213,85 @@ def discover_post_report(
 
         return direct
 
+    # --------------------------------------------------------
+    # Stage 2
+    # Search trusted post-recovery audit directory.
+    #
+    # Clean V003:
+    # Any schema-valid gap report inside this trusted directory
+    # may be selected even when filename does not explicitly
+    # contain "post_recovery".
+    # --------------------------------------------------------
+
     print("")
     print(
         "[INFO] No explicit POST candidate selected."
     )
 
     print(
-        "[INFO] Searching validated post-recovery reports..."
+        "[INFO] Searching trusted "
+        "post_recovery_gap_audit directory..."
+    )
+
+    trusted_candidates = (
+        find_valid_gap_reports(
+            POST_AUDIT_DIR
+        )
+    )
+
+    trusted_candidates = [
+        path
+        for path in trusted_candidates
+        if not same_path(
+            path,
+            pre_report,
+        )
+    ]
+
+    if trusted_candidates:
+
+        trusted_candidates.sort(
+            key=lambda path: (
+                score_post_report(path),
+                path.stat().st_mtime,
+            ),
+            reverse=True,
+        )
+
+        for path in trusted_candidates[:20]:
+
+            print(
+                "[TRUSTED POST CANDIDATE] "
+                f"score={score_post_report(path)} "
+                f"{path}"
+            )
+
+        selected = (
+            trusted_candidates[0]
+        )
+
+        print(
+            "[SELECTED POST] "
+            f"{selected}"
+        )
+
+        return selected
+
+    # --------------------------------------------------------
+    # Stage 3
+    # Safe global fallback.
+    #
+    # Outside POST_AUDIT_DIR, explicit post/after evidence is
+    # still required.
+    # --------------------------------------------------------
+
+    print("")
+    print(
+        "[INFO] No trusted POST audit report found."
+    )
+
+    print(
+        "[INFO] Searching safe global POST candidates..."
     )
 
     all_candidates = (
@@ -1246,36 +1302,15 @@ def discover_post_report(
 
     candidates: List[Path] = []
 
-    pre_resolved = (
-        pre_report.resolve()
-    )
-
     for path in all_candidates:
 
-        try:
-            if (
-                path.resolve()
-                == pre_resolved
-            ):
-                continue
+        if same_path(
+            path,
+            pre_report,
+        ):
+            continue
 
-        except Exception:
-            pass
-
-        text = str(
-            path
-        ).lower()
-
-        # ----------------------------------------------------
-        # Post report fallback MUST contain post/after recovery
-        # evidence.
-        #
-        # This prevents files such as:
-        #
-        # history_gap_recovery_targets.csv
-        #
-        # from ever becoming the post report.
-        # ----------------------------------------------------
+        text = str(path).lower()
 
         if (
             "post_recovery" not in text
@@ -1302,10 +1337,19 @@ def discover_post_report(
             "Validated gap-report candidates:"
         )
 
-        for path in all_candidates[:30]:
+        for path in all_candidates[:50]:
             print(
                 f"  - {path}"
             )
+
+        print("")
+        print(
+            "Expected trusted POST directory:"
+        )
+
+        print(
+            f"  - {POST_AUDIT_DIR}"
+        )
 
         raise FileNotFoundError(
             "Unable to locate a validated "
@@ -1316,9 +1360,7 @@ def discover_post_report(
 
     candidates.sort(
         key=lambda path: (
-            score_post_report(
-                path
-            ),
+            score_post_report(path),
             path.stat().st_mtime,
         ),
         reverse=True,
@@ -2492,11 +2534,13 @@ def write_checkpoint(
         )
 
     if summary is not None:
+
         payload[
             "summary"
         ] = summary
 
     if error is not None:
+
         payload[
             "error"
         ] = error
@@ -2781,56 +2825,6 @@ def print_summary(
 
 def main() -> int:
 
-    print(
-        "============================================================"
-    )
-    print(
-        "UPBIT SURGE MONITOR"
-    )
-    print(
-        "POST-RECOVERY GAP ANALYZER"
-    )
-    print(
-        VERSION
-    )
-    print(
-        "============================================================"
-    )
-
-    print(
-        f"Program        : {PROGRAM_NAME}"
-    )
-
-    print(
-        "Execution mode : READ ONLY ANALYSIS"
-    )
-
-    print(
-        f"Root           : {ROOT_DIR}"
-    )
-
-    print(
-        f"UTC time       : {utc_now_iso()}"
-    )
-
-    print(
-        "============================================================"
-    )
-
-    ensure_runtime_directories()
-
-    write_status(
-        "STARTED",
-        (
-            "Post-recovery gap "
-            "analysis started."
-        ),
-    )
-
-    write_checkpoint(
-        status="STARTED",
-    )
-
     pre_report: Optional[
         Path
     ] = None
@@ -2841,28 +2835,89 @@ def main() -> int:
 
     try:
 
-        # ====================================================
-        # STEP 1
-        # OHLCV inventory
-        # ====================================================
+        print(
+            "============================================================"
+        )
+
+        print(
+            "UPBIT SURGE MONITOR"
+        )
+
+        print(
+            "POST-RECOVERY GAP ANALYZER"
+        )
+
+        print(
+            VERSION
+        )
+
+        print(
+            "============================================================"
+        )
+
+        print(
+            "Execution mode : READ ONLY ANALYSIS"
+        )
+
+        print(
+            f"Expected markets : {EXPECTED_MARKETS}"
+        )
+
+        print(
+            f"Expected jobs    : {EXPECTED_OHLCV_FILES}"
+        )
+
+        print("")
+        print(
+            "Clean V003 POST discovery:"
+        )
+
+        print(
+            "  Trusted audit directory : "
+            f"{POST_AUDIT_DIR}"
+        )
+
+        print(
+            "  Classification fallback : FORBIDDEN"
+        )
+
+        print(
+            "  Recovery target fallback: FORBIDDEN"
+        )
+
+        ensure_runtime_directories()
+
+        write_status(
+            "STARTED",
+            (
+                "Post-recovery gap analysis "
+                f"{VERSION} started."
+            ),
+        )
+
+        write_checkpoint(
+            status="STARTED",
+        )
+
+        # ----------------------------------------------------
+        # 1. Validate OHLCV inventory
+        # ----------------------------------------------------
 
         inventory = (
             validate_ohlcv_inventory()
         )
 
-        # ====================================================
-        # STEP 2
-        # Discover PRE report
-        # ====================================================
+        # ----------------------------------------------------
+        # 2. Discover PRE report
+        # ----------------------------------------------------
 
         pre_report = (
             discover_pre_report()
         )
 
-        # ====================================================
-        # STEP 3
-        # Discover POST report
-        # ====================================================
+        # ----------------------------------------------------
+        # 3. Discover POST report
+        # ----------------------------------------------------
 
         post_report = (
             discover_post_report(
@@ -2870,20 +2925,47 @@ def main() -> int:
             )
         )
 
-        if (
-            pre_report.resolve()
-            ==
-            post_report.resolve()
+        if same_path(
+            pre_report,
+            post_report,
         ):
             raise RuntimeError(
-                "Pre/post report resolved "
+                "PRE and POST reports resolve "
                 "to the same file."
             )
 
-        # ====================================================
-        # STEP 4
-        # Read reports
-        # ====================================================
+        print("")
+        print(
+            "============================================================"
+        )
+        print(
+            "SOURCE REPORTS"
+        )
+        print(
+            "============================================================"
+        )
+
+        print(
+            f"PRE  : {pre_report}"
+        )
+
+        print(
+            f"POST : {post_report}"
+        )
+
+        print(
+            "PRE SHA256  : "
+            f"{file_sha256(pre_report)}"
+        )
+
+        print(
+            "POST SHA256 : "
+            f"{file_sha256(post_report)}"
+        )
+
+        # ----------------------------------------------------
+        # 4. Read PRE report
+        # ----------------------------------------------------
 
         (
             pre_fields,
@@ -2892,53 +2974,21 @@ def main() -> int:
             pre_report
         )
 
+        pre_schema = (
+            detect_schema(
+                pre_fields
+            )
+        )
+
+        # ----------------------------------------------------
+        # 5. Read POST report
+        # ----------------------------------------------------
+
         (
             post_fields,
             post_rows,
         ) = read_csv_rows(
             post_report
-        )
-
-        print("")
-        print(
-            "============================================================"
-        )
-        print(
-            "SOURCE REPORT SUMMARY"
-        )
-        print(
-            "============================================================"
-        )
-
-        print(
-            "Pre-recovery report  : "
-            f"{pre_report}"
-        )
-
-        print(
-            "Post-recovery report : "
-            f"{post_report}"
-        )
-
-        print(
-            "Pre rows              : "
-            f"{len(pre_rows)}"
-        )
-
-        print(
-            "Post rows             : "
-            f"{len(post_rows)}"
-        )
-
-        # ====================================================
-        # STEP 5
-        # Schema validation
-        # ====================================================
-
-        pre_schema = (
-            detect_schema(
-                pre_fields
-            )
         )
 
         post_schema = (
@@ -2949,19 +2999,26 @@ def main() -> int:
 
         print("")
         print(
-            "Pre schema            : "
-            f"{pre_schema}"
+            "============================================================"
+        )
+        print(
+            "REPORT ROW COUNTS"
+        )
+        print(
+            "============================================================"
         )
 
         print(
-            "Post schema           : "
-            f"{post_schema}"
+            f"PRE rows  : {len(pre_rows)}"
         )
 
-        # ====================================================
-        # STEP 6
-        # Aggregate
-        # ====================================================
+        print(
+            f"POST rows : {len(post_rows)}"
+        )
+
+        # ----------------------------------------------------
+        # 6. Aggregate
+        # ----------------------------------------------------
 
         pre_data = (
             aggregate_report(
@@ -2977,33 +3034,29 @@ def main() -> int:
             )
         )
 
-        print("")
         print(
-            "Pre jobs              : "
-            f"{len(pre_data)}"
+            f"PRE jobs  : {len(pre_data)}"
         )
 
         print(
-            "Post jobs             : "
-            f"{len(post_data)}"
+            f"POST jobs : {len(post_data)}"
         )
 
         if not pre_data:
             raise RuntimeError(
-                "Pre-recovery report "
-                "produced zero jobs."
+                "PRE report produced zero "
+                "market/timeframe jobs."
             )
 
         if not post_data:
             raise RuntimeError(
-                "Post-recovery report "
-                "produced zero jobs."
+                "POST report produced zero "
+                "market/timeframe jobs."
             )
 
-        # ====================================================
-        # STEP 7
-        # Compare
-        # ====================================================
+        # ----------------------------------------------------
+        # 7. Compare
+        # ----------------------------------------------------
 
         detail_rows = (
             compare_reports(
@@ -3014,9 +3067,12 @@ def main() -> int:
 
         if not detail_rows:
             raise RuntimeError(
-                "Pre/post comparison "
-                "produced zero rows."
+                "Comparison produced zero rows."
             )
+
+        # ----------------------------------------------------
+        # 8. Build summary
+        # ----------------------------------------------------
 
         summary = (
             build_summary(
@@ -3024,16 +3080,11 @@ def main() -> int:
             )
         )
 
-        # ====================================================
-        # STEP 8
-        # Write outputs
-        # ====================================================
+        # ----------------------------------------------------
+        # 9. Write outputs
+        # ----------------------------------------------------
 
         write_detail_report(
-            detail_rows
-        )
-
-        write_second_pass_targets(
             detail_rows
         )
 
@@ -3041,133 +3092,102 @@ def main() -> int:
             summary
         )
 
-        write_result_json(
-            summary=summary,
-            pre_report=pre_report,
-            post_report=post_report,
-            inventory=inventory,
+        write_second_pass_targets(
+            detail_rows
         )
 
-        # ====================================================
-        # STEP 9
-        # Final checkpoint
-        # ====================================================
+        write_result_json(
+            summary=
+                summary,
+
+            pre_report=
+                pre_report,
+
+            post_report=
+                post_report,
+
+            inventory=
+                inventory,
+        )
+
+        # ----------------------------------------------------
+        # 10. Final checkpoint/status
+        # ----------------------------------------------------
 
         write_checkpoint(
             status="COMPLETED",
-            pre_report=pre_report,
-            post_report=post_report,
-            summary=summary,
+            pre_report=
+                pre_report,
+            post_report=
+                post_report,
+            summary=
+                summary,
         )
 
         write_status(
             "COMPLETED",
             (
-                "Post-recovery gap "
-                "analysis completed "
-                "successfully."
+                "Post-recovery gap analysis "
+                "completed successfully. "
+                f"remaining_jobs="
+                f"{summary['remaining_gap_jobs']}, "
+                f"second_pass="
+                f"{summary['second_pass_candidates']}"
             ),
         )
 
-        # ====================================================
-        # STEP 10
-        # Console summary
-        # ====================================================
+        # ----------------------------------------------------
+        # 11. Console summary
+        # ----------------------------------------------------
 
         print_summary(
-            summary=summary,
-            pre_report=pre_report,
-            post_report=post_report,
+            summary=
+                summary,
+            pre_report=
+                pre_report,
+            post_report=
+                post_report,
         )
 
         print("")
         print(
-            "============================================================"
-        )
-
-        print(
-            "[RESULT] POST-RECOVERY "
-            "GAP ANALYSIS PASSED"
-        )
-
-        print(
-            "[PASS] 870 OHLCV source "
-            "files verified."
-        )
-
-        print(
-            "[PASS] Pre-recovery gap "
-            "report schema verified."
-        )
-
-        print(
             "[PASS] Post-recovery gap "
-            "report schema verified."
+            "analysis completed."
         )
 
         print(
-            "[PASS] Recovery target/"
-            "classification files rejected "
-            "from report discovery."
-        )
-
-        print(
-            "[PASS] Pre/post recovery "
-            "reports compared."
-        )
-
-        print(
-            "[PASS] Recovery performance "
-            "calculated."
-        )
-
-        print(
-            "[PASS] Remaining gap jobs "
-            "identified."
-        )
-
-        print(
-            "[PASS] Second-pass candidates "
-            "generated."
-        )
-
-        print(
-            "[PASS] OHLCV source data "
-            "was not modified."
-        )
-
-        print(
-            "[NEXT] Validate analysis "
-            "outputs before second-pass "
-            "recovery planning."
-        )
-
-        print(
-            "============================================================"
+            "[NEXT] Review second-pass "
+            "recovery candidates."
         )
 
         return 0
 
     except Exception as exc:
 
-        print("")
-        print(
-            "============================================================"
-        )
-        print(
-            "POST-RECOVERY GAP ANALYSIS "
-            "FATAL ERROR"
-        )
-        print(
-            "============================================================"
-        )
-
-        print(
+        error_message = (
             f"{type(exc).__name__}: "
             f"{exc}"
         )
 
         print("")
+        print(
+            "============================================================"
+        )
+
+        print(
+            "POST-RECOVERY GAP ANALYSIS FATAL ERROR"
+        )
+
+        print(
+            "============================================================"
+        )
+
+        print(
+            error_message
+        )
+
+        print("")
+
         traceback.print_exc()
 
         print("")
@@ -3191,23 +3211,28 @@ def main() -> int:
             "was executed."
         )
 
-        write_checkpoint(
-            status="FAILED",
-            pre_report=pre_report,
-            post_report=post_report,
-            error=(
-                f"{type(exc).__name__}: "
-                f"{exc}"
-            ),
-        )
+        try:
+            write_checkpoint(
+                status="FAILED",
+                pre_report=
+                    pre_report,
+                post_report=
+                    post_report,
+                error=
+                    error_message,
+            )
 
-        write_status(
-            "FAILED",
-            (
-                f"{type(exc).__name__}: "
-                f"{exc}"
-            ),
-        )
+        except Exception:
+            pass
+
+        try:
+            write_status(
+                "FAILED",
+                error_message,
+            )
+
+        except Exception:
+            pass
 
         return 1
 
