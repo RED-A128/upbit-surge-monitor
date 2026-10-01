@@ -1,0 +1,1191 @@
+name: Full KRW Historical Gap Recovery Dry-Run Clean V001
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: recover-history-gaps-test-clean-v001
+  cancel-in-progress: false
+
+jobs:
+  recover-history-gaps-test:
+    name: Full KRW Historical Gap Recovery Dry-Run Clean V001
+
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+
+    timeout-minutes: 180
+
+    defaults:
+      run:
+        shell: powershell
+
+    steps:
+
+      # ========================================================
+      # 1. Synchronize repository
+      # ========================================================
+
+      - name: Synchronize local repository
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "SYNCHRONIZE LOCAL REPOSITORY"
+          Write-Host "============================================================"
+
+          $repo = "${{ github.workspace }}"
+
+          Write-Host "Workspace : $repo"
+
+          Set-Location $repo
+
+          git fetch origin main
+
+          git checkout main
+
+          git pull --ff-only origin main
+
+          Write-Host ""
+          Write-Host "[PASS] Repository synchronized."
+
+
+      # ========================================================
+      # 2. Verify Python
+      # ========================================================
+
+      - name: Verify Python
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY PYTHON"
+          Write-Host "============================================================"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Python launcher 'py' is not available."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Python verified."
+
+
+      # ========================================================
+      # 3. Verify required source files
+      # ========================================================
+
+      - name: Verify required project files
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY REQUIRED PROJECT FILES"
+          Write-Host "============================================================"
+
+          $requiredFiles = @(
+              "recover_history_gaps.py"
+          )
+
+          foreach ($file in $requiredFiles) {
+
+              if (-not (Test-Path $file -PathType Leaf)) {
+                  throw "Required file missing: $file"
+              }
+
+              Write-Host "[PASS] $file"
+          }
+
+
+      # ========================================================
+      # 4. Verify OHLCV directories
+      # ========================================================
+
+      - name: Verify OHLCV directories
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY OHLCV DIRECTORIES"
+          Write-Host "============================================================"
+
+          $dirs = @(
+              "data/ohlcv/h1",
+              "data/ohlcv/h4",
+              "data/ohlcv/d1"
+          )
+
+          foreach ($dir in $dirs) {
+
+              if (-not (Test-Path $dir -PathType Container)) {
+                  throw "Required OHLCV directory missing: $dir"
+              }
+
+              Write-Host "[PASS] $dir"
+          }
+
+
+      # ========================================================
+      # 5. Verify full market file set
+      #
+      #    Expected:
+      #      h1 = 290
+      #      h4 = 290
+      #      d1 = 290
+      #      total = 870
+      # ========================================================
+
+      - name: Verify full 290 market OHLCV set
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY FULL 290 MARKET OHLCV SET"
+          Write-Host "============================================================"
+
+          $timeframes = @(
+              "h1",
+              "h4",
+              "d1"
+          )
+
+          $expectedMarkets = 290
+          $expectedJobs = 870
+
+          $total = 0
+
+          foreach ($tf in $timeframes) {
+
+              $files = @(
+                  Get-ChildItem `
+                      -Path "data/ohlcv/$tf" `
+                      -Filter "KRW-*.csv" `
+                      -File
+              )
+
+              $count = $files.Count
+
+              Write-Host "$tf markets : $count"
+
+              if ($count -ne $expectedMarkets) {
+                  throw "$tf expected $expectedMarkets KRW market files. Found: $count"
+              }
+
+              $total += $count
+          }
+
+          Write-Host ""
+          Write-Host "Total jobs : $total"
+
+          if ($total -ne $expectedJobs) {
+              throw "Expected $expectedJobs total OHLCV jobs. Found: $total"
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] 290 markets x 3 timeframes = 870 jobs verified."
+
+
+      # ========================================================
+      # 6. Record OHLCV SHA256 before DRY-RUN
+      #
+      #    Hash file is written outside data/
+      #    to avoid contaminating Git safety checks.
+      # ========================================================
+
+      - name: Record OHLCV SHA256 before dry-run
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "RECORD OHLCV SHA256 BEFORE DRY-RUN"
+          Write-Host "============================================================"
+
+          $hashFile = Join-Path $env:RUNNER_TEMP "recover_gap_ohlcv_before.json"
+
+          py -c @'
+          import hashlib
+          import json
+          from pathlib import Path
+          import os
+
+          root = Path("data/ohlcv")
+          output = Path(os.environ["RUNNER_TEMP"]) / "recover_gap_ohlcv_before.json"
+
+          timeframes = ("h1", "h4", "d1")
+
+          hashes = {}
+
+          def sha256_file(path):
+              digest = hashlib.sha256()
+
+              with path.open("rb") as handle:
+                  while True:
+                      chunk = handle.read(1024 * 1024)
+
+                      if not chunk:
+                          break
+
+                      digest.update(chunk)
+
+              return digest.hexdigest()
+
+          total = 0
+
+          for timeframe in timeframes:
+              directory = root / timeframe
+
+              files = sorted(directory.glob("KRW-*.csv"))
+
+              for path in files:
+                  key = f"{timeframe}/{path.name}"
+                  hashes[key] = sha256_file(path)
+                  total += 1
+
+                  if total == 1 or total % 100 == 0:
+                      print(f"SHA256 progress: {total}")
+
+          output.write_text(
+              json.dumps(
+                  hashes,
+                  indent=2,
+                  sort_keys=True,
+              ),
+              encoding="utf-8",
+          )
+
+          print(f"Recorded OHLCV files: {len(hashes)}")
+          print(f"Hash file: {output}")
+
+          if len(hashes) != 870:
+              raise SystemExit(
+                  f"Expected 870 OHLCV hashes. Found: {len(hashes)}"
+              )
+          '@
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Failed to record OHLCV SHA256."
+          }
+
+          if (-not (Test-Path $hashFile -PathType Leaf)) {
+              throw "OHLCV SHA256 file was not created."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] 870 OHLCV SHA256 values recorded."
+
+
+      # ========================================================
+      # 7. Inspect existing persistent checkpoint
+      #
+      #    IMPORTANT:
+      #    We do NOT delete the checkpoint.
+      #    Existing progress must survive reruns.
+      # ========================================================
+
+      - name: Inspect persistent recovery checkpoint
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "INSPECT PERSISTENT RECOVERY CHECKPOINT"
+          Write-Host "============================================================"
+
+          $checkpoint = "data/recovery/checkpoint/recover_history_gaps_checkpoint.json"
+
+          if (Test-Path $checkpoint -PathType Leaf) {
+
+              Write-Host "Checkpoint exists."
+              Write-Host "Path : $checkpoint"
+
+              py -c @'
+          import json
+          from pathlib import Path
+
+          path = Path(
+              "data/recovery/checkpoint/"
+              "recover_history_gaps_checkpoint.json"
+          )
+
+          data = json.loads(
+              path.read_text(encoding="utf-8")
+          )
+
+          completed = data.get(
+              "completed_jobs",
+              [],
+          )
+
+          if not isinstance(completed, list):
+              raise SystemExit(
+                  "completed_jobs is not a JSON list."
+              )
+
+          print(
+              f"Existing completed jobs: {len(completed)}"
+          )
+          print(
+              f"Checkpoint version: "
+              f"{data.get('version', '')}"
+          )
+          '@
+
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Existing checkpoint is invalid."
+              }
+
+          }
+          else {
+
+              Write-Host "Checkpoint does not exist yet."
+              Write-Host "First DRY-RUN will create it."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Checkpoint inspection completed."
+
+
+      # ========================================================
+      # 8. Run Historical Gap Recovery Clean V001
+      #
+      #    NO --reset-checkpoint
+      #
+      #    This is intentional.
+      #    Resume must remain active.
+      # ========================================================
+
+      - name: Run Full KRW Historical Gap Recovery Dry-Run Clean V001
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "RUN FULL KRW HISTORICAL GAP RECOVERY DRY-RUN CLEAN V001"
+          Write-Host "============================================================"
+
+          py recover_history_gaps.py
+
+          $exitCode = $LASTEXITCODE
+
+          if ($exitCode -ne 0) {
+              throw "recover_history_gaps.py failed with exit code $exitCode."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Historical Gap Recovery DRY-RUN completed."
+
+
+      # ========================================================
+      # 9. Verify checkpoint structure and 870 completed jobs
+      #
+      #    Python performs JSON validation.
+      #    Do NOT use PowerShell pipeline counting here.
+      # ========================================================
+
+      - name: Verify completed 870-job checkpoint
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY COMPLETED 870-JOB CHECKPOINT"
+          Write-Host "============================================================"
+
+          py -c @'
+          import json
+          from pathlib import Path
+
+          path = Path(
+              "data/recovery/checkpoint/"
+              "recover_history_gaps_checkpoint.json"
+          )
+
+          if not path.is_file():
+              raise SystemExit(
+                  f"Checkpoint missing: {path}"
+              )
+
+          data = json.loads(
+              path.read_text(encoding="utf-8")
+          )
+
+          completed = data.get(
+              "completed_jobs",
+              [],
+          )
+
+          if not isinstance(completed, list):
+              raise SystemExit(
+                  "completed_jobs must be a JSON list."
+              )
+
+          completed = [
+              str(value).strip()
+              for value in completed
+              if str(value).strip()
+          ]
+
+          unique_completed = set(completed)
+
+          print(
+              f"Completed jobs       : {len(completed)}"
+          )
+          print(
+              f"Unique completed jobs: {len(unique_completed)}"
+          )
+
+          if len(completed) != 870:
+              raise SystemExit(
+                  "Expected 870 completed checkpoint jobs. "
+                  f"Found: {len(completed)}"
+              )
+
+          if len(unique_completed) != 870:
+              raise SystemExit(
+                  "Checkpoint contains duplicate job keys. "
+                  f"Unique: {len(unique_completed)}"
+              )
+
+          expected_timeframes = {
+              "h1",
+              "h4",
+              "d1",
+          }
+
+          counts = {
+              "h1": 0,
+              "h4": 0,
+              "d1": 0,
+          }
+
+          for key in completed:
+
+              if "|" not in key:
+                  raise SystemExit(
+                      f"Invalid checkpoint key: {key}"
+                  )
+
+              timeframe, market = key.split(
+                  "|",
+                  1,
+              )
+
+              if timeframe not in expected_timeframes:
+                  raise SystemExit(
+                      f"Invalid timeframe in checkpoint: {key}"
+                  )
+
+              if not market.startswith("KRW-"):
+                  raise SystemExit(
+                      f"Invalid market in checkpoint: {key}"
+                  )
+
+              counts[timeframe] += 1
+
+          print(f"H1 jobs : {counts['h1']}")
+          print(f"H4 jobs : {counts['h4']}")
+          print(f"D1 jobs : {counts['d1']}")
+
+          for timeframe in (
+              "h1",
+              "h4",
+              "d1",
+          ):
+              if counts[timeframe] != 290:
+                  raise SystemExit(
+                      f"{timeframe} expected 290 completed jobs. "
+                      f"Found: {counts[timeframe]}"
+                  )
+
+          if data.get("dry_run_only") is not True:
+              raise SystemExit(
+                  "Checkpoint does not confirm dry_run_only=true."
+              )
+
+          print(
+              "[PASS] 870 completed checkpoint jobs verified."
+          )
+          '@
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Checkpoint verification failed."
+          }
+
+
+      # ========================================================
+      # 10. Verify generated DRY-RUN output files
+      # ========================================================
+
+      - name: Verify dry-run output files
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY DRY-RUN OUTPUT FILES"
+          Write-Host "============================================================"
+
+          $requiredFiles = @(
+              "data/recovery/reports/historical_gap_recovery_plan.csv",
+              "data/recovery/reports/historical_gap_recovery_summary.csv",
+              "data/recovery/reports/historical_gap_recovery_meta.json",
+              "data/recovery/checkpoint/recover_history_gaps_checkpoint.json"
+          )
+
+          foreach ($file in $requiredFiles) {
+
+              if (-not (Test-Path $file -PathType Leaf)) {
+                  throw "Required DRY-RUN output missing: $file"
+              }
+
+              $size = (Get-Item $file).Length
+
+              Write-Host "[PASS] $file ($size bytes)"
+
+              if ($size -le 0) {
+                  throw "DRY-RUN output file is empty: $file"
+              }
+          }
+
+
+      # ========================================================
+      # 11. Verify meta safety flags
+      # ========================================================
+
+      - name: Verify DRY-RUN safety flags
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY DRY-RUN SAFETY FLAGS"
+          Write-Host "============================================================"
+
+          py -c @'
+          import json
+          from pathlib import Path
+
+          path = Path(
+              "data/recovery/reports/"
+              "historical_gap_recovery_meta.json"
+          )
+
+          data = json.loads(
+              path.read_text(encoding="utf-8")
+          )
+
+          print(
+              f"Version        : {data.get('version')}"
+          )
+          print(
+              f"Mode           : {data.get('mode')}"
+          )
+          print(
+              f"Dry-run only   : {data.get('dry_run_only')}"
+          )
+          print(
+              f"Markets        : {data.get('markets')}"
+          )
+          print(
+              f"Jobs           : {data.get('jobs')}"
+          )
+          print(
+              f"Completed jobs : {data.get('completed_jobs')}"
+          )
+
+          if data.get("dry_run_only") is not True:
+              raise SystemExit(
+                  "dry_run_only is not true."
+              )
+
+          if data.get("mode") != "DRY-RUN":
+              raise SystemExit(
+                  "Execution mode is not DRY-RUN."
+              )
+
+          if data.get("markets") != 290:
+              raise SystemExit(
+                  "Expected 290 markets. "
+                  f"Found: {data.get('markets')}"
+              )
+
+          if data.get("jobs") != 870:
+              raise SystemExit(
+                  "Expected 870 jobs. "
+                  f"Found: {data.get('jobs')}"
+              )
+
+          if data.get("completed_jobs") != 870:
+              raise SystemExit(
+                  "Expected 870 completed jobs. "
+                  f"Found: {data.get('completed_jobs')}"
+              )
+
+          safety = data.get(
+              "safety",
+              {},
+          )
+
+          required_disabled = (
+              "ohlcv_write",
+              "ohlcv_delete",
+              "gap_repair",
+              "api_recovery",
+              "feature_build",
+              "256_detector",
+              "future_labels",
+              "prediction",
+              "trading",
+              "git_reset",
+              "git_clean",
+              "git_commit",
+              "git_push",
+          )
+
+          for key in required_disabled:
+
+              value = safety.get(key)
+
+              print(
+                  f"{key:16} : {value}"
+              )
+
+              if value != "DISABLED":
+                  raise SystemExit(
+                      f"Unsafe setting detected: "
+                      f"{key}={value}"
+                  )
+
+          print(
+              "[PASS] DRY-RUN safety flags verified."
+          )
+          '@
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "DRY-RUN safety verification failed."
+          }
+
+
+      # ========================================================
+      # 12. Verify summary has 870 jobs
+      # ========================================================
+
+      - name: Verify 870-job recovery summary
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY 870-JOB RECOVERY SUMMARY"
+          Write-Host "============================================================"
+
+          py -c @'
+          import csv
+          from collections import Counter
+          from pathlib import Path
+
+          path = Path(
+              "data/recovery/reports/"
+              "historical_gap_recovery_summary.csv"
+          )
+
+          with path.open(
+              "r",
+              encoding="utf-8-sig",
+              newline="",
+          ) as handle:
+              rows = list(
+                  csv.DictReader(handle)
+              )
+
+          print(f"Summary rows : {len(rows)}")
+
+          if len(rows) != 870:
+              raise SystemExit(
+                  "Expected 870 summary rows. "
+                  f"Found: {len(rows)}"
+              )
+
+          keys = set()
+          timeframe_counts = Counter()
+
+          for row in rows:
+
+              timeframe = (
+                  row.get("timeframe", "")
+                  .strip()
+                  .lower()
+              )
+
+              market = (
+                  row.get("market", "")
+                  .strip()
+                  .upper()
+              )
+
+              key = (
+                  timeframe,
+                  market,
+              )
+
+              if key in keys:
+                  raise SystemExit(
+                      f"Duplicate summary job: {key}"
+                  )
+
+              keys.add(key)
+
+              if timeframe not in {
+                  "h1",
+                  "h4",
+                  "d1",
+              }:
+                  raise SystemExit(
+                      f"Invalid timeframe: {timeframe}"
+                  )
+
+              if not market.startswith("KRW-"):
+                  raise SystemExit(
+                      f"Invalid market: {market}"
+                  )
+
+              timeframe_counts[timeframe] += 1
+
+          for timeframe in (
+              "h1",
+              "h4",
+              "d1",
+          ):
+              count = timeframe_counts[timeframe]
+
+              print(
+                  f"{timeframe} summary rows : {count}"
+              )
+
+              if count != 290:
+                  raise SystemExit(
+                      f"{timeframe} expected 290 rows. "
+                      f"Found: {count}"
+                  )
+
+          print(
+              "[PASS] 870 unique summary jobs verified."
+          )
+          '@
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Recovery summary verification failed."
+          }
+
+
+      # ========================================================
+      # 13. Resume test
+      #
+      #    Run the exact same command again.
+      #    All 870 jobs should already exist in checkpoint.
+      #
+      #    IMPORTANT:
+      #    Source data still must remain untouched.
+      # ========================================================
+
+      - name: Verify Resume behavior
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY RESUME BEHAVIOR"
+          Write-Host "============================================================"
+
+          $before = Get-Date
+
+          py recover_history_gaps.py
+
+          $exitCode = $LASTEXITCODE
+
+          $after = Get-Date
+
+          $elapsed = (
+              New-TimeSpan `
+                  -Start $before `
+                  -End $after
+          ).TotalSeconds
+
+          Write-Host ""
+          Write-Host "Resume execution seconds : $elapsed"
+
+          if ($exitCode -ne 0) {
+              throw "Resume execution failed with exit code $exitCode."
+          }
+
+          py -c @'
+          import json
+          from pathlib import Path
+
+          path = Path(
+              "data/recovery/checkpoint/"
+              "recover_history_gaps_checkpoint.json"
+          )
+
+          data = json.loads(
+              path.read_text(encoding="utf-8")
+          )
+
+          completed = data.get(
+              "completed_jobs",
+              [],
+          )
+
+          if not isinstance(completed, list):
+              raise SystemExit(
+                  "completed_jobs is not a list."
+              )
+
+          unique_completed = set(
+              str(value).strip()
+              for value in completed
+              if str(value).strip()
+          )
+
+          print(
+              f"Completed after resume: "
+              f"{len(unique_completed)}"
+          )
+
+          if len(unique_completed) != 870:
+              raise SystemExit(
+                  "Resume checkpoint expected 870 jobs. "
+                  f"Found: {len(unique_completed)}"
+              )
+
+          print(
+              "[PASS] Resume checkpoint preserved all 870 jobs."
+          )
+          '@
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Resume checkpoint verification failed."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Resume behavior verified."
+
+
+      # ========================================================
+      # 14. Verify OHLCV SHA256 after DRY-RUN
+      # ========================================================
+
+      - name: Verify all OHLCV files remained unchanged
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY OHLCV SHA256 AFTER DRY-RUN"
+          Write-Host "============================================================"
+
+          py -c @'
+          import hashlib
+          import json
+          from pathlib import Path
+          import os
+
+          before_path = (
+              Path(os.environ["RUNNER_TEMP"])
+              / "recover_gap_ohlcv_before.json"
+          )
+
+          before = json.loads(
+              before_path.read_text(
+                  encoding="utf-8"
+              )
+          )
+
+          root = Path("data/ohlcv")
+
+          def sha256_file(path):
+              digest = hashlib.sha256()
+
+              with path.open("rb") as handle:
+                  while True:
+                      chunk = handle.read(
+                          1024 * 1024
+                      )
+
+                      if not chunk:
+                          break
+
+                      digest.update(chunk)
+
+              return digest.hexdigest()
+
+          after = {}
+
+          for timeframe in (
+              "h1",
+              "h4",
+              "d1",
+          ):
+              directory = root / timeframe
+
+              for path in sorted(
+                  directory.glob("KRW-*.csv")
+              ):
+                  key = f"{timeframe}/{path.name}"
+                  after[key] = sha256_file(path)
+
+          print(
+              f"Before files : {len(before)}"
+          )
+          print(
+              f"After files  : {len(after)}"
+          )
+
+          if set(before) != set(after):
+
+              missing = sorted(
+                  set(before) - set(after)
+              )
+
+              added = sorted(
+                  set(after) - set(before)
+              )
+
+              if missing:
+                  print(
+                      "Missing files after DRY-RUN:"
+                  )
+
+                  for item in missing[:20]:
+                      print(f"  {item}")
+
+              if added:
+                  print(
+                      "New OHLCV files after DRY-RUN:"
+                  )
+
+                  for item in added[:20]:
+                      print(f"  {item}")
+
+              raise SystemExit(
+                  "OHLCV file set changed."
+              )
+
+          changed = [
+              key
+              for key in before
+              if before[key] != after[key]
+          ]
+
+          if changed:
+
+              print(
+                  "Changed OHLCV files:"
+              )
+
+              for key in changed[:20]:
+                  print(f"  {key}")
+
+              raise SystemExit(
+                  f"{len(changed)} OHLCV files changed."
+              )
+
+          if len(after) != 870:
+              raise SystemExit(
+                  "Expected 870 OHLCV files after DRY-RUN. "
+                  f"Found: {len(after)}"
+              )
+
+          print(
+              "[PASS] All 870 OHLCV SHA256 values unchanged."
+          )
+          '@
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "OHLCV integrity verification failed."
+          }
+
+
+      # ========================================================
+      # 15. Verify generated runtime data is ignored by Git
+      # ========================================================
+
+      - name: Verify generated recovery data remains ignored
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY GENERATED RECOVERY DATA IS GIT-IGNORED"
+          Write-Host "============================================================"
+
+          $paths = @(
+              "data/recovery/reports/historical_gap_recovery_plan.csv",
+              "data/recovery/reports/historical_gap_recovery_summary.csv",
+              "data/recovery/reports/historical_gap_recovery_meta.json",
+              "data/recovery/checkpoint/recover_history_gaps_checkpoint.json",
+              "data/recover_history_gaps_status.csv"
+          )
+
+          foreach ($path in $paths) {
+
+              if (-not (Test-Path $path)) {
+                  Write-Host "[INFO] Not currently present: $path"
+                  continue
+              }
+
+              git check-ignore -q -- $path
+
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Generated runtime file is NOT ignored by Git: $path"
+              }
+
+              Write-Host "[PASS] Ignored: $path"
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Generated recovery runtime data remains ignored."
+
+
+      # ========================================================
+      # 16. Final Git safety
+      #
+      #    Runtime files are ignored.
+      #    Source/repository files must not be modified.
+      # ========================================================
+
+      - name: Verify final Git safety
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "FINAL GIT SAFETY CHECK"
+          Write-Host "============================================================"
+
+          $changes = @(
+              git status `
+                  --short `
+                  --untracked-files=all
+          )
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "git status failed."
+          }
+
+          $visibleChanges = @(
+              $changes |
+              Where-Object {
+                  -not [string]::IsNullOrWhiteSpace($_)
+              }
+          )
+
+          if ($visibleChanges.Count -gt 0) {
+
+              Write-Host ""
+              Write-Host "Git-visible changes detected:"
+              Write-Host ""
+
+              foreach ($change in $visibleChanges) {
+                  Write-Host $change
+              }
+
+              Write-Host ""
+              Write-Host "[FAIL] DRY-RUN created or modified Git-visible files."
+              Write-Host ""
+              Write-Host "[SAFETY] Nothing was automatically deleted."
+              Write-Host "[SAFETY] git reset was NOT executed."
+              Write-Host "[SAFETY] git clean was NOT executed."
+
+              throw "Historical Gap Recovery DRY-RUN created unexpected Git-visible changes."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Git working tree remains clean."
+
+
+      # ========================================================
+      # 17. Final summary
+      # ========================================================
+
+      - name: Full Historical Gap Recovery test completed
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "FULL KRW HISTORICAL GAP RECOVERY TEST SUMMARY"
+          Write-Host "============================================================"
+          Write-Host "Project           : Upbit Surge Monitor"
+          Write-Host "Version           : Historical Gap Recovery Clean V001"
+          Write-Host "Execution mode    : DRY-RUN ONLY"
+          Write-Host "Markets           : 290 VERIFIED"
+          Write-Host "Timeframes        : 3 VERIFIED"
+          Write-Host "Jobs              : 870 VERIFIED"
+          Write-Host ""
+          Write-Host "Resume:"
+          Write-Host "  Checkpoint      : VERIFIED"
+          Write-Host "  Completed jobs  : 870 VERIFIED"
+          Write-Host "  Resume test     : VERIFIED"
+          Write-Host ""
+          Write-Host "Output:"
+          Write-Host "  Recovery plan   : VERIFIED"
+          Write-Host "  Summary         : VERIFIED"
+          Write-Host "  Meta            : VERIFIED"
+          Write-Host ""
+          Write-Host "Integrity:"
+          Write-Host "  OHLCV files     : UNCHANGED"
+          Write-Host "  OHLCV SHA256    : UNCHANGED"
+          Write-Host "  Runtime ignore  : VERIFIED"
+          Write-Host "  Git safety      : VERIFIED"
+          Write-Host ""
+          Write-Host "Safety:"
+          Write-Host "  OHLCV write     : DISABLED"
+          Write-Host "  OHLCV delete    : DISABLED"
+          Write-Host "  Gap repair      : DISABLED"
+          Write-Host "  API recovery    : DISABLED"
+          Write-Host "  Feature build   : DISABLED"
+          Write-Host "  256 Detector    : DISABLED"
+          Write-Host "  Future labels   : DISABLED"
+          Write-Host "  Prediction      : DISABLED"
+          Write-Host "  Trading         : DISABLED"
+          Write-Host "  Git reset       : DISABLED"
+          Write-Host "  Git clean       : DISABLED"
+          Write-Host "  Git commit      : DISABLED"
+          Write-Host "  Git push        : DISABLED"
+          Write-Host "============================================================"
+          Write-Host "[RESULT] FULL KRW HISTORICAL GAP RECOVERY DRY-RUN PASSED"
+          Write-Host "[PASS] 290 markets verified."
+          Write-Host "[PASS] 870 jobs verified."
+          Write-Host "[PASS] Resume/checkpoint behavior verified."
+          Write-Host "[PASS] Original OHLCV data remained unchanged."
+          Write-Host "[PASS] No historical data was repaired."
+          Write-Host "[NEXT] Review recovery candidate report."
+          Write-Host "============================================================"
+
+
+      # ========================================================
+      # 18. Complete job
+      # ========================================================
+
+      - name: Complete job
+        if: always()
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "HISTORICAL GAP RECOVERY CLEAN V001 JOB FINISHED"
+          Write-Host "============================================================"
