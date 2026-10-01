@@ -312,6 +312,8 @@ data/data_history_gap_report_status.csv
 
 data/validation/gap_report_ohlcv_*.sha256
 
+data/collector_status_clean_v002.csv
+
 # ============================================================
 # END
 # ============================================================
