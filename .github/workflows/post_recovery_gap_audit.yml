@@ -1,0 +1,1606 @@
+# ============================================================
+# Upbit Surge Monitor
+# post_recovery_gap_audit.yml
+# Clean V001
+#
+# Purpose:
+#
+#   Measure the result of the ACTUAL historical gap recovery.
+#
+# Flow:
+#
+#   1. Verify repository / Python / source files
+#   2. Verify 290 markets x 3 timeframes = 870 OHLCV files
+#   3. Verify current OHLCV structural integrity
+#   4. Preserve PRE-RECOVERY gap report
+#   5. Run data_history_gap_report.py again
+#   6. Read POST-RECOVERY gap report
+#   7. Compare BEFORE vs AFTER
+#   8. Calculate recovery effectiveness
+#   9. Verify OHLCV remained unchanged during this workflow
+#
+# IMPORTANT:
+#
+#   READ-ONLY OHLCV AUDIT
+#
+#   This workflow MUST NOT:
+#
+#     - run recover_history_gaps.py --repair
+#     - modify OHLCV
+#     - delete OHLCV
+#     - build features
+#     - run 256 detector
+#     - build future labels
+#     - run prediction
+#     - trade
+#     - git reset
+#     - git clean
+#     - git commit
+#     - git push
+#
+# ============================================================
+
+
+name: post_recovery_gap_audit.yml
+
+
+# ============================================================
+# TRIGGER
+# ============================================================
+
+on:
+  workflow_dispatch:
+
+
+# ============================================================
+# PERMISSIONS
+# ============================================================
+
+permissions:
+  contents: read
+
+
+# ============================================================
+# JOB
+# ============================================================
+
+jobs:
+
+  post-recovery-gap-audit:
+
+    name: post_recovery_gap_audit.yml
+
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+
+    timeout-minutes: 180
+
+
+    defaults:
+      run:
+        shell: powershell
+
+
+    steps:
+
+
+      # ======================================================
+      # STEP 1
+      # Synchronize repository
+      #
+      # No reset.
+      # No clean.
+      # ======================================================
+
+      - name: Synchronize local repository
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "SYNCHRONIZE LOCAL REPOSITORY"
+          Write-Host "============================================================"
+
+          Write-Host ""
+          Write-Host "Workspace:"
+          Write-Host $env:GITHUB_WORKSPACE
+
+          Write-Host ""
+          Write-Host "Branch:"
+
+          git branch --show-current
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Failed to determine Git branch."
+          }
+
+          Write-Host ""
+          Write-Host "Fetching origin/main..."
+
+          git fetch origin main
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "git fetch origin main failed."
+          }
+
+          Write-Host ""
+          Write-Host "Fast-forward merge..."
+
+          git merge --ff-only origin/main
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "git merge --ff-only origin/main failed."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Repository synchronized."
+          Write-Host "[SAFETY] git reset NOT executed."
+          Write-Host "[SAFETY] git clean NOT executed."
+
+
+      # ======================================================
+      # STEP 2
+      # Verify Python
+      # ======================================================
+
+      - name: Verify Python
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY PYTHON"
+          Write-Host "============================================================"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Python launcher 'py' is unavailable."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Python verified."
+
+
+      # ======================================================
+      # STEP 3
+      # Verify Python packages
+      # ======================================================
+
+      - name: Verify Python packages
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY PYTHON PACKAGES"
+          Write-Host "============================================================"
+
+          py -c "import pandas; print('pandas:', pandas.__version__)"
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "pandas validation failed."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Python packages verified."
+
+
+      # ======================================================
+      # STEP 4
+      # Verify required project files
+      # ======================================================
+
+      - name: Verify required project files
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY REQUIRED PROJECT FILES"
+          Write-Host "============================================================"
+
+          $required = @(
+              "data_history_gap_report.py",
+              "recover_history_gaps.py"
+          )
+
+          foreach ($file in $required) {
+
+              if (-not (
+                  Test-Path `
+                      $file `
+                      -PathType Leaf
+              )) {
+
+                  throw "Missing required file: $file"
+              }
+
+              Write-Host "[PASS] $file"
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Required source files verified."
+
+
+      # ======================================================
+      # STEP 5
+      # Verify OHLCV directories
+      # ======================================================
+
+      - name: Verify OHLCV directories
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY OHLCV DIRECTORIES"
+          Write-Host "============================================================"
+
+          $directories = @(
+              "data\ohlcv\h1",
+              "data\ohlcv\h4",
+              "data\ohlcv\d1"
+          )
+
+          foreach ($directory in $directories) {
+
+              if (-not (
+                  Test-Path `
+                      $directory `
+                      -PathType Container
+              )) {
+
+                  throw "Missing OHLCV directory: $directory"
+              }
+
+              Write-Host "[PASS] $directory"
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] OHLCV directories verified."
+
+
+      # ======================================================
+      # STEP 6
+      # Verify complete OHLCV universe
+      #
+      # Expected:
+      #
+      #   h1 = 290
+      #   h4 = 290
+      #   d1 = 290
+      #
+      #   Total = 870
+      # ======================================================
+
+      - name: Verify full 290 market OHLCV set
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY FULL 290 MARKET OHLCV SET"
+          Write-Host "============================================================"
+
+          $expectedMarkets = 290
+          $expectedTotal = 870
+
+          $timeframes = @(
+              "h1",
+              "h4",
+              "d1"
+          )
+
+          $marketSets = @{}
+          $total = 0
+
+          foreach ($timeframe in $timeframes) {
+
+              $directory = "data\ohlcv\$timeframe"
+
+              $files = @(
+                  Get-ChildItem `
+                      -Path $directory `
+                      -Filter "KRW-*.csv" `
+                      -File
+              )
+
+              $count = $files.Count
+
+              Write-Host ""
+              Write-Host "$timeframe : $count"
+
+              if ($count -ne $expectedMarkets) {
+
+                  throw (
+                      "Expected $expectedMarkets files for " +
+                      "$timeframe. Found: $count"
+                  )
+              }
+
+              $markets = @(
+                  $files |
+                  ForEach-Object {
+                      $_.BaseName
+                  } |
+                  Sort-Object -Unique
+              )
+
+              if ($markets.Count -ne $expectedMarkets) {
+
+                  throw (
+                      "Unique market count mismatch for " +
+                      "$timeframe."
+                  )
+              }
+
+              $marketSets[$timeframe] = $markets
+
+              $total += $count
+          }
+
+          if ($total -ne $expectedTotal) {
+
+              throw (
+                  "Expected 870 total OHLCV files. Found: " +
+                  "$total"
+              )
+          }
+
+          $base = $marketSets["h1"]
+
+          foreach ($timeframe in @("h4", "d1")) {
+
+              $difference = @(
+                  Compare-Object `
+                      -ReferenceObject $base `
+                      -DifferenceObject $marketSets[$timeframe]
+              )
+
+              if ($difference.Count -gt 0) {
+
+                  $difference |
+                      Format-Table -AutoSize
+
+                  throw (
+                      "Market universe mismatch: h1 vs " +
+                      "$timeframe"
+                  )
+              }
+          }
+
+          Write-Host ""
+          Write-Host "Markets     : 290"
+          Write-Host "Timeframes  : 3"
+          Write-Host "OHLCV files : 870"
+
+          Write-Host ""
+          Write-Host "[PASS] Complete OHLCV universe verified."
+
+
+      # ======================================================
+      # STEP 7
+      # Structural OHLCV validation BEFORE audit
+      # ======================================================
+
+      - name: Validate OHLCV structure before audit
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "VALIDATE OHLCV STRUCTURE BEFORE AUDIT"
+          Write-Host "============================================================"
+
+          $pythonCode = @'
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path("data/ohlcv")
+
+          files = sorted(
+              p
+              for p in root.glob("*/*.csv")
+              if p.name.startswith("KRW-")
+          )
+
+          if len(files) != 870:
+              raise RuntimeError(
+                  f"Expected 870 OHLCV files, "
+                  f"found {len(files)}"
+              )
+
+          checked = 0
+
+          for path in files:
+
+              df = pd.read_csv(path)
+
+              if df.empty:
+                  raise RuntimeError(
+                      f"Empty OHLCV file: {path}"
+                  )
+
+              column = "candle_date_time_utc"
+
+              if column not in df.columns:
+                  raise RuntimeError(
+                      f"Missing {column}: {path}"
+                  )
+
+              ts = pd.to_datetime(
+                  df[column],
+                  errors="coerce",
+                  utc=True,
+              )
+
+              if ts.isna().any():
+
+                  raise RuntimeError(
+                      f"Invalid UTC timestamp: {path}"
+                  )
+
+              duplicates = int(
+                  ts.duplicated().sum()
+              )
+
+              if duplicates != 0:
+
+                  raise RuntimeError(
+                      f"Duplicate timestamp: "
+                      f"{path}: {duplicates}"
+                  )
+
+              if not ts.is_monotonic_increasing:
+
+                  raise RuntimeError(
+                      f"Timestamp order invalid: {path}"
+                  )
+
+              checked += 1
+
+          print(f"OHLCV checked       : {checked}")
+          print("Duplicate timestamp : 0")
+          print("UTC timestamps      : VERIFIED")
+          print("Sort order          : VERIFIED")
+          '@
+
+          $tempPython = Join-Path `
+              $env:RUNNER_TEMP `
+              "post_recovery_validate_before.py"
+
+          $pythonCode |
+              Set-Content `
+                  -Path $tempPython `
+                  -Encoding UTF8
+
+          py $tempPython
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Pre-audit OHLCV validation failed."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] OHLCV structure verified."
+
+
+      # ======================================================
+      # STEP 8
+      # Record OHLCV SHA256 BEFORE post-recovery audit
+      #
+      # The audit itself is read-only.
+      #
+      # Therefore hashes MUST be identical afterward.
+      # ======================================================
+
+      - name: Record OHLCV SHA256 before audit
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "RECORD OHLCV SHA256 BEFORE AUDIT"
+          Write-Host "============================================================"
+
+          $manifest = Join-Path `
+              $env:RUNNER_TEMP `
+              "post_recovery_ohlcv_before.sha256"
+
+          $workspacePath = (
+              Resolve-Path $env:GITHUB_WORKSPACE
+          ).Path.TrimEnd('\')
+
+          $files = @(
+              Get-ChildItem `
+                  -Path "data\ohlcv" `
+                  -Filter "KRW-*.csv" `
+                  -File `
+                  -Recurse |
+              Sort-Object FullName
+          )
+
+          if ($files.Count -ne 870) {
+
+              throw (
+                  "Expected 870 OHLCV files. Found: " +
+                  "$($files.Count)"
+              )
+          }
+
+          $rows = @()
+
+          foreach ($file in $files) {
+
+              $relative = $file.FullName.Substring(
+                  $workspacePath.Length
+              ).TrimStart('\')
+
+              $hash = (
+                  Get-FileHash `
+                      -Path $file.FullName `
+                      -Algorithm SHA256
+              ).Hash
+
+              $rows += "$hash`t$relative"
+          }
+
+          $rows |
+              Set-Content `
+                  -Path $manifest `
+                  -Encoding UTF8
+
+          Write-Host ""
+          Write-Host "Files hashed : $($files.Count)"
+
+          Write-Host ""
+          Write-Host "[PASS] Pre-audit OHLCV SHA256 recorded."
+
+
+      # ======================================================
+      # STEP 9
+      # Preserve PRE-RECOVERY report
+      #
+      # Current report was generated before actual recovery.
+      #
+      # Copy it into RUNNER_TEMP before generating the new one.
+      #
+      # This does NOT modify OHLCV.
+      # ======================================================
+
+      - name: Preserve pre-recovery gap report
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "PRESERVE PRE-RECOVERY GAP REPORT"
+          Write-Host "============================================================"
+
+          $source = `
+              "data\reports\history_gap\data_history_gap_report.csv"
+
+          $backup = Join-Path `
+              $env:RUNNER_TEMP `
+              "pre_recovery_data_history_gap_report.csv"
+
+          if (-not (
+              Test-Path `
+                  $source `
+                  -PathType Leaf
+          )) {
+
+              throw (
+                  "Pre-recovery gap report not found: " +
+                  $source
+              )
+          }
+
+          $item = Get-Item $source
+
+          if ($item.Length -le 0) {
+
+              throw "Pre-recovery gap report is empty."
+          }
+
+          Copy-Item `
+              -Path $source `
+              -Destination $backup `
+              -Force
+
+          if (-not (
+              Test-Path `
+                  $backup `
+                  -PathType Leaf
+          )) {
+
+              throw "Failed to preserve pre-recovery report."
+          }
+
+          $sourceHash = (
+              Get-FileHash `
+                  -Path $source `
+                  -Algorithm SHA256
+          ).Hash
+
+          $backupHash = (
+              Get-FileHash `
+                  -Path $backup `
+                  -Algorithm SHA256
+          ).Hash
+
+          if ($sourceHash -ne $backupHash) {
+
+              throw (
+                  "Pre-recovery report backup SHA256 mismatch."
+              )
+          }
+
+          Write-Host ""
+          Write-Host "Source:"
+          Write-Host $source
+
+          Write-Host ""
+          Write-Host "Backup:"
+          Write-Host $backup
+
+          Write-Host ""
+          Write-Host "[PASS] Pre-recovery report preserved."
+
+
+      # ======================================================
+      # STEP 10
+      # Preserve PRE-RECOVERY summary when available
+      # ======================================================
+
+      - name: Preserve pre-recovery gap summary
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "PRESERVE PRE-RECOVERY GAP SUMMARY"
+          Write-Host "============================================================"
+
+          $source = `
+              "data\reports\history_gap\data_history_gap_summary.csv"
+
+          $backup = Join-Path `
+              $env:RUNNER_TEMP `
+              "pre_recovery_data_history_gap_summary.csv"
+
+          if (Test-Path $source -PathType Leaf) {
+
+              Copy-Item `
+                  -Path $source `
+                  -Destination $backup `
+                  -Force
+
+              Write-Host ""
+              Write-Host "[PASS] Pre-recovery summary preserved."
+          }
+          else {
+
+              Write-Host ""
+              Write-Host (
+                  "[INFO] Separate pre-recovery summary file " +
+                  "not found."
+              )
+
+              Write-Host (
+                  "[INFO] Main gap report remains the " +
+                  "authoritative comparison source."
+              )
+          }
+
+
+      # ======================================================
+      # STEP 11
+      # Remove ONLY gap-report checkpoint
+      #
+      # WHY:
+      #
+      # We need a fresh report calculated from the newly
+      # repaired OHLCV.
+      #
+      # We do NOT remove:
+      #
+      #   - OHLCV
+      #   - recovery checkpoint
+      #   - repair checkpoint
+      #   - classifier checkpoint
+      #
+      # Only the report-generation checkpoint is reset.
+      # ======================================================
+
+      - name: Reset gap report calculation checkpoint
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "RESET GAP REPORT CALCULATION CHECKPOINT"
+          Write-Host "============================================================"
+
+          $checkpoint = `
+              "data\validation\data_history_gap_report_checkpoint.json"
+
+          if (Test-Path $checkpoint -PathType Leaf) {
+
+              Remove-Item `
+                  -Path $checkpoint `
+                  -Force
+
+              Write-Host ""
+              Write-Host (
+                  "[RESET] Gap report calculation checkpoint " +
+                  "removed."
+              )
+          }
+          else {
+
+              Write-Host ""
+              Write-Host (
+                  "[INFO] Gap report calculation checkpoint " +
+                  "not present."
+              )
+          }
+
+          Write-Host ""
+          Write-Host "[SAFETY] OHLCV was NOT deleted."
+          Write-Host "[SAFETY] Recovery checkpoint was NOT deleted."
+          Write-Host "[SAFETY] Repair checkpoint was NOT deleted."
+
+
+      # ======================================================
+      # STEP 12
+      # Run fresh POST-RECOVERY gap report
+      #
+      # READ ONLY against OHLCV.
+      # ======================================================
+
+      - name: Run post-recovery gap report
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "RUN POST-RECOVERY GAP REPORT"
+          Write-Host "============================================================"
+
+          Write-Host ""
+          Write-Host "Command:"
+          Write-Host "py data_history_gap_report.py"
+
+          Write-Host ""
+          Write-Host "OHLCV write : DISABLED"
+          Write-Host "Gap repair  : DISABLED"
+
+          Write-Host ""
+
+          py data_history_gap_report.py
+
+          if ($LASTEXITCODE -ne 0) {
+
+              throw (
+                  "data_history_gap_report.py failed with " +
+                  "exit code $LASTEXITCODE."
+              )
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Post-recovery gap report generated."
+
+
+      # ======================================================
+      # STEP 13
+      # Verify POST-RECOVERY report exists
+      # ======================================================
+
+      - name: Verify post-recovery gap report
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY POST-RECOVERY GAP REPORT"
+          Write-Host "============================================================"
+
+          $report = `
+              "data\reports\history_gap\data_history_gap_report.csv"
+
+          if (-not (
+              Test-Path `
+                  $report `
+                  -PathType Leaf
+          )) {
+
+              throw (
+                  "Post-recovery gap report not found: " +
+                  $report
+              )
+          }
+
+          $item = Get-Item $report
+
+          if ($item.Length -le 0) {
+              throw "Post-recovery gap report is empty."
+          }
+
+          Write-Host ""
+          Write-Host "Report:"
+          Write-Host $report
+
+          Write-Host ""
+          Write-Host "Size:"
+          Write-Host "$($item.Length) bytes"
+
+          Write-Host ""
+          Write-Host "[PASS] Post-recovery report verified."
+
+
+      # ======================================================
+      # STEP 14
+      # Compare BEFORE vs AFTER
+      #
+      # The parser intentionally supports several likely
+      # column-name variants because the gap report schema
+      # may use slightly different names between Clean
+      # revisions.
+      #
+      # It NEVER invents missing values.
+      # ======================================================
+
+      - name: Compare pre and post recovery gap reports
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "COMPARE PRE VS POST RECOVERY GAP REPORTS"
+          Write-Host "============================================================"
+
+          $pythonCode = @'
+          from pathlib import Path
+          import json
+          import math
+          import pandas as pd
+
+          before_path = Path(
+              __import__("os").environ["RUNNER_TEMP"]
+          ) / "pre_recovery_data_history_gap_report.csv"
+
+          after_path = Path(
+              "data/reports/history_gap/"
+              "data_history_gap_report.csv"
+          )
+
+          if not before_path.exists():
+              raise RuntimeError(
+                  f"Before report missing: {before_path}"
+              )
+
+          if not after_path.exists():
+              raise RuntimeError(
+                  f"After report missing: {after_path}"
+              )
+
+          before = pd.read_csv(before_path)
+          after = pd.read_csv(after_path)
+
+          print("")
+          print("Before columns:")
+          print(list(before.columns))
+
+          print("")
+          print("After columns:")
+          print(list(after.columns))
+
+
+          def normalized_columns(df):
+
+              result = {}
+
+              for column in df.columns:
+
+                  key = (
+                      str(column)
+                      .strip()
+                      .lower()
+                      .replace(" ", "_")
+                      .replace("-", "_")
+                  )
+
+                  result[key] = column
+
+              return result
+
+
+          def find_column(df, candidates):
+
+              columns = normalized_columns(df)
+
+              for candidate in candidates:
+
+                  if candidate in columns:
+                      return columns[candidate]
+
+              return None
+
+
+          gap_candidates = [
+              "gap_events",
+              "gap_event_count",
+              "gap_count",
+              "gaps",
+              "total_gaps",
+          ]
+
+          missing_candidates = [
+              "missing_est",
+              "missing_estimate",
+              "missing_candles",
+              "missing_candle_count",
+              "estimated_missing",
+              "estimated_missing_candles",
+          ]
+
+
+          def safe_numeric_sum(df, column):
+
+              if column is None:
+                  return None
+
+              values = pd.to_numeric(
+                  df[column],
+                  errors="coerce",
+              )
+
+              if values.notna().sum() == 0:
+                  return None
+
+              return int(values.fillna(0).sum())
+
+
+          before_gap_column = find_column(
+              before,
+              gap_candidates,
+          )
+
+          after_gap_column = find_column(
+              after,
+              gap_candidates,
+          )
+
+          before_missing_column = find_column(
+              before,
+              missing_candidates,
+          )
+
+          after_missing_column = find_column(
+              after,
+              missing_candidates,
+          )
+
+
+          before_gap = safe_numeric_sum(
+              before,
+              before_gap_column,
+          )
+
+          after_gap = safe_numeric_sum(
+              after,
+              after_gap_column,
+          )
+
+          before_missing = safe_numeric_sum(
+              before,
+              before_missing_column,
+          )
+
+          after_missing = safe_numeric_sum(
+              after,
+              after_missing_column,
+          )
+
+
+          # --------------------------------------------------
+          # Fallback:
+          #
+          # If the report is event-detail based and therefore
+          # has no explicit gap-count column, each row is one
+          # gap event.
+          # --------------------------------------------------
+
+          if before_gap is None:
+              before_gap = int(len(before))
+
+          if after_gap is None:
+              after_gap = int(len(after))
+
+
+          gap_removed = before_gap - after_gap
+
+          gap_rate = (
+              (gap_removed / before_gap) * 100.0
+              if before_gap > 0
+              else 0.0
+          )
+
+
+          missing_removed = None
+          missing_rate = None
+
+          if (
+              before_missing is not None
+              and after_missing is not None
+          ):
+
+              missing_removed = (
+                  before_missing - after_missing
+              )
+
+              missing_rate = (
+                  (missing_removed / before_missing) * 100.0
+                  if before_missing > 0
+                  else 0.0
+              )
+
+
+          print("")
+          print("=" * 64)
+          print("POST-RECOVERY GAP AUDIT RESULT")
+          print("=" * 64)
+
+          print("")
+          print("BEFORE REPAIR")
+          print(f"  Gap events       : {before_gap}")
+
+          if before_missing is not None:
+              print(
+                  f"  Missing estimate : {before_missing}"
+              )
+          else:
+              print(
+                  "  Missing estimate : NOT AVAILABLE"
+              )
+
+          print("")
+          print("AFTER REPAIR")
+          print(f"  Gap events       : {after_gap}")
+
+          if after_missing is not None:
+              print(
+                  f"  Missing estimate : {after_missing}"
+              )
+          else:
+              print(
+                  "  Missing estimate : NOT AVAILABLE"
+              )
+
+          print("")
+          print("RECOVERY EFFECT")
+
+          print(
+              f"  Gap events removed : {gap_removed}"
+          )
+
+          print(
+              f"  Gap reduction rate : {gap_rate:.2f}%"
+          )
+
+          if missing_removed is not None:
+
+              print(
+                  f"  Missing reduced    : "
+                  f"{missing_removed}"
+              )
+
+              print(
+                  f"  Missing reduction  : "
+                  f"{missing_rate:.2f}%"
+              )
+
+          else:
+
+              print(
+                  "  Missing reduced    : "
+                  "NOT AVAILABLE"
+              )
+
+              print(
+                  "  Missing reduction  : "
+                  "NOT AVAILABLE"
+              )
+
+
+          if after_gap > before_gap:
+
+              print("")
+              print(
+                  "[WARNING] Post-recovery gap event count "
+                  "is larger than pre-recovery count."
+              )
+
+
+          result = {
+              "before_gap_events": before_gap,
+              "after_gap_events": after_gap,
+              "gap_events_removed": gap_removed,
+              "gap_reduction_rate_pct": round(
+                  gap_rate,
+                  6,
+              ),
+              "before_missing_estimate": before_missing,
+              "after_missing_estimate": after_missing,
+              "missing_reduced": missing_removed,
+              "missing_reduction_rate_pct": (
+                  round(missing_rate, 6)
+                  if missing_rate is not None
+                  else None
+              ),
+          }
+
+          output = Path(
+              "data/post_recovery_gap_audit_result.json"
+          )
+
+          output.parent.mkdir(
+              parents=True,
+              exist_ok=True,
+          )
+
+          output.write_text(
+              json.dumps(
+                  result,
+                  ensure_ascii=False,
+                  indent=2,
+              ),
+              encoding="utf-8",
+          )
+
+          print("")
+          print(f"Result JSON       : {output}")
+
+          print("")
+          print("[PASS] Before/After comparison completed.")
+          '@
+
+          $tempPython = Join-Path `
+              $env:RUNNER_TEMP `
+              "compare_post_recovery_gap.py"
+
+          $pythonCode |
+              Set-Content `
+                  -Path $tempPython `
+                  -Encoding UTF8
+
+          py $tempPython
+
+          if ($LASTEXITCODE -ne 0) {
+
+              throw (
+                  "Post-recovery comparison failed."
+              )
+          }
+
+
+      # ======================================================
+      # STEP 15
+      # Verify audit result JSON
+      # ======================================================
+
+      - name: Verify post-recovery audit result
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY POST-RECOVERY AUDIT RESULT"
+          Write-Host "============================================================"
+
+          $result = `
+              "data\post_recovery_gap_audit_result.json"
+
+          if (-not (
+              Test-Path `
+                  $result `
+                  -PathType Leaf
+          )) {
+
+              throw (
+                  "Post-recovery audit result missing."
+              )
+          }
+
+          $item = Get-Item $result
+
+          if ($item.Length -le 0) {
+
+              throw (
+                  "Post-recovery audit result is empty."
+              )
+          }
+
+          Write-Host ""
+          Write-Host "Result:"
+          Write-Host $result
+
+          Write-Host ""
+          Get-Content $result
+
+          Write-Host ""
+          Write-Host "[PASS] Audit result verified."
+
+
+      # ======================================================
+      # STEP 16
+      # Verify OHLCV SHA256 AFTER audit
+      #
+      # MUST be identical.
+      # ======================================================
+
+      - name: Verify OHLCV remained unchanged
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY OHLCV REMAINED UNCHANGED"
+          Write-Host "============================================================"
+
+          $manifest = Join-Path `
+              $env:RUNNER_TEMP `
+              "post_recovery_ohlcv_before.sha256"
+
+          if (-not (
+              Test-Path `
+                  $manifest `
+                  -PathType Leaf
+          )) {
+
+              throw "Pre-audit OHLCV manifest missing."
+          }
+
+          $workspacePath = (
+              Resolve-Path $env:GITHUB_WORKSPACE
+          ).Path.TrimEnd('\')
+
+          $before = @{}
+
+          foreach ($row in (
+              Get-Content $manifest
+          )) {
+
+              if ([string]::IsNullOrWhiteSpace($row)) {
+                  continue
+              }
+
+              $parts = $row -split "`t", 2
+
+              if ($parts.Count -ne 2) {
+                  throw "Invalid SHA256 manifest row."
+              }
+
+              $before[$parts[1]] = $parts[0]
+          }
+
+          $files = @(
+              Get-ChildItem `
+                  -Path "data\ohlcv" `
+                  -Filter "KRW-*.csv" `
+                  -File `
+                  -Recurse |
+              Sort-Object FullName
+          )
+
+          if ($files.Count -ne 870) {
+
+              throw (
+                  "Expected 870 OHLCV files after audit. " +
+                  "Found: $($files.Count)"
+              )
+          }
+
+          $checked = 0
+
+          foreach ($file in $files) {
+
+              $relative = $file.FullName.Substring(
+                  $workspacePath.Length
+              ).TrimStart('\')
+
+              if (-not $before.ContainsKey($relative)) {
+
+                  throw (
+                      "Unexpected OHLCV file after audit: " +
+                      $relative
+                  )
+              }
+
+              $actual = (
+                  Get-FileHash `
+                      -Path $file.FullName `
+                      -Algorithm SHA256
+              ).Hash
+
+              if ($actual -ne $before[$relative]) {
+
+                  throw (
+                      "OHLCV was modified during audit: " +
+                      $relative
+                  )
+              }
+
+              $checked += 1
+          }
+
+          if ($checked -ne 870) {
+
+              throw (
+                  "OHLCV verification count mismatch. " +
+                  "Verified: $checked"
+              )
+          }
+
+          Write-Host ""
+          Write-Host "OHLCV checked   : 870"
+          Write-Host "Modified files  : 0"
+
+          Write-Host ""
+          Write-Host "[PASS] OHLCV remained unchanged."
+
+
+      # ======================================================
+      # STEP 17
+      # Git safety
+      # ======================================================
+
+      - name: Final Git safety report
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "FINAL GIT SAFETY REPORT"
+          Write-Host "============================================================"
+
+          $status = @(
+              git status --short
+          )
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "git status failed."
+          }
+
+          Write-Host ""
+
+          if ($status.Count -eq 0) {
+
+              Write-Host "[PASS] Git working tree clean."
+          }
+          else {
+
+              Write-Host "Git-visible changes:"
+              Write-Host ""
+
+              foreach ($line in $status) {
+                  Write-Host $line
+              }
+
+              Write-Host ""
+              Write-Host (
+                  "[INFO] No automatic cleanup will be " +
+                  "performed."
+              )
+          }
+
+          Write-Host ""
+          Write-Host "[SAFETY] git reset  : DISABLED"
+          Write-Host "[SAFETY] git clean  : DISABLED"
+          Write-Host "[SAFETY] git commit : DISABLED"
+          Write-Host "[SAFETY] git push   : DISABLED"
+
+
+      # ======================================================
+      # STEP 18
+      # Final summary
+      # ======================================================
+
+      - name: post_recovery_gap_audit.yml completed
+
+        if: success()
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "[RESULT] post_recovery_gap_audit.yml PASSED"
+          Write-Host "============================================================"
+
+          Write-Host ""
+
+          $result = `
+              "data\post_recovery_gap_audit_result.json"
+
+          if (Test-Path $result -PathType Leaf) {
+
+              $json = Get-Content `
+                  $result `
+                  -Raw |
+                  ConvertFrom-Json
+
+              Write-Host "BEFORE REPAIR"
+              Write-Host (
+                  "  Gap events       : " +
+                  $json.before_gap_events
+              )
+
+              if (
+                  $null -ne
+                  $json.before_missing_estimate
+              ) {
+
+                  Write-Host (
+                      "  Missing estimate : " +
+                      $json.before_missing_estimate
+                  )
+              }
+              else {
+
+                  Write-Host (
+                      "  Missing estimate : NOT AVAILABLE"
+                  )
+              }
+
+              Write-Host ""
+              Write-Host "AFTER REPAIR"
+
+              Write-Host (
+                  "  Gap events       : " +
+                  $json.after_gap_events
+              )
+
+              if (
+                  $null -ne
+                  $json.after_missing_estimate
+              ) {
+
+                  Write-Host (
+                      "  Missing estimate : " +
+                      $json.after_missing_estimate
+                  )
+              }
+              else {
+
+                  Write-Host (
+                      "  Missing estimate : NOT AVAILABLE"
+                  )
+              }
+
+              Write-Host ""
+              Write-Host "RECOVERY RESULT"
+
+              Write-Host (
+                  "  Gap events removed : " +
+                  $json.gap_events_removed
+              )
+
+              Write-Host (
+                  "  Gap reduction rate : " +
+                  $json.gap_reduction_rate_pct +
+                  "%"
+              )
+
+              if (
+                  $null -ne
+                  $json.missing_reduced
+              ) {
+
+                  Write-Host (
+                      "  Missing reduced    : " +
+                      $json.missing_reduced
+                  )
+
+                  Write-Host (
+                      "  Missing reduction  : " +
+                      $json.missing_reduction_rate_pct +
+                      "%"
+                  )
+              }
+              else {
+
+                  Write-Host (
+                      "  Missing reduced    : NOT AVAILABLE"
+                  )
+              }
+          }
+
+          Write-Host ""
+          Write-Host "Integrity:"
+          Write-Host "  Markets          : 290 VERIFIED"
+          Write-Host "  Timeframes       : 3 VERIFIED"
+          Write-Host "  OHLCV files      : 870 VERIFIED"
+          Write-Host "  OHLCV modified   : 0"
+          Write-Host "  Duplicate time   : 0"
+          Write-Host "  Sort order       : VERIFIED"
+
+          Write-Host ""
+          Write-Host "Safety:"
+          Write-Host "  OHLCV write      : DISABLED"
+          Write-Host "  Gap repair       : DISABLED"
+          Write-Host "  Feature build    : DISABLED"
+          Write-Host "  256 Detector     : DISABLED"
+          Write-Host "  Future labels    : DISABLED"
+          Write-Host "  Prediction       : DISABLED"
+          Write-Host "  Trading          : DISABLED"
+          Write-Host "  Git reset        : DISABLED"
+          Write-Host "  Git clean        : DISABLED"
+          Write-Host "  Git commit       : DISABLED"
+          Write-Host "  Git push         : DISABLED"
+
+          Write-Host ""
+          Write-Host (
+              "[PASS] Post-recovery gap measurement " +
+              "completed."
+          )
+
+          Write-Host ""
+          Write-Host (
+              "[NEXT] Review remaining gaps and determine " +
+              "whether historical recovery can be closed."
+          )
+
+          Write-Host "============================================================"
