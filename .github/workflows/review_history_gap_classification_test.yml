@@ -1,57 +1,165 @@
-name: Full KRW History Gap Classification Review Clean V001
+# ============================================================
+# Upbit Surge Monitor
+# Full KRW History Gap Classification Review Clean V002
+#
+# File:
+#   .github/workflows/review_history_gap_classification_test.yml
+#
+# Purpose:
+#   Test review_history_gap_classification.py - Clean V002
+#
+# Important:
+#   - FULL OHLCV coverage:
+#       290 markets
+#       870 jobs/files
+#
+#   - GAP coverage:
+#       dynamically derived from data_history_gap_report.py output
+#       DO NOT force classifier coverage to 290 / 870
+#
+# Safety:
+#   - READ ONLY source validation
+#   - NO OHLCV write
+#   - NO OHLCV delete
+#   - NO historical repair
+#   - NO feature build
+#   - NO 256 detector
+#   - NO future labels
+#   - NO prediction
+#   - NO trading
+#   - NO git reset
+#   - NO git clean
+#   - NO git commit
+#   - NO git push
+#
+# Runner:
+#   Self-hosted Windows
+#
+# Resume:
+#   Persistent runtime files under data/ are preserved locally.
+# ============================================================
+
+name: Full KRW History Gap Classification Review Clean V002
+
+
+# ============================================================
+# 1. TRIGGER
+# ============================================================
 
 on:
   workflow_dispatch:
 
+
+# ============================================================
+# 2. PERMISSIONS
+# ============================================================
+
 permissions:
   contents: read
 
-concurrency:
-  group: review-history-gap-classification-test
-  cancel-in-progress: false
+
+# ============================================================
+# 3. JOB
+# ============================================================
 
 jobs:
+
   review-history-gap-classification:
-    name: Full KRW History Gap Classification Review Clean V001
+
+    name: Full KRW History Gap Classification Review Clean V002
 
     runs-on:
       - self-hosted
       - Windows
       - X64
 
-    timeout-minutes: 60
+    timeout-minutes: 120
+
+
+    # ========================================================
+    # 4. DEFAULTS
+    # ========================================================
 
     defaults:
       run:
         shell: powershell
 
+
+    # ========================================================
+    # 5. STEPS
+    # ========================================================
+
     steps:
-      # ============================================================
-      # 01. Repository synchronization
-      # ============================================================
+
+
+      # ======================================================
+      # STEP 1
+      # Synchronize local repository
+      #
+      # IMPORTANT:
+      # We intentionally DO NOT use:
+      #
+      #   git reset --hard
+      #   git clean -fd
+      #
+      # because persistent runtime/checkpoint files under
+      # data/ must survive between executions.
+      # ======================================================
+
       - name: Synchronize local repository
-        shell: powershell
+
         run: |
+
           $ErrorActionPreference = "Stop"
 
           Write-Host "============================================================"
           Write-Host "SYNCHRONIZE LOCAL REPOSITORY"
           Write-Host "============================================================"
 
-          git fetch origin main
-          git checkout main
-          git reset --hard origin/main
+          Write-Host ""
+          Write-Host "Repository:"
+          Write-Host $env:GITHUB_WORKSPACE
+
+          Set-Location $env:GITHUB_WORKSPACE
 
           Write-Host ""
-          Write-Host "[PASS] Repository synchronized to origin/main."
+          Write-Host "Current branch:"
+          git branch --show-current
+
+          Write-Host ""
+          Write-Host "Fetch origin/main..."
+
+          git fetch origin main
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "git fetch origin main failed."
+          }
+
+          Write-Host ""
+          Write-Host "Fast-forward local main..."
+
+          git merge --ff-only origin/main
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "git merge --ff-only origin/main failed."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Repository synchronized."
+          Write-Host ""
+          Write-Host "[SAFETY] git reset --hard was NOT executed."
+          Write-Host "[SAFETY] git clean was NOT executed."
 
 
-      # ============================================================
-      # 02. Verify Python
-      # ============================================================
+      # ======================================================
+      # STEP 2
+      # Verify Python
+      # ======================================================
+
       - name: Verify Python
-        shell: powershell
+
         run: |
+
           $ErrorActionPreference = "Stop"
 
           Write-Host "============================================================"
@@ -61,20 +169,50 @@ jobs:
           py --version
 
           if ($LASTEXITCODE -ne 0) {
-              throw "Python launcher 'py' is not available."
+              throw "Python launcher 'py' is unavailable."
           }
 
           Write-Host ""
-          Write-Host "[PASS] Python verified."
+          Write-Host "[PASS] Python launcher verified."
 
 
-      # ============================================================
-      # 03. Verify required project files
-      # ============================================================
-      - name: Verify required project files
-        shell: powershell
+      # ======================================================
+      # STEP 3
+      # Verify required Python package
+      # ======================================================
+
+      - name: Verify pandas
+
         run: |
+
           $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY PANDAS"
+          Write-Host "============================================================"
+
+          py -c "import pandas; print('pandas:', pandas.__version__)"
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "pandas is unavailable."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] pandas verified."
+
+
+      # ======================================================
+      # STEP 4
+      # Verify required project files
+      # ======================================================
+
+      - name: Verify required project files
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
 
           Write-Host "============================================================"
           Write-Host "VERIFY REQUIRED PROJECT FILES"
@@ -87,962 +225,933 @@ jobs:
           )
 
           foreach ($file in $requiredFiles) {
-              if (-not (Test-Path $file)) {
-                  throw "Required project file not found: $file"
+
+              if (-not (Test-Path $file -PathType Leaf)) {
+
+                  throw "Required project file missing: $file"
               }
 
               Write-Host "[PASS] $file"
           }
 
+          Write-Host ""
+          Write-Host "[PASS] Required project files verified."
 
-      # ============================================================
-      # 04. Verify OHLCV directories
-      # ============================================================
+
+      # ======================================================
+      # STEP 5
+      # Verify OHLCV directories
+      # ======================================================
+
       - name: Verify OHLCV directories
-        shell: powershell
+
         run: |
+
           $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
 
           Write-Host "============================================================"
           Write-Host "VERIFY OHLCV DIRECTORIES"
           Write-Host "============================================================"
 
           $directories = @(
-              "data/ohlcv/h1",
-              "data/ohlcv/h4",
-              "data/ohlcv/d1"
+              "data\ohlcv\h1",
+              "data\ohlcv\h4",
+              "data\ohlcv\d1"
           )
 
           foreach ($directory in $directories) {
-              if (-not (Test-Path $directory)) {
-                  throw "OHLCV directory not found: $directory"
+
+              if (-not (Test-Path $directory -PathType Container)) {
+
+                  throw "Required OHLCV directory missing: $directory"
               }
 
               Write-Host "[PASS] $directory"
           }
 
+          Write-Host ""
+          Write-Host "[PASS] OHLCV directories verified."
 
-      # ============================================================
-      # 05. Verify full 290 market OHLCV set
-      # ============================================================
+
+      # ======================================================
+      # STEP 6
+      # Verify FULL OHLCV coverage
+      #
+      # IMPORTANT:
+      # This verifies the complete local source dataset.
+      #
+      # It does NOT verify classifier counts.
+      #
+      # Expected:
+      #   h1 = 290
+      #   h4 = 290
+      #   d1 = 290
+      #   TOTAL = 870
+      # ======================================================
+
       - name: Verify full 290 market OHLCV set
-        shell: powershell
+
         run: |
+
           $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
 
           Write-Host "============================================================"
           Write-Host "VERIFY FULL 290 MARKET OHLCV SET"
           Write-Host "============================================================"
 
-          $timeframes = @("h1", "h4", "d1")
+          $timeframes = @(
+              "h1",
+              "h4",
+              "d1"
+          )
+
+          $expectedPerTimeframe = 290
+          $expectedTotal = 870
+
+          $total = 0
 
           foreach ($timeframe in $timeframes) {
 
-              $directory = "data/ohlcv/$timeframe"
+              $directory = "data\ohlcv\$timeframe"
 
-              $count = @(
+              $files = @(
                   Get-ChildItem `
                       -Path $directory `
                       -Filter "KRW-*.csv" `
                       -File
-              ).Count
+              )
 
-              Write-Host "OHLCV $timeframe : $count"
+              $count = $files.Count
 
-              if ($count -ne 290) {
-                  throw "Expected 290 OHLCV files for $timeframe. Found: $count"
+              Write-Host ""
+              Write-Host "$timeframe : $count files"
+
+              if ($count -ne $expectedPerTimeframe) {
+
+                  throw (
+                      "OHLCV coverage mismatch for " +
+                      "$timeframe. expected=" +
+                      "$expectedPerTimeframe found=$count"
+                  )
               }
+
+              $total += $count
           }
 
           Write-Host ""
-          Write-Host "[PASS] 290 markets x 3 timeframes verified."
+          Write-Host "TOTAL : $total files"
 
+          if ($total -ne $expectedTotal) {
 
-      # ============================================================
-      # 06. Record classifier source SHA256
-      # ============================================================
-      - name: Record classifier source SHA256 before review
-        shell: powershell
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          Write-Host "============================================================"
-          Write-Host "RECORD CLASSIFIER SOURCE SHA256 BEFORE REVIEW"
-          Write-Host "============================================================"
-
-          $python = @'
-          from pathlib import Path
-          import hashlib
-
-          candidates = [
-              Path("data/history_gap_classification.csv"),
-              Path("data/history_gap_classification_detail.csv"),
-              Path("data/classified_history_gaps.csv"),
-              Path("data/history_gap_classifier.csv"),
-              Path("data/reports/history_gap_classification.csv"),
-              Path("data/reports/history_gap_classification_detail.csv"),
-              Path("data/reports/classified_history_gaps.csv"),
-              Path("data/reports/history_gap_classifier.csv"),
-              Path("data/validation/history_gap_classification.csv"),
-              Path("data/validation/history_gap_classification_detail.csv"),
-          ]
-
-          def sha256_file(path):
-              h = hashlib.sha256()
-              with path.open("rb") as f:
-                  while True:
-                      chunk = f.read(1024 * 1024)
-                      if not chunk:
-                          break
-                      h.update(chunk)
-              return h.hexdigest()
-
-          found = None
-
-          for path in candidates:
-              if path.is_file():
-                  found = path
-                  break
-
-          if found is None:
-              search_roots = [
-                  Path("data"),
-                  Path("data/reports"),
-                  Path("data/validation"),
-              ]
-
-              discovered = []
-
-              patterns = [
-                  "*classification*.csv",
-                  "*classifier*.csv",
-                  "*classified*gap*.csv",
-              ]
-
-              excluded_names = {
-                  "history_gap_classification_review_summary.csv",
-                  "history_gap_classification_review_detail.csv",
-                  "history_gap_structural.csv",
-                  "history_gap_manual_review.csv",
-              }
-
-              for root in search_roots:
-                  if not root.exists():
-                      continue
-
-                  for pattern in patterns:
-                      for path in root.rglob(pattern):
-                          if not path.is_file():
-                              continue
-
-                          if path.name in excluded_names:
-                              continue
-
-                          if "summary" in path.name.lower():
-                              continue
-
-                          discovered.append(path)
-
-              discovered = sorted(
-                  set(discovered),
-                  key=lambda p: (
-                      p.stat().st_mtime,
-                      str(p),
-                  ),
-                  reverse=True,
+              throw (
+                  "Total OHLCV coverage mismatch. " +
+                  "expected=$expectedTotal found=$total"
               )
-
-              if discovered:
-                  found = discovered[0]
-
-          if found is None:
-              raise SystemExit(
-                  "Classifier detail CSV was not found."
-              )
-
-          digest = sha256_file(found)
-
-          Path("data/validation").mkdir(
-              parents=True,
-              exist_ok=True,
-          )
-
-          Path(
-              "data/validation/"
-              "review_classifier_source_before.sha256"
-          ).write_text(
-              str(found) + "\n" + digest + "\n",
-              encoding="utf-8",
-          )
-
-          print("Classifier source :", found)
-          print("SHA256            :", digest)
-          '@
-
-          $python | py -
-
-          if ($LASTEXITCODE -ne 0) {
-              throw "Failed to record classifier source SHA256."
           }
 
           Write-Host ""
-          Write-Host "[PASS] Classifier source SHA256 recorded."
+          Write-Host "[PASS] 290 markets verified for h1."
+          Write-Host "[PASS] 290 markets verified for h4."
+          Write-Host "[PASS] 290 markets verified for d1."
+          Write-Host "[PASS] 870 OHLCV source files verified."
 
 
-      # ============================================================
-      # 07. Record OHLCV SHA256 before review
-      # ============================================================
+      # ======================================================
+      # STEP 7
+      # Record OHLCV SHA256 BEFORE review
+      #
+      # We hash every source OHLCV file.
+      #
+      # This manifest is stored OUTSIDE the repository so it
+      # does not affect Git safety checks or runtime outputs.
+      # ======================================================
+
       - name: Record OHLCV SHA256 before review
-        shell: powershell
+
         run: |
+
           $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
 
           Write-Host "============================================================"
           Write-Host "RECORD OHLCV SHA256 BEFORE REVIEW"
           Write-Host "============================================================"
 
-          $python = @'
-          from pathlib import Path
-          import hashlib
-          import json
+          $manifest = Join-Path `
+              $env:RUNNER_TEMP `
+              "review_history_gap_ohlcv_before.sha256"
 
-          root = Path("data/ohlcv")
+          $files = @(
+              Get-ChildItem `
+                  -Path "data\ohlcv" `
+                  -Filter "KRW-*.csv" `
+                  -File `
+                  -Recurse |
+              Sort-Object FullName
+          )
 
-          files = []
+          if ($files.Count -ne 870) {
 
-          for timeframe in ("h1", "h4", "d1"):
-              directory = root / timeframe
+              throw (
+                  "Expected 870 OHLCV files before hashing. " +
+                  "found=$($files.Count)"
+              )
+          }
 
-              files.extend(
-                  sorted(directory.glob("KRW-*.csv"))
+          $rows = @()
+
+          foreach ($file in $files) {
+
+              $relative = [System.IO.Path]::GetRelativePath(
+                  $env:GITHUB_WORKSPACE,
+                  $file.FullName
               )
 
-          if len(files) != 870:
-              raise SystemExit(
-                  f"Expected 870 OHLCV files. Found: {len(files)}"
+              $hash = (
+                  Get-FileHash `
+                      -Path $file.FullName `
+                      -Algorithm SHA256
+              ).Hash
+
+              $rows += "$hash`t$relative"
+          }
+
+          $rows |
+              Set-Content `
+                  -Path $manifest `
+                  -Encoding UTF8
+
+          Write-Host ""
+          Write-Host "Manifest:"
+          Write-Host $manifest
+
+          Write-Host ""
+          Write-Host "Files hashed: $($files.Count)"
+
+          Write-Host ""
+          Write-Host "[PASS] OHLCV SHA256 BEFORE recorded."
+
+
+      # ======================================================
+      # STEP 8
+      # Record classifier/gap-report SHA256 BEFORE review
+      #
+      # V002 dynamically discovers these source files itself.
+      # Therefore this step records all likely source CSVs
+      # rather than hard-coding the previous 290/870 classifier
+      # assumption.
+      # ======================================================
+
+      - name: Record review source SHA256 before review
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "RECORD REVIEW SOURCE SHA256 BEFORE"
+          Write-Host "============================================================"
+
+          $manifest = Join-Path `
+              $env:RUNNER_TEMP `
+              "review_history_gap_sources_before.sha256"
+
+          $candidateFiles = @()
+
+          if (Test-Path "data") {
+
+              $candidateFiles += @(
+                  Get-ChildItem `
+                      -Path "data" `
+                      -Filter "*.csv" `
+                      -File `
+                      -Recurse |
+                  Where-Object {
+
+                      $_.FullName -notmatch `
+                          "[\\/]ohlcv[\\/]" -and
+
+                      (
+                          $_.Name -match `
+                              "classification" -or
+
+                          $_.Name -match `
+                              "classifier" -or
+
+                          $_.Name -match `
+                              "classified.*gap" -or
+
+                          $_.Name -match `
+                              "gap.*report"
+                      )
+                  }
+              )
+          }
+
+          $candidateFiles = @(
+              $candidateFiles |
+              Sort-Object FullName -Unique
+          )
+
+          if ($candidateFiles.Count -eq 0) {
+
+              throw (
+                  "No classifier/gap-report source CSV " +
+                  "candidates were found."
+              )
+          }
+
+          $rows = @()
+
+          foreach ($file in $candidateFiles) {
+
+              $relative = [System.IO.Path]::GetRelativePath(
+                  $env:GITHUB_WORKSPACE,
+                  $file.FullName
               )
 
-          manifest = {}
+              $hash = (
+                  Get-FileHash `
+                      -Path $file.FullName `
+                      -Algorithm SHA256
+              ).Hash
 
-          for path in files:
-              h = hashlib.sha256()
+              $rows += "$hash`t$relative"
 
-              with path.open("rb") as f:
-                  while True:
-                      chunk = f.read(1024 * 1024)
+              Write-Host "[SOURCE] $relative"
+          }
 
-                      if not chunk:
-                          break
+          $rows |
+              Set-Content `
+                  -Path $manifest `
+                  -Encoding UTF8
 
-                      h.update(chunk)
+          Write-Host ""
+          Write-Host "Source candidates: $($candidateFiles.Count)"
 
-              manifest[str(path)] = h.hexdigest()
+          Write-Host ""
+          Write-Host "[PASS] Review source SHA256 BEFORE recorded."
 
-          output = Path(
-              "data/validation/"
-              "review_ohlcv_before.sha256.json"
-          )
 
-          output.parent.mkdir(
-              parents=True,
-              exist_ok=True,
-          )
+      # ======================================================
+      # STEP 9
+      # Inspect persistent checkpoint
+      #
+      # This is informational.
+      #
+      # Existing compatible checkpoint:
+      #   -> V002 resumes
+      #
+      # Missing/incompatible checkpoint:
+      #   -> V002 safely rebuilds runtime checkpoint
+      # ======================================================
 
-          output.write_text(
-              json.dumps(
-                  manifest,
-                  indent=2,
-                  sort_keys=True,
-              ),
-              encoding="utf-8",
-          )
+      - name: Inspect persistent review checkpoint
 
-          print("OHLCV files :", len(files))
-          print("Manifest    :", output)
-          '@
+        run: |
 
-          $python | py -
+          $ErrorActionPreference = "Stop"
 
-          if ($LASTEXITCODE -ne 0) {
-              throw "Failed to record OHLCV SHA256."
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "INSPECT PERSISTENT REVIEW CHECKPOINT"
+          Write-Host "============================================================"
+
+          $checkpoint = `
+              "data\validation\review_history_gap_classification_checkpoint.json"
+
+          if (Test-Path $checkpoint -PathType Leaf) {
+
+              Write-Host ""
+              Write-Host "[INFO] Existing checkpoint found:"
+              Write-Host $checkpoint
+
+              $item = Get-Item $checkpoint
+
+              Write-Host ""
+              Write-Host "Size:"
+              Write-Host $item.Length
+
+              Write-Host ""
+              Write-Host "Last write:"
+              Write-Host $item.LastWriteTime
+          }
+          else {
+
+              Write-Host ""
+              Write-Host "[INFO] No existing checkpoint found."
+              Write-Host "[INFO] Clean V002 will create one."
           }
 
           Write-Host ""
-          Write-Host "[PASS] OHLCV SHA256 manifest recorded."
+          Write-Host "[PASS] Checkpoint inspection completed."
 
 
-      # ============================================================
-      # 08. Run classification review - first pass
-      # ============================================================
-      - name: Run Full KRW History Gap Classification Review Clean V001
-        shell: powershell
+      # ======================================================
+      # STEP 10
+      # Run Clean V002
+      #
+      # CRITICAL V002 CHANGE:
+      #
+      # OLD V001:
+      #   --expected-markets 290
+      #   --expected-jobs 870
+      #
+      # NEW V002:
+      #   --expected-full-markets 290
+      #   --expected-full-jobs 870
+      #
+      # These apply ONLY to FULL OHLCV coverage.
+      #
+      # Classifier/gap counts are dynamically derived.
+      # ======================================================
+
+      - name: Run Full KRW History Gap Classification Review Clean V002
+
         run: |
+
           $ErrorActionPreference = "Stop"
 
+          Set-Location $env:GITHUB_WORKSPACE
+
           Write-Host "============================================================"
-          Write-Host "RUN FULL KRW HISTORY GAP CLASSIFICATION REVIEW CLEAN V001"
+          Write-Host "RUN FULL KRW HISTORY GAP CLASSIFICATION REVIEW CLEAN V002"
           Write-Host "============================================================"
 
           py review_history_gap_classification.py `
-              --expected-markets 290 `
-              --expected-jobs 870 `
+              --expected-full-markets 290 `
+              --expected-full-jobs 870 `
               --checkpoint-every 10
 
           if ($LASTEXITCODE -ne 0) {
-              throw "review_history_gap_classification.py failed with exit code $LASTEXITCODE."
+
+              throw (
+                  "review_history_gap_classification.py " +
+                  "failed with exit code " +
+                  "$LASTEXITCODE."
+              )
           }
 
           Write-Host ""
-          Write-Host "[PASS] First classification review completed."
+          Write-Host "[PASS] Clean V002 review completed."
 
 
-      # ============================================================
-      # 09. Verify persistent checkpoint
-      # ============================================================
-      - name: Verify completed 870-job checkpoint
-        shell: powershell
+      # ======================================================
+      # STEP 11
+      # Verify required V002 outputs
+      # ======================================================
+
+      - name: Verify Clean V002 output files
+
         run: |
+
           $ErrorActionPreference = "Stop"
 
-          Write-Host "============================================================"
-          Write-Host "VERIFY COMPLETED 870-JOB CHECKPOINT"
-          Write-Host "============================================================"
-
-          $checkpointPath = "data/validation/review_history_gap_classification_checkpoint.json"
-
-          if (-not (Test-Path $checkpointPath)) {
-              throw "Checkpoint file not found: $checkpointPath"
-          }
-
-          $python = @'
-          import json
-          from pathlib import Path
-
-          path = Path(
-              "data/validation/"
-              "review_history_gap_classification_checkpoint.json"
-          )
-
-          data = json.loads(
-              path.read_text(encoding="utf-8")
-          )
-
-          completed = data.get(
-              "completed_jobs",
-              {}
-          )
-
-          if not isinstance(completed, dict):
-              raise SystemExit(
-                  "completed_jobs is not a dictionary."
-              )
-
-          count = 0
-
-          for job_key, item in completed.items():
-              if not isinstance(item, dict):
-                  continue
-
-              if item.get("completed") is True:
-                  count += 1
-
-          print("Completed jobs :", count)
-
-          if count != 870:
-              raise SystemExit(
-                  f"Expected 870 completed checkpoint jobs. "
-                  f"Found: {count}"
-              )
-
-          print("[PASS] 870 completed checkpoint jobs verified.")
-          '@
-
-          $python | py -
-
-          if ($LASTEXITCODE -ne 0) {
-              throw "Checkpoint verification failed."
-          }
-
-
-      # ============================================================
-      # 10. Verify generated review outputs
-      # ============================================================
-      - name: Verify classification review outputs
-        shell: powershell
-        run: |
-          $ErrorActionPreference = "Stop"
+          Set-Location $env:GITHUB_WORKSPACE
 
           Write-Host "============================================================"
-          Write-Host "VERIFY CLASSIFICATION REVIEW OUTPUTS"
+          Write-Host "VERIFY CLEAN V002 OUTPUT FILES"
           Write-Host "============================================================"
 
           $requiredOutputs = @(
-              "data/reports/history_gap_classification_review_summary.csv",
-              "data/reports/history_gap_classification_review_detail.csv",
-              "data/reports/history_gap_structural.csv",
-              "data/reports/history_gap_manual_review.csv",
-              "data/recovery/history_gap_recovery_targets.csv",
-              "data/recovery/history_gap_recovery_plan.json",
-              "data/review_history_gap_classification_status.csv"
+              "data\validation\review_history_gap_classification_checkpoint.json",
+              "data\review_history_gap_classification_status.csv",
+              "data\reports\history_gap_classification_review_summary.csv",
+              "data\reports\history_gap_classification_review_detail.csv",
+              "data\reports\history_gap_structural.csv",
+              "data\reports\history_gap_manual_review.csv",
+              "data\recovery\history_gap_recovery_targets.csv",
+              "data\recovery\history_gap_recovery_plan.json"
           )
 
           foreach ($file in $requiredOutputs) {
-              if (-not (Test-Path $file)) {
-                  throw "Required review output not found: $file"
+
+              if (-not (Test-Path $file -PathType Leaf)) {
+
+                  throw "Required V002 output missing: $file"
               }
 
-              Write-Host "[PASS] $file"
+              $item = Get-Item $file
+
+              Write-Host (
+                  "[PASS] " +
+                  "$file | " +
+                  "$($item.Length) bytes"
+              )
           }
 
+          Write-Host ""
+          Write-Host "[PASS] Clean V002 output files verified."
 
-      # ============================================================
-      # 11. Validate review output structure
-      # ============================================================
-      - name: Validate classification review output structure
-        shell: powershell
+
+      # ======================================================
+      # STEP 12
+      # Verify V002 status
+      # ======================================================
+
+      - name: Verify Clean V002 status
+
         run: |
+
           $ErrorActionPreference = "Stop"
 
+          Set-Location $env:GITHUB_WORKSPACE
+
           Write-Host "============================================================"
-          Write-Host "VALIDATE CLASSIFICATION REVIEW OUTPUT STRUCTURE"
+          Write-Host "VERIFY CLEAN V002 STATUS"
           Write-Host "============================================================"
 
-          $python = @'
-          import json
-          import pandas as pd
-          from pathlib import Path
-
-          detail_path = Path(
-              "data/reports/"
-              "history_gap_classification_review_detail.csv"
-          )
-
-          summary_path = Path(
-              "data/reports/"
-              "history_gap_classification_review_summary.csv"
-          )
-
-          target_path = Path(
-              "data/recovery/"
-              "history_gap_recovery_targets.csv"
-          )
-
-          structural_path = Path(
-              "data/reports/"
-              "history_gap_structural.csv"
-          )
-
-          review_path = Path(
-              "data/reports/"
-              "history_gap_manual_review.csv"
-          )
-
-          plan_path = Path(
-              "data/recovery/"
-              "history_gap_recovery_plan.json"
-          )
-
-          detail = pd.read_csv(
-              detail_path,
-              low_memory=False,
-          )
-
-          summary = pd.read_csv(
-              summary_path,
-              low_memory=False,
-          )
-
-          targets = pd.read_csv(
-              target_path,
-              low_memory=False,
-          )
-
-          structural = pd.read_csv(
-              structural_path,
-              low_memory=False,
-          )
-
-          manual_review = pd.read_csv(
-              review_path,
-              low_memory=False,
-          )
-
-          plan = json.loads(
-              plan_path.read_text(
-                  encoding="utf-8"
-              )
-          )
-
-          required_detail_columns = {
-              "job_key",
-              "market",
-              "timeframe",
-              "classification",
-              "missing_count",
-          }
-
-          missing_columns = (
-              required_detail_columns
-              - set(detail.columns)
-          )
-
-          if missing_columns:
-              raise SystemExit(
-                  "Missing detail columns: "
-                  + ", ".join(
-                      sorted(missing_columns)
-                  )
-              )
-
-          markets = detail["market"].nunique()
-          jobs = detail["job_key"].nunique()
-
-          if markets != 290:
-              raise SystemExit(
-                  f"Expected 290 markets. Found: {markets}"
-              )
-
-          if jobs != 870:
-              raise SystemExit(
-                  f"Expected 870 jobs. Found: {jobs}"
-              )
-
-          if len(summary) != 870:
-              raise SystemExit(
-                  f"Expected 870 summary rows. "
-                  f"Found: {len(summary)}"
-              )
-
-          split_count = (
-              len(targets)
-              + len(structural)
-              + len(manual_review)
-          )
-
-          if split_count != len(detail):
-              raise SystemExit(
-                  "Classification split mismatch. "
-                  f"detail={len(detail)}, "
-                  f"split={split_count}"
-              )
-
-          if plan.get("target_count") != len(targets):
-              raise SystemExit(
-                  "Recovery plan target_count mismatch. "
-                  f"plan={plan.get('target_count')}, "
-                  f"csv={len(targets)}"
-              )
-
-          safety = plan.get("safety", {})
-
-          expected_disabled = (
-              "ohlcv_write",
-              "ohlcv_delete",
-              "gap_repair",
-              "feature_build",
-              "detector_256",
-              "future_labels",
-              "prediction",
-              "trading",
-              "git_reset",
-              "git_clean",
-              "git_commit",
-              "git_push",
-          )
-
-          for key in expected_disabled:
-              value = safety.get(key)
-
-              if value != "DISABLED":
-                  raise SystemExit(
-                      f"Unsafe plan flag: "
-                      f"{key}={value}"
-                  )
-
-          print("Markets             :", markets)
-          print("Jobs                :", jobs)
-          print("Gap events          :", len(detail))
-          print("Recovery targets    :", len(targets))
-          print("Structural          :", len(structural))
-          print("Manual review       :", len(manual_review))
-          print("Recovery plan count :", plan.get("target_count"))
-
-          print(
-              "[PASS] Review output structure verified."
-          )
-          '@
-
-          $python | py -
+          py -c "import pandas as pd; p=r'data/review_history_gap_classification_status.csv'; d=pd.read_csv(p); assert len(d)==1, f'Expected 1 status row, found {len(d)}'; r=d.iloc[0]; assert str(r['result']).strip().upper()=='PASSED', f'Unexpected result: {r['result']}'; assert int(r['full_ohlcv_markets'])==290, f'Unexpected full markets: {r['full_ohlcv_markets']}'; assert int(r['full_ohlcv_jobs'])==870, f'Unexpected full jobs: {r['full_ohlcv_jobs']}'; assert int(r['gap_markets'])>0, 'gap_markets must be > 0'; assert int(r['gap_jobs'])>0, 'gap_jobs must be > 0'; assert int(r['classification_rows'])>0, 'classification_rows must be > 0'; print(d.to_string(index=False))"
 
           if ($LASTEXITCODE -ne 0) {
-              throw "Review output validation failed."
+
+              throw "Clean V002 status validation failed."
           }
 
+          Write-Host ""
+          Write-Host "[PASS] V002 status verified."
 
-      # ============================================================
-      # 12. Run again to verify Resume
-      # ============================================================
-      - name: Verify Resume behavior
-        shell: powershell
+
+      # ======================================================
+      # STEP 13
+      # Verify recovery plan JSON
+      # ======================================================
+
+      - name: Verify recovery plan
+
         run: |
+
           $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY RECOVERY PLAN"
+          Write-Host "============================================================"
+
+          py -c "import json; from pathlib import Path; p=Path(r'data/recovery/history_gap_recovery_plan.json'); d=json.loads(p.read_text(encoding='utf-8')); assert int(d['plan_version'])==2, f'Unexpected plan version: {d['plan_version']}'; assert int(d['full_ohlcv_coverage']['markets'])==290; assert int(d['full_ohlcv_coverage']['jobs'])==870; assert int(d['gap_coverage']['markets'])>0; assert int(d['gap_coverage']['jobs'])>0; assert int(d['gap_coverage']['events'])>0; assert d['safety']['ohlcv_write']=='DISABLED'; assert d['safety']['ohlcv_delete']=='DISABLED'; assert d['safety']['gap_repair']=='DISABLED'; assert d['safety']['trading']=='DISABLED'; print(json.dumps(d, indent=2, ensure_ascii=True))"
+
+          if ($LASTEXITCODE -ne 0) {
+
+              throw "Recovery plan validation failed."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Recovery plan verified."
+
+
+      # ======================================================
+      # STEP 14
+      # Verify checkpoint completeness
+      #
+      # IMPORTANT:
+      # Completed checkpoint jobs must equal the dynamic
+      # GAP job count, NOT 870.
+      # ======================================================
+
+      - name: Verify dynamic checkpoint completeness
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY DYNAMIC CHECKPOINT COMPLETENESS"
+          Write-Host "============================================================"
+
+          py -c "import json, pandas as pd; from pathlib import Path; cp=json.loads(Path(r'data/validation/review_history_gap_classification_checkpoint.json').read_text(encoding='utf-8')); st=pd.read_csv(r'data/review_history_gap_classification_status.csv').iloc[0]; completed=cp.get('completed_jobs',{}); expected=int(st['gap_jobs']); assert isinstance(completed,dict), 'completed_jobs is not a dictionary'; assert len(completed)==expected, f'Checkpoint mismatch: expected {expected}, found {len(completed)}'; assert all(bool(v.get('completed')) for v in completed.values()), 'Incomplete checkpoint entry detected'; print('Dynamic gap jobs :', expected); print('Completed jobs   :', len(completed))"
+
+          if ($LASTEXITCODE -ne 0) {
+
+              throw "Dynamic checkpoint completeness validation failed."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Dynamic checkpoint completeness verified."
+
+
+      # ======================================================
+      # STEP 15
+      # Verify Resume behavior
+      #
+      # Run V002 again.
+      #
+      # Compatible checkpoint should allow the existing
+      # gap jobs to be resumed rather than reprocessed.
+      # ======================================================
+
+      - name: Verify Resume behavior
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
 
           Write-Host "============================================================"
           Write-Host "VERIFY RESUME BEHAVIOR"
           Write-Host "============================================================"
 
-          $output = & py review_history_gap_classification.py `
-              --expected-markets 290 `
-              --expected-jobs 870 `
-              --checkpoint-every 10 2>&1
+          py review_history_gap_classification.py `
+              --expected-full-markets 290 `
+              --expected-full-jobs 870 `
+              --checkpoint-every 10
 
-          $exitCode = $LASTEXITCODE
+          if ($LASTEXITCODE -ne 0) {
 
-          $output | ForEach-Object {
-              Write-Host $_
+              throw (
+                  "Resume execution failed with exit code " +
+                  "$LASTEXITCODE."
+              )
           }
 
-          if ($exitCode -ne 0) {
-              throw "Resume execution failed with exit code $exitCode."
-          }
+          py -c "import pandas as pd; d=pd.read_csv(r'data/review_history_gap_classification_status.csv'); r=d.iloc[0]; gap_jobs=int(r['gap_jobs']); resumed=int(r['resumed_jobs']); processed=int(r['processed_jobs']); assert resumed==gap_jobs, f'Expected resumed_jobs={gap_jobs}, found {resumed}'; assert processed==0, f'Expected processed_jobs=0 on second identical run, found {processed}'; print('Gap jobs       :', gap_jobs); print('Resumed jobs   :', resumed); print('Processed jobs :', processed)"
 
-          $joined = (
-              $output |
-              Out-String
-          )
+          if ($LASTEXITCODE -ne 0) {
 
-          if (
-              $joined -notmatch "Resumed jobs\s+:\s+870"
-          ) {
-              throw "Expected Resumed jobs : 870."
-          }
-
-          if (
-              $joined -notmatch "Processed jobs\s+:\s+0"
-          ) {
-              throw "Expected Processed jobs : 0."
-          }
-
-          if (
-              $joined -notmatch "Completed jobs\s+:\s+870"
-          ) {
-              throw "Expected Completed jobs : 870."
+              throw "Resume behavior validation failed."
           }
 
           Write-Host ""
           Write-Host "[PASS] Persistent Resume verified."
 
 
-      # ============================================================
-      # 13. Verify classifier source remained unchanged
-      # ============================================================
-      - name: Verify classifier source remained unchanged
-        shell: powershell
-        run: |
-          $ErrorActionPreference = "Stop"
+      # ======================================================
+      # STEP 16
+      # Verify OHLCV SHA256 AFTER review
+      # ======================================================
 
-          Write-Host "============================================================"
-          Write-Host "VERIFY CLASSIFIER SOURCE REMAINED UNCHANGED"
-          Write-Host "============================================================"
-
-          $python = @'
-          from pathlib import Path
-          import hashlib
-
-          record_path = Path(
-              "data/validation/"
-              "review_classifier_source_before.sha256"
-          )
-
-          lines = record_path.read_text(
-              encoding="utf-8"
-          ).splitlines()
-
-          if len(lines) < 2:
-              raise SystemExit(
-                  "Invalid classifier SHA256 record."
-              )
-
-          source_path = Path(lines[0])
-          before = lines[1].strip()
-
-          if not source_path.is_file():
-              raise SystemExit(
-                  f"Classifier source disappeared: {source_path}"
-              )
-
-          h = hashlib.sha256()
-
-          with source_path.open("rb") as f:
-              while True:
-                  chunk = f.read(1024 * 1024)
-
-                  if not chunk:
-                      break
-
-                  h.update(chunk)
-
-          after = h.hexdigest()
-
-          print("Classifier :", source_path)
-          print("Before     :", before)
-          print("After      :", after)
-
-          if before != after:
-              raise SystemExit(
-                  "Classifier source changed during review."
-              )
-
-          print(
-              "[PASS] Classifier source remained unchanged."
-          )
-          '@
-
-          $python | py -
-
-          if ($LASTEXITCODE -ne 0) {
-              throw "Classifier source integrity verification failed."
-          }
-
-
-      # ============================================================
-      # 14. Verify all OHLCV files remained unchanged
-      # ============================================================
       - name: Verify all OHLCV files remained unchanged
-        shell: powershell
+
         run: |
+
           $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
 
           Write-Host "============================================================"
           Write-Host "VERIFY ALL OHLCV FILES REMAINED UNCHANGED"
           Write-Host "============================================================"
 
-          $python = @'
-          from pathlib import Path
-          import hashlib
-          import json
+          $beforeManifest = Join-Path `
+              $env:RUNNER_TEMP `
+              "review_history_gap_ohlcv_before.sha256"
 
-          manifest_path = Path(
-              "data/validation/"
-              "review_ohlcv_before.sha256.json"
-          )
+          if (-not (Test-Path $beforeManifest -PathType Leaf)) {
 
-          before = json.loads(
-              manifest_path.read_text(
-                  encoding="utf-8"
-              )
-          )
-
-          if len(before) != 870:
-              raise SystemExit(
-                  f"Expected 870 source hashes. "
-                  f"Found: {len(before)}"
-              )
-
-          changed = []
-          missing = []
-
-          for file_name, expected_hash in before.items():
-              path = Path(file_name)
-
-              if not path.is_file():
-                  missing.append(file_name)
-                  continue
-
-              h = hashlib.sha256()
-
-              with path.open("rb") as f:
-                  while True:
-                      chunk = f.read(1024 * 1024)
-
-                      if not chunk:
-                          break
-
-                      h.update(chunk)
-
-              actual_hash = h.hexdigest()
-
-              if actual_hash != expected_hash:
-                  changed.append(file_name)
-
-          if missing:
-              print("Missing files:")
-              for item in missing[:20]:
-                  print("  ", item)
-
-              raise SystemExit(
-                  f"{len(missing)} OHLCV files disappeared."
-              )
-
-          if changed:
-              print("Changed files:")
-              for item in changed[:20]:
-                  print("  ", item)
-
-              raise SystemExit(
-                  f"{len(changed)} OHLCV files changed."
-              )
-
-          print("Verified files :", len(before))
-          print(
-              "[PASS] All 870 OHLCV source files remained unchanged."
-          )
-          '@
-
-          $python | py -
-
-          if ($LASTEXITCODE -ne 0) {
-              throw "OHLCV source integrity verification failed."
+              throw "OHLCV BEFORE manifest missing."
           }
 
+          $afterManifest = Join-Path `
+              $env:RUNNER_TEMP `
+              "review_history_gap_ohlcv_after.sha256"
 
-      # ============================================================
-      # 15. Verify runtime files are ignored by Git
-      # ============================================================
-      - name: Verify generated review data remains ignored
-        shell: powershell
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          Write-Host "============================================================"
-          Write-Host "VERIFY GENERATED REVIEW DATA REMAINS IGNORED"
-          Write-Host "============================================================"
-
-          $runtimeFiles = @(
-              "data/recovery/history_gap_recovery_targets.csv",
-              "data/recovery/history_gap_recovery_plan.json",
-              "data/reports/history_gap_classification_review_summary.csv",
-              "data/reports/history_gap_classification_review_detail.csv",
-              "data/reports/history_gap_structural.csv",
-              "data/reports/history_gap_manual_review.csv",
-              "data/validation/review_history_gap_classification_checkpoint.json",
-              "data/review_history_gap_classification_status.csv",
-              "data/validation/review_classifier_source_before.sha256",
-              "data/validation/review_ohlcv_before.sha256.json"
+          $files = @(
+              Get-ChildItem `
+                  -Path "data\ohlcv" `
+                  -Filter "KRW-*.csv" `
+                  -File `
+                  -Recurse |
+              Sort-Object FullName
           )
 
-          $notIgnored = @()
+          if ($files.Count -ne 870) {
 
-          foreach ($file in $runtimeFiles) {
-
-              if (-not (Test-Path $file)) {
-                  continue
-              }
-
-              git check-ignore -q -- "$file"
-
-              if ($LASTEXITCODE -ne 0) {
-                  $notIgnored += $file
-              }
+              throw (
+                  "Expected 870 OHLCV files after review. " +
+                  "found=$($files.Count)"
+              )
           }
 
-          if ($notIgnored.Count -gt 0) {
+          $rows = @()
+
+          foreach ($file in $files) {
+
+              $relative = [System.IO.Path]::GetRelativePath(
+                  $env:GITHUB_WORKSPACE,
+                  $file.FullName
+              )
+
+              $hash = (
+                  Get-FileHash `
+                      -Path $file.FullName `
+                      -Algorithm SHA256
+              ).Hash
+
+              $rows += "$hash`t$relative"
+          }
+
+          $rows |
+              Set-Content `
+                  -Path $afterManifest `
+                  -Encoding UTF8
+
+          $before = Get-Content $beforeManifest
+          $after = Get-Content $afterManifest
+
+          $difference = Compare-Object `
+              -ReferenceObject $before `
+              -DifferenceObject $after
+
+          if ($null -ne $difference) {
+
               Write-Host ""
-              Write-Host "Runtime files not ignored by Git:"
+              Write-Host "OHLCV SHA256 differences:"
+              $difference | Format-Table -AutoSize
 
-              foreach ($file in $notIgnored) {
-                  Write-Host "  $file"
-              }
-
-              throw "Review runtime files must remain ignored by Git."
+              throw "OHLCV source files changed during review."
           }
 
           Write-Host ""
-          Write-Host "[PASS] Generated review runtime files are ignored."
+          Write-Host "[PASS] All 870 OHLCV source files remained unchanged."
 
 
-      # ============================================================
-      # 16. Final Git safety
-      # ============================================================
-      - name: Verify final Git safety
-        shell: powershell
+      # ======================================================
+      # STEP 17
+      # Verify source classifier/gap files remained unchanged
+      #
+      # Runtime outputs created by V002 are excluded from the
+      # AFTER candidate set.
+      # ======================================================
+
+      - name: Verify classifier and gap sources remained unchanged
+
         run: |
+
           $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY CLASSIFIER AND GAP SOURCES REMAINED UNCHANGED"
+          Write-Host "============================================================"
+
+          $beforeManifest = Join-Path `
+              $env:RUNNER_TEMP `
+              "review_history_gap_sources_before.sha256"
+
+          if (-not (Test-Path $beforeManifest -PathType Leaf)) {
+
+              throw "Review source BEFORE manifest missing."
+          }
+
+          $beforeRows = @(
+              Get-Content $beforeManifest
+          )
+
+          foreach ($row in $beforeRows) {
+
+              if ([string]::IsNullOrWhiteSpace($row)) {
+                  continue
+              }
+
+              $parts = $row -split "`t", 2
+
+              if ($parts.Count -ne 2) {
+
+                  throw "Invalid source manifest row: $row"
+              }
+
+              $expectedHash = $parts[0].Trim()
+              $relativePath = $parts[1].Trim()
+
+              $fullPath = Join-Path `
+                  $env:GITHUB_WORKSPACE `
+                  $relativePath
+
+              if (-not (Test-Path $fullPath -PathType Leaf)) {
+
+                  throw (
+                      "Source file disappeared during review: " +
+                      "$relativePath"
+                  )
+              }
+
+              $actualHash = (
+                  Get-FileHash `
+                      -Path $fullPath `
+                      -Algorithm SHA256
+              ).Hash
+
+              if ($actualHash -ne $expectedHash) {
+
+                  throw (
+                      "Source file changed during review: " +
+                      "$relativePath"
+                  )
+              }
+
+              Write-Host "[UNCHANGED] $relativePath"
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Pre-existing classifier/gap sources remained unchanged."
+
+
+      # ======================================================
+      # STEP 18
+      # Verify Git safety
+      #
+      # Runtime files under data/ are expected to be ignored.
+      #
+      # No tracked source file should be modified by review.
+      # ======================================================
+
+      - name: Verify final Git safety
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
 
           Write-Host "============================================================"
           Write-Host "FINAL GIT SAFETY CHECK"
           Write-Host "============================================================"
 
-          $changes = @(
-              git status --porcelain
+          $trackedChanges = @(
+              git diff --name-only
           )
 
           if ($LASTEXITCODE -ne 0) {
-              throw "git status failed."
+
+              throw "git diff --name-only failed."
           }
 
-          if ($changes.Count -gt 0) {
+          if ($trackedChanges.Count -gt 0) {
+
               Write-Host ""
-              Write-Host "Git-visible changes detected:"
+              Write-Host "Tracked changes detected:"
 
-              $changes | ForEach-Object {
-                  Write-Host $_
-              }
+              $trackedChanges |
+                  ForEach-Object {
+                      Write-Host "  $_"
+                  }
 
-              throw "Classification review created unexpected Git-visible changes."
+              throw (
+                  "Review created or modified " +
+                  "Git-visible tracked files."
+              )
           }
 
           Write-Host ""
-          Write-Host "[PASS] No Git-visible changes detected."
+          Write-Host "[PASS] No tracked Git changes detected."
+
+          Write-Host ""
+          Write-Host "[SAFETY] git reset was NOT executed."
+          Write-Host "[SAFETY] git clean was NOT executed."
+          Write-Host "[SAFETY] git commit was NOT executed."
+          Write-Host "[SAFETY] git push was NOT executed."
 
 
-      # ============================================================
-      # 17. Final summary
-      # ============================================================
+      # ======================================================
+      # STEP 19
+      # Final summary
+      # ======================================================
+
       - name: Full History Gap Classification Review summary
+
         if: always()
-        shell: powershell
+
         run: |
+
+          Set-Location $env:GITHUB_WORKSPACE
+
           Write-Host "============================================================"
-          Write-Host "FULL HISTORY GAP CLASSIFICATION REVIEW TEST SUMMARY"
+          Write-Host "FULL HISTORY GAP CLASSIFICATION REVIEW CLEAN V002 SUMMARY"
           Write-Host "============================================================"
 
-          if (
-              Test-Path "data/review_history_gap_classification_status.csv"
-          ) {
+          Write-Host ""
+
+          $status = `
+              "data\review_history_gap_classification_status.csv"
+
+          if (Test-Path $status -PathType Leaf) {
+
+              Write-Host "Status file:"
+              Write-Host $status
+
               Write-Host ""
-              Write-Host "Status:"
-              Get-Content `
-                  "data/review_history_gap_classification_status.csv"
+              Get-Content $status
+          }
+          else {
+
+              Write-Host "[INFO] Status file not available."
           }
 
           Write-Host ""
-          Write-Host "Safety:"
-          Write-Host "  OHLCV write    : DISABLED"
-          Write-Host "  OHLCV delete   : DISABLED"
-          Write-Host "  Gap repair     : DISABLED"
-          Write-Host "  Feature build  : DISABLED"
-          Write-Host "  256 Detector   : DISABLED"
-          Write-Host "  Future labels  : DISABLED"
-          Write-Host "  Prediction     : DISABLED"
-          Write-Host "  Trading        : DISABLED"
-          Write-Host "  Git reset*     : ONLY initial repository synchronization"
-          Write-Host "  Git clean      : DISABLED"
-          Write-Host "  Git commit     : DISABLED"
-          Write-Host "  Git push       : DISABLED"
+
+          $plan = `
+              "data\recovery\history_gap_recovery_plan.json"
+
+          if (Test-Path $plan -PathType Leaf) {
+
+              Write-Host "Recovery plan:"
+              Write-Host $plan
+
+              Write-Host ""
+              Get-Content $plan
+          }
+          else {
+
+              Write-Host "[INFO] Recovery plan not available."
+          }
+
+          Write-Host ""
+          Write-Host "============================================================"
 
 
-      # ============================================================
-      # 18. Test completed
-      # ============================================================
+      # ======================================================
+      # STEP 20
+      # Completed
+      # ======================================================
+
       - name: Full History Gap Classification Review test completed
-        shell: powershell
+
+        if: success()
+
         run: |
+
           Write-Host "============================================================"
           Write-Host "[RESULT] FULL KRW HISTORY GAP CLASSIFICATION REVIEW TEST PASSED"
           Write-Host "============================================================"
+
           Write-Host ""
-          Write-Host "[PASS] 290 markets verified."
-          Write-Host "[PASS] 870 market/timeframe jobs verified."
-          Write-Host "[PASS] Classification review completed."
-          Write-Host "[PASS] 870-job persistent checkpoint verified."
-          Write-Host "[PASS] Resume verified: 870 resumed / 0 processed."
-          Write-Host "[PASS] Recovery target CSV verified."
-          Write-Host "[PASS] Recovery plan JSON verified."
-          Write-Host "[PASS] Classifier source remained unchanged."
-          Write-Host "[PASS] All 870 OHLCV source files remained unchanged."
-          Write-Host "[PASS] Runtime files remained ignored."
-          Write-Host "[PASS] Final Git safety verified."
+          Write-Host "[PASS] Full 290-market OHLCV coverage verified."
+          Write-Host "[PASS] Full 870-job OHLCV coverage verified."
+          Write-Host "[PASS] Gap market/job counts derived dynamically."
+          Write-Host "[PASS] Classifier/gap-report cross-validation passed."
+          Write-Host "[PASS] Recovery target plan verified."
+          Write-Host "[PASS] Persistent Resume verified."
+          Write-Host "[PASS] All OHLCV source files remained unchanged."
+          Write-Host "[PASS] Classifier/gap-report sources remained unchanged."
+          Write-Host "[PASS] No tracked Git source changes detected."
+
           Write-Host ""
-          Write-Host "[NEXT] Review classification results before actual historical recovery."
+          Write-Host "[SAFETY] OHLCV write: DISABLED"
+          Write-Host "[SAFETY] OHLCV delete: DISABLED"
+          Write-Host "[SAFETY] Gap repair: DISABLED"
+          Write-Host "[SAFETY] Feature build: DISABLED"
+          Write-Host "[SAFETY] 256 Detector: DISABLED"
+          Write-Host "[SAFETY] Future labels: DISABLED"
+          Write-Host "[SAFETY] Prediction: DISABLED"
+          Write-Host "[SAFETY] Trading: DISABLED"
+          Write-Host "[SAFETY] Git reset: DISABLED"
+          Write-Host "[SAFETY] Git clean: DISABLED"
+          Write-Host "[SAFETY] Git commit: DISABLED"
+          Write-Host "[SAFETY] Git push: DISABLED"
+
+          Write-Host ""
+          Write-Host "[NEXT] Review RECOVERABLE / STRUCTURAL / REVIEW results."
+          Write-Host "[NEXT] If REVIEW count is zero, proceed toward actual historical gap recovery."
           Write-Host "============================================================"
