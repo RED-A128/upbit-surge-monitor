@@ -321,6 +321,11 @@ data/recover_history_gaps_status.csv
 data/reports/history_gap_classification/
 data/validation/classify_history_gaps_checkpoint.json
 
+# History Gap Classifier test runtime files
+data/validation/classifier_gap_report_before.sha256
+data/validation/classifier_gap_summary_before.sha256
+data/validation/classifier_ohlcv_before.sha256
+
 # ============================================================
 # END
 # ============================================================
