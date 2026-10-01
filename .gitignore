@@ -306,6 +306,10 @@ data/collector_status.csv
 data/data_history_audit_status.csv
 data/validation/data_history_audit_checkpoint.json
 
+data/reports/history_gap/
+data/validation/data_history_gap_report_checkpoint.json
+data/data_history_gap_report_status.csv
+
 # ============================================================
 # END
 # ============================================================
