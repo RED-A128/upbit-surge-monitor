@@ -310,6 +310,8 @@ data/reports/history_gap/
 data/validation/data_history_gap_report_checkpoint.json
 data/data_history_gap_report_status.csv
 
+data/validation/gap_report_ohlcv_*.sha256
+
 # ============================================================
 # END
 # ============================================================
