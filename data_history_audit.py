@@ -1,72 +1,62 @@
 """
-Upbit Surge Monitor
-OHLCV Data History + Gap Audit
-
-Version:
-    Clean V003
+Upbit Surge Monitor - Data History Audit Clean V003
+===================================================
 
 File:
     data_history_audit.py
 
 Purpose:
-    Validate the accumulated OHLCV history for all stored KRW markets
-    across h1 / h4 / d1 without modifying source OHLCV data.
+    Existing OHLCV history files are audited in READ ONLY mode.
 
-Clean V003 responsibilities:
-    - Audit all stored KRW market CSV files.
-    - Verify h1 / h4 / d1 market coverage.
-    - Measure row counts.
-    - Measure first / last candle timestamps.
-    - Measure actual history span.
-    - Measure latest-candle age.
-    - Detect invalid timestamps.
-    - Detect duplicate timestamps.
-    - Detect internal timestamp gaps.
-    - Estimate missing candle counts.
-    - Record first / last detected gap.
-    - Verify source SHA256 before and after audit.
-    - Support persistent checkpoint / resume.
-    - Produce persistent status CSV.
-    - Never modify OHLCV source files.
+    This program checks:
+
+    1. Full KRW market OHLCV files
+    2. h1 / h4 / d1 datasets
+    3. CSV readability
+    4. Required OHLCV columns
+    5. Timestamp validity
+    6. Timestamp ordering
+    7. Duplicate timestamps
+    8. Internal timestamp gaps
+    9. Estimated missing candles
+    10. Persistent checkpoint / Resume
+    11. Status CSV generation
+    12. Source SHA256 tracking
 
 Important:
-    - OHLCV source is READ ONLY.
-    - NEVER rewrites source OHLCV CSV files.
-    - NEVER deletes historical data.
-    - NEVER fills gaps automatically.
-    - NEVER runs Feature generation.
-    - NEVER runs 256 Detector.
-    - NEVER creates future labels.
-    - NEVER performs prediction.
-    - NEVER performs trading.
-    - NEVER executes git reset / git clean / git commit / git push.
+    This script DOES NOT repair historical data.
 
-Gap interpretation:
-    A timestamp gap is a research/audit finding.
-
-    It does NOT automatically prove Collector failure.
-
-    Some markets may legitimately have missing candles because an
-    exchange can omit intervals in which no candle was published.
-
-    Therefore Clean V003 records gaps accurately but does NOT
-    automatically repair them.
+    This script DOES NOT:
+        - download candles
+        - rewrite OHLCV
+        - delete OHLCV
+        - fill gaps
+        - build features
+        - run detector
+        - create future labels
+        - predict prices
+        - trade
+        - run git reset
+        - run git clean
+        - run git commit
+        - run git push
 
 Resume:
-    Runtime checkpoint:
+    Successfully audited jobs are stored in:
+
         data/validation/data_history_audit_checkpoint.json
 
-    Runtime status:
-        data/data_history_audit_status.csv
+    If the same source file is seen again with the same SHA256,
+    the completed result is reused instead of auditing the file again.
 
-    A completed file is reused only when its current SHA256 matches
-    the SHA256 stored in the checkpoint.
+Windows:
+    stdout / stderr are configured for UTF-8 where supported.
 
-    If the source CSV changed after the previous audit, that file is
-    audited again automatically.
+    This prevents Windows CP949 console encoding errors from stopping
+    a long-running audit because of Unicode output characters.
 
-Windows execution:
-    py data_history_audit.py
+Safety:
+    OHLCV source CSV files are READ ONLY.
 """
 
 from __future__ import annotations
@@ -74,18 +64,54 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
-import math
 import os
 import sys
-import tempfile
 import time
-from dataclasses import asdict, dataclass, field
+import traceback
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from statistics import mean, median
-from typing import Iterable
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
+
+
+# ============================================================
+# WINDOWS / CONSOLE UTF-8 SAFETY
+# ============================================================
+
+def configure_console_encoding() -> None:
+    """
+    Prevent Windows CP949 console encoding failures.
+
+    GitHub self-hosted Windows runners can inherit CP949 as the console
+    encoding. Python output containing Unicode characters can then raise
+    UnicodeEncodeError and terminate the audit.
+
+    errors="replace" is intentionally used as a final safety layer.
+    Console formatting must never terminate data auditing.
+    """
+
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(
+                encoding="utf-8",
+                errors="replace",
+            )
+    except Exception:
+        pass
+
+    try:
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(
+                encoding="utf-8",
+                errors="replace",
+            )
+    except Exception:
+        pass
+
+
+configure_console_encoding()
 
 
 # ============================================================
@@ -93,290 +119,209 @@ import pandas as pd
 # ============================================================
 
 PROJECT_NAME = "Upbit Surge Monitor"
-VERSION = "Clean V003"
+VERSION = "Data History Audit Clean V003"
 
 BASE_DIR = Path(__file__).resolve().parent
 
 DATA_DIR = BASE_DIR / "data"
 OHLCV_DIR = DATA_DIR / "ohlcv"
-VALIDATION_DIR = DATA_DIR / "validation"
 
-CHECKPOINT_PATH = (
-    VALIDATION_DIR
-    / "data_history_audit_checkpoint.json"
-)
-
-STATUS_PATH = (
-    DATA_DIR
-    / "data_history_audit_status.csv"
-)
-
-TIMEFRAME_DIRS = {
+TIMEFRAME_DIRS: Dict[str, Path] = {
     "h1": OHLCV_DIR / "h1",
     "h4": OHLCV_DIR / "h4",
     "d1": OHLCV_DIR / "d1",
 }
 
-TIMEFRAME_EXPECTED_INTERVAL_HOURS = {
-    "h1": 1.0,
-    "h4": 4.0,
-    "d1": 24.0,
+VALIDATION_DIR = DATA_DIR / "validation"
+
+CHECKPOINT_FILE = (
+    VALIDATION_DIR /
+    "data_history_audit_checkpoint.json"
+)
+
+STATUS_FILE = (
+    DATA_DIR /
+    "data_history_audit_status.csv"
+)
+
+TIMEFRAME_SECONDS: Dict[str, int] = {
+    "h1": 60 * 60,
+    "h4": 4 * 60 * 60,
+    "d1": 24 * 60 * 60,
 }
 
-TIMEFRAME_EXPECTED_INTERVAL_SECONDS = {
-    timeframe: int(hours * 3600)
-    for timeframe, hours
-    in TIMEFRAME_EXPECTED_INTERVAL_HOURS.items()
+REQUIRED_OHLCV_COLUMNS = {
+    "timestamp",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
 }
 
-TIMESTAMP_CANDIDATES = (
-    "candle_date_time_utc",
+TIME_COLUMN_CANDIDATES = (
     "timestamp",
     "datetime",
+    "date",
+    "time",
+    "candle_date_time_utc",
     "candle_date_time_kst",
 )
 
-SHORT_HISTORY_RATIO = 0.50
-
-STALE_INTERVAL_MULTIPLIER = 3.0
-
-CHECKPOINT_SCHEMA_VERSION = 1
-
-HASH_CHUNK_SIZE = 1024 * 1024
-
-STATUS_FIELDNAMES = [
+STATUS_COLUMNS = [
     "timeframe",
     "market",
-    "source_path",
-    "source_sha256",
-    "row_count",
-    "timestamp_column",
+    "file",
+    "readable",
+    "rows",
     "first_timestamp",
     "last_timestamp",
-    "history_hours",
-    "history_days",
-    "latest_age_hours",
-    "latest_age_days",
-    "invalid_timestamp_count",
-    "duplicate_timestamp_count",
+    "duplicate_timestamps",
     "gap_count",
     "estimated_missing_candles",
-    "largest_gap_seconds",
-    "largest_gap_intervals",
-    "first_gap_start",
-    "first_gap_end",
-    "last_gap_start",
-    "last_gap_end",
-    "is_short_history",
-    "is_stale",
-    "readable",
+    "max_gap_seconds",
+    "source_sha256",
+    "resumed",
     "errors",
-    "warnings",
 ]
 
+CHECKPOINT_VERSION = 1
+
 
 # ============================================================
-# RESULT MODELS
+# DATA CLASS
 # ============================================================
 
 @dataclass
-class MarketHistoryResult:
+class AuditResult:
     timeframe: str
     market: str
-    path: Path
+    file: str
 
-    readable: bool = True
+    readable: bool
 
-    source_sha256: str = ""
+    rows: int
 
-    row_count: int = 0
+    first_timestamp: str
+    last_timestamp: str
 
-    timestamp_column: str = ""
+    duplicate_timestamps: int
 
-    first_timestamp: pd.Timestamp | None = None
-    last_timestamp: pd.Timestamp | None = None
+    gap_count: int
+    estimated_missing_candles: int
+    max_gap_seconds: int
 
-    history_hours: float = 0.0
-    history_days: float = 0.0
+    source_sha256: str
 
-    latest_age_hours: float = 0.0
-    latest_age_days: float = 0.0
+    resumed: bool
 
-    duplicate_timestamp_count: int = 0
-    invalid_timestamp_count: int = 0
-
-    gap_count: int = 0
-    estimated_missing_candles: int = 0
-
-    largest_gap_seconds: float = 0.0
-    largest_gap_intervals: int = 0
-
-    first_gap_start: pd.Timestamp | None = None
-    first_gap_end: pd.Timestamp | None = None
-
-    last_gap_start: pd.Timestamp | None = None
-    last_gap_end: pd.Timestamp | None = None
-
-    is_short_history: bool = False
-    is_stale: bool = False
-
-    resumed: bool = False
-
-    errors: list[str] = field(default_factory=list)
-    warnings: list[str] = field(default_factory=list)
-
-
-@dataclass
-class TimeframeAuditResult:
-    timeframe: str
-    directory: Path
-
-    directory_exists: bool = False
-
-    file_count: int = 0
-    readable_file_count: int = 0
-    unreadable_file_count: int = 0
-
-    total_rows: int = 0
-
-    markets: list[MarketHistoryResult] = field(
-        default_factory=list
-    )
-
-    short_history_markets: list[str] = field(
-        default_factory=list
-    )
-
-    stale_markets: list[str] = field(
-        default_factory=list
-    )
-
-    gap_markets: list[str] = field(
-        default_factory=list
-    )
-
-    total_gap_count: int = 0
-    total_estimated_missing_candles: int = 0
-
-    errors: list[str] = field(
-        default_factory=list
-    )
-
-    warnings: list[str] = field(
-        default_factory=list
-    )
+    errors: str
 
 
 # ============================================================
-# DISPLAY HELPERS
+# GENERAL HELPERS
 # ============================================================
 
-def print_separator(
-    char: str = "=",
-    width: int = 88,
-) -> None:
-    print(char * width)
+def utc_now_iso() -> str:
+    return datetime.now(
+        timezone.utc
+    ).replace(
+        microsecond=0
+    ).isoformat()
 
 
-def print_header(
-    title: str,
-) -> None:
-    print()
-    print_separator("=")
-    print(title)
-    print_separator("=")
+def safe_print(*args: Any, **kwargs: Any) -> None:
+    """
+    Last-resort console safety wrapper.
 
+    Normal print() should already work after UTF-8 reconfiguration.
+    This wrapper additionally prevents a console encoding problem from
+    terminating the audit.
+    """
 
-def format_integer(
-    value: int,
-) -> str:
-    return f"{value:,}"
+    try:
+        print(*args, **kwargs)
 
+    except UnicodeEncodeError:
 
-def format_float(
-    value: float,
-    decimals: int = 2,
-) -> str:
-    if not math.isfinite(value):
-        return "N/A"
+        separator = kwargs.get("sep", " ")
+        ending = kwargs.get("end", "\n")
 
-    return f"{value:,.{decimals}f}"
-
-
-def format_timestamp(
-    value: pd.Timestamp | None,
-) -> str:
-    if value is None:
-        return "N/A"
-
-    return value.strftime(
-        "%Y-%m-%d %H:%M:%S UTC"
-    )
-
-
-def timestamp_to_json(
-    value: pd.Timestamp | None,
-) -> str | None:
-    if value is None:
-        return None
-
-    return value.isoformat()
-
-
-def timestamp_from_json(
-    value: str | None,
-) -> pd.Timestamp | None:
-    if not value:
-        return None
-
-    parsed = pd.Timestamp(value)
-
-    if parsed.tzinfo is None:
-        parsed = parsed.tz_localize("UTC")
-    else:
-        parsed = parsed.tz_convert("UTC")
-
-    return parsed
-
-
-def format_duration_days(
-    days: float,
-) -> str:
-    if not math.isfinite(days):
-        return "N/A"
-
-    if days < 1.0:
-        hours = days * 24.0
-
-        return (
-            f"{hours:,.2f} hours "
-            f"({days:,.3f} days)"
+        text = separator.join(
+            str(value)
+            for value in args
         )
 
-    if days < 365.0:
-        return f"{days:,.2f} days"
+        encoding = getattr(
+            sys.stdout,
+            "encoding",
+            None,
+        ) or "utf-8"
 
-    years = days / 365.2425
+        safe_text = (
+            text
+            .encode(
+                encoding,
+                errors="replace",
+            )
+            .decode(
+                encoding,
+                errors="replace",
+            )
+        )
 
-    return (
-        f"{days:,.2f} days "
-        f"({years:,.2f} years)"
+        try:
+            sys.stdout.write(
+                safe_text + ending
+            )
+            sys.stdout.flush()
+
+        except Exception:
+            pass
+
+
+def separator(
+    char: str = "=",
+    length: int = 76,
+) -> None:
+
+    safe_print(
+        char * length
     )
 
 
+def ensure_runtime_directories() -> None:
+
+    VALIDATION_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+
+def normalize_market_name(
+    file_path: Path,
+) -> str:
+
+    return file_path.stem.upper()
+
+
 # ============================================================
-# FILE / HASH HELPERS
+# SHA256
 # ============================================================
 
 def calculate_sha256(
-    path: Path,
+    file_path: Path,
+    chunk_size: int = 1024 * 1024,
 ) -> str:
+
     digest = hashlib.sha256()
 
-    with path.open("rb") as handle:
+    with file_path.open("rb") as file_handle:
+
         while True:
-            chunk = handle.read(
-                HASH_CHUNK_SIZE
+
+            chunk = file_handle.read(
+                chunk_size
             )
 
             if not chunk:
@@ -387,438 +332,129 @@ def calculate_sha256(
     return digest.hexdigest()
 
 
-def atomic_write_json(
-    path: Path,
-    payload: dict,
-) -> None:
-    path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    temp_fd, temp_name = tempfile.mkstemp(
-        prefix=f"{path.name}.",
-        suffix=".tmp",
-        dir=str(path.parent),
-    )
-
-    try:
-        with os.fdopen(
-            temp_fd,
-            "w",
-            encoding="utf-8",
-            newline="\n",
-        ) as handle:
-            json.dump(
-                payload,
-                handle,
-                ensure_ascii=False,
-                indent=2,
-            )
-
-            handle.flush()
-            os.fsync(
-                handle.fileno()
-            )
-
-        os.replace(
-            temp_name,
-            path,
-        )
-
-    except Exception:
-        try:
-            os.unlink(
-                temp_name
-            )
-        except OSError:
-            pass
-
-        raise
-
-
 # ============================================================
-# COLUMN HELPERS
+# CHECKPOINT
 # ============================================================
 
-def normalize_column_name(
-    column: str,
-) -> str:
-    return str(column).strip().lower()
-
-
-def build_column_lookup(
-    columns: Iterable[str],
-) -> dict[str, str]:
-
-    lookup: dict[str, str] = {}
-
-    for column in columns:
-        normalized = normalize_column_name(
-            column
-        )
-
-        if normalized not in lookup:
-            lookup[normalized] = str(column)
-
-    return lookup
-
-
-def find_timestamp_column(
-    columns: Iterable[str],
-) -> str | None:
-
-    lookup = build_column_lookup(
-        columns
-    )
-
-    for candidate in TIMESTAMP_CANDIDATES:
-        if candidate in lookup:
-            return lookup[candidate]
-
-    return None
-
-
-# ============================================================
-# TIME HELPERS
-# ============================================================
-
-def get_now_utc() -> pd.Timestamp:
-    return pd.Timestamp(
-        datetime.now(timezone.utc)
-    )
-
-
-def calculate_history_hours(
-    first_timestamp: pd.Timestamp,
-    last_timestamp: pd.Timestamp,
-) -> float:
-
-    delta = (
-        last_timestamp
-        - first_timestamp
-    )
-
-    return max(
-        0.0,
-        delta.total_seconds() / 3600.0,
-    )
-
-
-def calculate_latest_age_hours(
-    last_timestamp: pd.Timestamp,
-    now_utc: pd.Timestamp,
-) -> float:
-
-    delta = (
-        now_utc
-        - last_timestamp
-    )
-
-    return max(
-        0.0,
-        delta.total_seconds() / 3600.0,
-    )
-
-
-# ============================================================
-# CHECKPOINT SERIALIZATION
-# ============================================================
-
-def result_to_checkpoint_dict(
-    result: MarketHistoryResult,
-) -> dict:
+def empty_checkpoint() -> Dict[str, Any]:
 
     return {
-        "timeframe": result.timeframe,
-        "market": result.market,
-        "path": str(result.path),
-        "readable": result.readable,
-        "source_sha256": result.source_sha256,
-        "row_count": result.row_count,
-        "timestamp_column": result.timestamp_column,
-        "first_timestamp": timestamp_to_json(
-            result.first_timestamp
-        ),
-        "last_timestamp": timestamp_to_json(
-            result.last_timestamp
-        ),
-        "history_hours": result.history_hours,
-        "history_days": result.history_days,
-        "latest_age_hours": result.latest_age_hours,
-        "latest_age_days": result.latest_age_days,
-        "duplicate_timestamp_count": (
-            result.duplicate_timestamp_count
-        ),
-        "invalid_timestamp_count": (
-            result.invalid_timestamp_count
-        ),
-        "gap_count": result.gap_count,
-        "estimated_missing_candles": (
-            result.estimated_missing_candles
-        ),
-        "largest_gap_seconds": (
-            result.largest_gap_seconds
-        ),
-        "largest_gap_intervals": (
-            result.largest_gap_intervals
-        ),
-        "first_gap_start": timestamp_to_json(
-            result.first_gap_start
-        ),
-        "first_gap_end": timestamp_to_json(
-            result.first_gap_end
-        ),
-        "last_gap_start": timestamp_to_json(
-            result.last_gap_start
-        ),
-        "last_gap_end": timestamp_to_json(
-            result.last_gap_end
-        ),
-        "errors": list(result.errors),
-        "warnings": list(result.warnings),
-    }
-
-
-def result_from_checkpoint_dict(
-    data: dict,
-    path: Path,
-) -> MarketHistoryResult:
-
-    return MarketHistoryResult(
-        timeframe=str(
-            data.get(
-                "timeframe",
-                "",
-            )
-        ),
-        market=str(
-            data.get(
-                "market",
-                path.stem.upper(),
-            )
-        ),
-        path=path,
-        readable=bool(
-            data.get(
-                "readable",
-                True,
-            )
-        ),
-        source_sha256=str(
-            data.get(
-                "source_sha256",
-                "",
-            )
-        ),
-        row_count=int(
-            data.get(
-                "row_count",
-                0,
-            )
-        ),
-        timestamp_column=str(
-            data.get(
-                "timestamp_column",
-                "",
-            )
-        ),
-        first_timestamp=timestamp_from_json(
-            data.get(
-                "first_timestamp"
-            )
-        ),
-        last_timestamp=timestamp_from_json(
-            data.get(
-                "last_timestamp"
-            )
-        ),
-        history_hours=float(
-            data.get(
-                "history_hours",
-                0.0,
-            )
-        ),
-        history_days=float(
-            data.get(
-                "history_days",
-                0.0,
-            )
-        ),
-        latest_age_hours=float(
-            data.get(
-                "latest_age_hours",
-                0.0,
-            )
-        ),
-        latest_age_days=float(
-            data.get(
-                "latest_age_days",
-                0.0,
-            )
-        ),
-        duplicate_timestamp_count=int(
-            data.get(
-                "duplicate_timestamp_count",
-                0,
-            )
-        ),
-        invalid_timestamp_count=int(
-            data.get(
-                "invalid_timestamp_count",
-                0,
-            )
-        ),
-        gap_count=int(
-            data.get(
-                "gap_count",
-                0,
-            )
-        ),
-        estimated_missing_candles=int(
-            data.get(
-                "estimated_missing_candles",
-                0,
-            )
-        ),
-        largest_gap_seconds=float(
-            data.get(
-                "largest_gap_seconds",
-                0.0,
-            )
-        ),
-        largest_gap_intervals=int(
-            data.get(
-                "largest_gap_intervals",
-                0,
-            )
-        ),
-        first_gap_start=timestamp_from_json(
-            data.get(
-                "first_gap_start"
-            )
-        ),
-        first_gap_end=timestamp_from_json(
-            data.get(
-                "first_gap_end"
-            )
-        ),
-        last_gap_start=timestamp_from_json(
-            data.get(
-                "last_gap_start"
-            )
-        ),
-        last_gap_end=timestamp_from_json(
-            data.get(
-                "last_gap_end"
-            )
-        ),
-        errors=list(
-            data.get(
-                "errors",
-                [],
-            )
-        ),
-        warnings=list(
-            data.get(
-                "warnings",
-                [],
-            )
-        ),
-        resumed=True,
-    )
-
-
-# ============================================================
-# CHECKPOINT MANAGEMENT
-# ============================================================
-
-def new_checkpoint() -> dict:
-    return {
-        "schema_version": (
-            CHECKPOINT_SCHEMA_VERSION
-        ),
+        "version": CHECKPOINT_VERSION,
         "project": PROJECT_NAME,
-        "version": VERSION,
-        "updated_utc": (
-            datetime.now(
-                timezone.utc
-            ).isoformat()
-        ),
+        "audit_version": VERSION,
+        "updated_at_utc": utc_now_iso(),
         "completed": {},
     }
 
 
-def load_checkpoint() -> dict:
-    if not CHECKPOINT_PATH.exists():
-        return new_checkpoint()
+def load_checkpoint() -> Dict[str, Any]:
+
+    if not CHECKPOINT_FILE.exists():
+
+        return empty_checkpoint()
 
     try:
-        with CHECKPOINT_PATH.open(
+
+        with CHECKPOINT_FILE.open(
             "r",
             encoding="utf-8",
-        ) as handle:
-            payload = json.load(
-                handle
+        ) as file_handle:
+
+            data = json.load(
+                file_handle
             )
 
-    except Exception as exc:
-        print(
-            "[WARN] Existing checkpoint could "
-            "not be read."
-        )
-        print(
-            f"[WARN] {type(exc).__name__}: {exc}"
-        )
-        print(
-            "[WARN] Audit will rebuild the "
-            "checkpoint safely."
-        )
+        if not isinstance(
+            data,
+            dict,
+        ):
+            raise ValueError(
+                "Checkpoint root is not an object."
+            )
 
-        return new_checkpoint()
-
-    if not isinstance(
-        payload,
-        dict,
-    ):
-        return new_checkpoint()
-
-    if (
-        payload.get(
-            "schema_version"
-        )
-        != CHECKPOINT_SCHEMA_VERSION
-    ):
-        print(
-            "[INFO] Checkpoint schema changed. "
-            "A new audit checkpoint will be used."
-        )
-
-        return new_checkpoint()
-
-    if not isinstance(
-        payload.get(
+        completed = data.get(
             "completed"
-        ),
-        dict,
-    ):
-        payload["completed"] = {}
+        )
 
-    return payload
+        if not isinstance(
+            completed,
+            dict,
+        ):
+
+            data["completed"] = {}
+
+        return data
+
+    except Exception as exc:
+
+        safe_print(
+            "[WARNING] Existing checkpoint could not be read."
+        )
+
+        safe_print(
+            f"[WARNING] {type(exc).__name__}: {exc}"
+        )
+
+        safe_print(
+            "[SAFETY] Existing checkpoint was NOT deleted."
+        )
+
+        safe_print(
+            "[INFO] Audit will continue with an empty in-memory checkpoint."
+        )
+
+        return empty_checkpoint()
 
 
 def save_checkpoint(
-    checkpoint: dict,
+    checkpoint: Dict[str, Any],
 ) -> None:
-    checkpoint["updated_utc"] = (
-        datetime.now(
-            timezone.utc
-        ).isoformat()
+
+    checkpoint["version"] = (
+        CHECKPOINT_VERSION
     )
 
-    atomic_write_json(
-        CHECKPOINT_PATH,
-        checkpoint,
+    checkpoint["project"] = (
+        PROJECT_NAME
+    )
+
+    checkpoint["audit_version"] = (
+        VERSION
+    )
+
+    checkpoint["updated_at_utc"] = (
+        utc_now_iso()
+    )
+
+    temp_file = CHECKPOINT_FILE.with_suffix(
+        CHECKPOINT_FILE.suffix + ".tmp"
+    )
+
+    with temp_file.open(
+        "w",
+        encoding="utf-8",
+        newline="\n",
+    ) as file_handle:
+
+        json.dump(
+            checkpoint,
+            file_handle,
+            ensure_ascii=False,
+            indent=2,
+        )
+
+        file_handle.flush()
+
+        try:
+            os.fsync(
+                file_handle.fileno()
+            )
+        except OSError:
+            pass
+
+    os.replace(
+        temp_file,
+        CHECKPOINT_FILE,
     )
 
 
@@ -826,101 +462,363 @@ def checkpoint_key(
     timeframe: str,
     market: str,
 ) -> str:
+
     return (
-        f"{timeframe.lower()}|"
-        f"{market.upper()}"
+        f"{timeframe}:{market}"
     )
 
 
-def get_resumable_result(
-    checkpoint: dict,
-    timeframe: str,
-    path: Path,
-    current_sha256: str,
-    now_utc: pd.Timestamp,
-) -> MarketHistoryResult | None:
+def checkpoint_result_is_reusable(
+    checkpoint_entry: Any,
+    source_sha256: str,
+) -> bool:
 
-    key = checkpoint_key(
-        timeframe,
-        path.stem.upper(),
+    if not isinstance(
+        checkpoint_entry,
+        dict,
+    ):
+        return False
+
+    saved_sha256 = checkpoint_entry.get(
+        "source_sha256"
     )
 
-    stored = (
-        checkpoint
-        .get(
-            "completed",
-            {},
-        )
-        .get(key)
+    if saved_sha256 != source_sha256:
+        return False
+
+    result = checkpoint_entry.get(
+        "result"
     )
 
     if not isinstance(
-        stored,
+        result,
         dict,
     ):
-        return None
+        return False
 
-    stored_sha256 = str(
-        stored.get(
-            "source_sha256",
-            "",
-        )
+    if result.get(
+        "readable"
+    ) is not True:
+        return False
+
+    return True
+
+
+def result_from_checkpoint(
+    checkpoint_entry: Dict[str, Any],
+) -> AuditResult:
+
+    raw = dict(
+        checkpoint_entry["result"]
     )
 
-    if not stored_sha256:
-        return None
+    raw["resumed"] = True
 
-    if stored_sha256 != current_sha256:
-        return None
-
-    result = result_from_checkpoint_dict(
-        stored,
-        path,
-    )
-
-    result.source_sha256 = (
-        current_sha256
-    )
-
-    # Latest age is time-dependent.
-    # Recalculate it even when the expensive file scan is resumed.
-    if result.last_timestamp is not None:
-        result.latest_age_hours = (
-            calculate_latest_age_hours(
-                result.last_timestamp,
-                now_utc,
+    return AuditResult(
+        timeframe=str(
+            raw.get(
+                "timeframe",
+                "",
             )
-        )
+        ),
+        market=str(
+            raw.get(
+                "market",
+                "",
+            )
+        ),
+        file=str(
+            raw.get(
+                "file",
+                "",
+            )
+        ),
+        readable=bool(
+            raw.get(
+                "readable",
+                False,
+            )
+        ),
+        rows=int(
+            raw.get(
+                "rows",
+                0,
+            )
+            or 0
+        ),
+        first_timestamp=str(
+            raw.get(
+                "first_timestamp",
+                "",
+            )
+        ),
+        last_timestamp=str(
+            raw.get(
+                "last_timestamp",
+                "",
+            )
+        ),
+        duplicate_timestamps=int(
+            raw.get(
+                "duplicate_timestamps",
+                0,
+            )
+            or 0
+        ),
+        gap_count=int(
+            raw.get(
+                "gap_count",
+                0,
+            )
+            or 0
+        ),
+        estimated_missing_candles=int(
+            raw.get(
+                "estimated_missing_candles",
+                0,
+            )
+            or 0
+        ),
+        max_gap_seconds=int(
+            raw.get(
+                "max_gap_seconds",
+                0,
+            )
+            or 0
+        ),
+        source_sha256=str(
+            raw.get(
+                "source_sha256",
+                "",
+            )
+        ),
+        resumed=True,
+        errors=str(
+            raw.get(
+                "errors",
+                "",
+            )
+        ),
+    )
 
-        result.latest_age_days = (
-            result.latest_age_hours
-            / 24.0
-        )
 
-    return result
+# ============================================================
+# STATUS CSV
+# ============================================================
 
-
-def store_checkpoint_result(
-    checkpoint: dict,
-    result: MarketHistoryResult,
+def write_status_csv(
+    results: List[AuditResult],
 ) -> None:
 
-    key = checkpoint_key(
-        result.timeframe,
-        result.market,
+    temp_file = STATUS_FILE.with_suffix(
+        STATUS_FILE.suffix + ".tmp"
     )
 
-    checkpoint.setdefault(
-        "completed",
-        {},
-    )[key] = (
-        result_to_checkpoint_dict(
-            result
+    with temp_file.open(
+        "w",
+        encoding="utf-8-sig",
+        newline="",
+    ) as file_handle:
+
+        writer = csv.DictWriter(
+            file_handle,
+            fieldnames=STATUS_COLUMNS,
         )
+
+        writer.writeheader()
+
+        for result in results:
+
+            row = asdict(
+                result
+            )
+
+            writer.writerow(
+                {
+                    column: row.get(
+                        column,
+                        "",
+                    )
+                    for column
+                    in STATUS_COLUMNS
+                }
+            )
+
+        file_handle.flush()
+
+        try:
+            os.fsync(
+                file_handle.fileno()
+            )
+        except OSError:
+            pass
+
+    os.replace(
+        temp_file,
+        STATUS_FILE,
     )
 
-    save_checkpoint(
-        checkpoint
+
+# ============================================================
+# CSV READING
+# ============================================================
+
+def read_csv_safely(
+    file_path: Path,
+) -> pd.DataFrame:
+
+    encodings = (
+        "utf-8-sig",
+        "utf-8",
+        "cp949",
+    )
+
+    last_error: Optional[
+        Exception
+    ] = None
+
+    for encoding in encodings:
+
+        try:
+
+            return pd.read_csv(
+                file_path,
+                encoding=encoding,
+                low_memory=False,
+            )
+
+        except UnicodeDecodeError as exc:
+
+            last_error = exc
+
+    if last_error is not None:
+        raise last_error
+
+    return pd.read_csv(
+        file_path,
+        low_memory=False,
+    )
+
+
+# ============================================================
+# COLUMN NORMALIZATION
+# ============================================================
+
+def normalize_columns(
+    dataframe: pd.DataFrame,
+) -> pd.DataFrame:
+
+    dataframe = dataframe.copy()
+
+    dataframe.columns = [
+        str(column)
+        .strip()
+        .lower()
+        for column
+        in dataframe.columns
+    ]
+
+    return dataframe
+
+
+def detect_timestamp_column(
+    dataframe: pd.DataFrame,
+) -> Optional[str]:
+
+    for candidate in TIME_COLUMN_CANDIDATES:
+
+        if candidate in dataframe.columns:
+            return candidate
+
+    return None
+
+
+def validate_required_columns(
+    dataframe: pd.DataFrame,
+    timestamp_column: str,
+) -> List[str]:
+
+    errors: List[str] = []
+
+    required_numeric = (
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+    )
+
+    for column in required_numeric:
+
+        if column not in dataframe.columns:
+
+            errors.append(
+                f"Missing required column: {column}"
+            )
+
+    if timestamp_column not in dataframe.columns:
+
+        errors.append(
+            "Timestamp column is missing."
+        )
+
+    return errors
+
+
+# ============================================================
+# TIMESTAMP PARSING
+# ============================================================
+
+def parse_timestamp_series(
+    series: pd.Series,
+) -> pd.Series:
+
+    if pd.api.types.is_numeric_dtype(
+        series
+    ):
+
+        numeric = pd.to_numeric(
+            series,
+            errors="coerce",
+        )
+
+        valid = numeric.dropna()
+
+        if valid.empty:
+
+            return pd.to_datetime(
+                series,
+                errors="coerce",
+                utc=True,
+            )
+
+        median_value = float(
+            valid.abs().median()
+        )
+
+        if median_value >= 1e17:
+            unit = "ns"
+
+        elif median_value >= 1e14:
+            unit = "us"
+
+        elif median_value >= 1e11:
+            unit = "ms"
+
+        else:
+            unit = "s"
+
+        return pd.to_datetime(
+            numeric,
+            unit=unit,
+            errors="coerce",
+            utc=True,
+        )
+
+    return pd.to_datetime(
+        series,
+        errors="coerce",
+        utc=True,
     )
 
 
@@ -929,2597 +827,1207 @@ def store_checkpoint_result(
 # ============================================================
 
 def analyze_timestamp_gaps(
-    timeframe: str,
-    valid_unique_timestamps: pd.Series,
-    result: MarketHistoryResult,
-) -> None:
+    timestamps: pd.Series,
+    expected_seconds: int,
+) -> Tuple[
+    int,
+    int,
+    int,
+]:
 
-    if len(
-        valid_unique_timestamps
-    ) < 2:
-        return
+    if timestamps.empty:
 
-    expected_seconds = (
-        TIMEFRAME_EXPECTED_INTERVAL_SECONDS[
-            timeframe
-        ]
-    )
+        return (
+            0,
+            0,
+            0,
+        )
 
-    timestamps = (
-        valid_unique_timestamps
+    unique_sorted = (
+        timestamps
+        .dropna()
+        .drop_duplicates()
         .sort_values()
         .reset_index(drop=True)
     )
 
+    if len(
+        unique_sorted
+    ) < 2:
+
+        return (
+            0,
+            0,
+            0,
+        )
+
     differences = (
-        timestamps
+        unique_sorted
         .diff()
         .dt.total_seconds()
+        .dropna()
     )
 
-    gap_mask = (
-        differences
-        > expected_seconds
+    gaps = differences[
+        differences > expected_seconds
+    ]
+
+    gap_count = int(
+        len(gaps)
     )
 
-    gap_indices = list(
-        differences[
-            gap_mask
-        ].index
-    )
+    estimated_missing = 0
 
-    if not gap_indices:
-        return
+    for gap_seconds in gaps:
 
-    result.gap_count = len(
-        gap_indices
-    )
-
-    largest_gap_seconds = 0.0
-    largest_gap_intervals = 0
-
-    total_missing = 0
-
-    first_gap_start = None
-    first_gap_end = None
-
-    last_gap_start = None
-    last_gap_end = None
-
-    for index in gap_indices:
-        previous_timestamp = (
-            timestamps.iloc[
-                index - 1
-            ]
-        )
-
-        current_timestamp = (
-            timestamps.iloc[
-                index
-            ]
-        )
-
-        gap_seconds = float(
-            (
-                current_timestamp
-                - previous_timestamp
-            ).total_seconds()
-        )
-
-        # Number of complete expected intervals between
-        # the two observed candles.
-        #
-        # Example:
-        # expected = 1h
-        # 10:00 -> 14:00
-        #
-        # 4 intervals exist between endpoints.
-        # Missing candles = 3.
-        interval_count = int(
-            round(
-                gap_seconds
-                / expected_seconds
-            )
-        )
-
-        missing_candles = max(
-            0,
-            interval_count - 1,
-        )
-
-        total_missing += (
-            missing_candles
-        )
-
-        if (
+        if pd.isna(
             gap_seconds
-            > largest_gap_seconds
         ):
-            largest_gap_seconds = (
-                gap_seconds
-            )
+            continue
 
-            largest_gap_intervals = (
-                interval_count
-            )
-
-        if first_gap_start is None:
-            first_gap_start = (
-                previous_timestamp
-            )
-
-            first_gap_end = (
-                current_timestamp
-            )
-
-        last_gap_start = (
-            previous_timestamp
+        intervals = int(
+            gap_seconds // expected_seconds
         )
 
-        last_gap_end = (
-            current_timestamp
+        missing = max(
+            intervals - 1,
+            0,
         )
 
-    result.estimated_missing_candles = (
-        total_missing
-    )
+        estimated_missing += (
+            missing
+        )
 
-    result.largest_gap_seconds = (
-        largest_gap_seconds
-    )
+    if gap_count > 0:
 
-    result.largest_gap_intervals = (
-        largest_gap_intervals
-    )
+        max_gap_seconds = int(
+            gaps.max()
+        )
 
-    result.first_gap_start = (
-        first_gap_start
-    )
+    else:
 
-    result.first_gap_end = (
-        first_gap_end
-    )
+        max_gap_seconds = 0
 
-    result.last_gap_start = (
-        last_gap_start
-    )
-
-    result.last_gap_end = (
-        last_gap_end
-    )
-
-    result.warnings.append(
-        "Timestamp gaps detected: "
-        f"{result.gap_count:,} gaps / "
-        f"estimated "
-        f"{result.estimated_missing_candles:,} "
-        "missing candles."
+    return (
+        gap_count,
+        estimated_missing,
+        max_gap_seconds,
     )
 
 
 # ============================================================
-# CSV HISTORY READER
+# SINGLE FILE AUDIT
 # ============================================================
 
-def audit_market_file(
+def audit_file(
     timeframe: str,
-    path: Path,
-    now_utc: pd.Timestamp,
-    source_sha256_before: str,
-) -> MarketHistoryResult:
+    file_path: Path,
+    source_sha256: str,
+) -> AuditResult:
 
-    result = MarketHistoryResult(
-        timeframe=timeframe,
-        market=path.stem.upper(),
-        path=path,
-        source_sha256=(
-            source_sha256_before
-        ),
+    market = normalize_market_name(
+        file_path
     )
+
+    errors: List[str] = []
+
+    rows = 0
+
+    first_timestamp = ""
+    last_timestamp = ""
+
+    duplicate_timestamps = 0
+
+    gap_count = 0
+    estimated_missing = 0
+    max_gap_seconds = 0
 
     try:
-        if not path.exists():
-            result.readable = False
 
-            result.errors.append(
-                "File does not exist."
+        dataframe = read_csv_safely(
+            file_path
+        )
+
+        dataframe = normalize_columns(
+            dataframe
+        )
+
+        rows = int(
+            len(dataframe)
+        )
+
+        if rows == 0:
+
+            errors.append(
+                "CSV contains zero rows."
             )
 
-            return result
-
-        if path.stat().st_size == 0:
-            result.readable = False
-
-            result.errors.append(
-                "File is empty."
+            return AuditResult(
+                timeframe=timeframe,
+                market=market,
+                file=str(file_path),
+                readable=False,
+                rows=rows,
+                first_timestamp="",
+                last_timestamp="",
+                duplicate_timestamps=0,
+                gap_count=0,
+                estimated_missing_candles=0,
+                max_gap_seconds=0,
+                source_sha256=source_sha256,
+                resumed=False,
+                errors=" | ".join(
+                    errors
+                ),
             )
-
-            return result
-
-        # ----------------------------------------------------
-        # Read header only.
-        # ----------------------------------------------------
-
-        try:
-            header_df = pd.read_csv(
-                path,
-                nrows=0,
-            )
-
-        except Exception as exc:
-            result.readable = False
-
-            result.errors.append(
-                "CSV header read failed: "
-                f"{type(exc).__name__}: {exc}"
-            )
-
-            return result
 
         timestamp_column = (
-            find_timestamp_column(
-                header_df.columns
+            detect_timestamp_column(
+                dataframe
             )
         )
 
         if timestamp_column is None:
-            result.readable = False
 
-            result.errors.append(
-                "Timestamp column not found. "
-                f"Expected one of: "
-                f"{', '.join(TIMESTAMP_CANDIDATES)}"
+            errors.append(
+                "No supported timestamp column found."
             )
 
-            return result
+            return AuditResult(
+                timeframe=timeframe,
+                market=market,
+                file=str(file_path),
+                readable=False,
+                rows=rows,
+                first_timestamp="",
+                last_timestamp="",
+                duplicate_timestamps=0,
+                gap_count=0,
+                estimated_missing_candles=0,
+                max_gap_seconds=0,
+                source_sha256=source_sha256,
+                resumed=False,
+                errors=" | ".join(
+                    errors
+                ),
+            )
 
-        result.timestamp_column = (
-            timestamp_column
+        column_errors = (
+            validate_required_columns(
+                dataframe,
+                timestamp_column,
+            )
         )
 
-        # ----------------------------------------------------
-        # Only timestamp data is required for this audit.
-        # ----------------------------------------------------
-
-        try:
-            df = pd.read_csv(
-                path,
-                usecols=[
-                    timestamp_column,
-                ],
-                low_memory=False,
-            )
-
-        except Exception as exc:
-            result.readable = False
-
-            result.errors.append(
-                "Timestamp data read failed: "
-                f"{type(exc).__name__}: {exc}"
-            )
-
-            return result
-
-        result.row_count = len(df)
-
-        if result.row_count == 0:
-            result.readable = False
-
-            result.errors.append(
-                "CSV contains zero rows."
-            )
-
-            return result
-
-        timestamps = pd.to_datetime(
-            df[timestamp_column],
-            errors="coerce",
-            utc=True,
+        errors.extend(
+            column_errors
         )
 
-        result.invalid_timestamp_count = int(
+        if column_errors:
+
+            return AuditResult(
+                timeframe=timeframe,
+                market=market,
+                file=str(file_path),
+                readable=False,
+                rows=rows,
+                first_timestamp="",
+                last_timestamp="",
+                duplicate_timestamps=0,
+                gap_count=0,
+                estimated_missing_candles=0,
+                max_gap_seconds=0,
+                source_sha256=source_sha256,
+                resumed=False,
+                errors=" | ".join(
+                    errors
+                ),
+            )
+
+        timestamps = (
+            parse_timestamp_series(
+                dataframe[
+                    timestamp_column
+                ]
+            )
+        )
+
+        invalid_timestamp_count = int(
             timestamps.isna().sum()
         )
 
+        if invalid_timestamp_count > 0:
+
+            errors.append(
+                "Invalid timestamps: "
+                f"{invalid_timestamp_count}"
+            )
+
         valid_timestamps = (
-            timestamps
-            .dropna()
-            .sort_values()
-            .reset_index(drop=True)
+            timestamps.dropna()
         )
 
         if valid_timestamps.empty:
-            result.readable = False
 
-            result.errors.append(
-                "No valid timestamps found."
+            errors.append(
+                "No usable timestamps."
             )
 
-            return result
-
-        # Count duplicated ROWS, matching the historical
-        # Clean V001 behavior.
-        result.duplicate_timestamp_count = int(
-            valid_timestamps
-            .duplicated(
-                keep=False
+            return AuditResult(
+                timeframe=timeframe,
+                market=market,
+                file=str(file_path),
+                readable=False,
+                rows=rows,
+                first_timestamp="",
+                last_timestamp="",
+                duplicate_timestamps=0,
+                gap_count=0,
+                estimated_missing_candles=0,
+                max_gap_seconds=0,
+                source_sha256=source_sha256,
+                resumed=False,
+                errors=" | ".join(
+                    errors
+                ),
             )
-            .sum()
+
+        first_timestamp = (
+            valid_timestamps.min().isoformat()
         )
 
-        unique_timestamps = (
+        last_timestamp = (
+            valid_timestamps.max().isoformat()
+        )
+
+        duplicate_timestamps = int(
+            valid_timestamps.duplicated().sum()
+        )
+
+        if duplicate_timestamps > 0:
+
+            errors.append(
+                "Duplicate timestamps: "
+                f"{duplicate_timestamps}"
+            )
+
+        original_order = (
             valid_timestamps
-            .drop_duplicates()
+            .reset_index(drop=True)
+        )
+
+        sorted_order = (
+            valid_timestamps
             .sort_values()
             .reset_index(drop=True)
         )
 
-        result.first_timestamp = (
-            unique_timestamps.iloc[0]
-        )
-
-        result.last_timestamp = (
-            unique_timestamps.iloc[-1]
-        )
-
-        result.history_hours = (
-            calculate_history_hours(
-                first_timestamp=(
-                    result.first_timestamp
-                ),
-                last_timestamp=(
-                    result.last_timestamp
-                ),
-            )
-        )
-
-        result.history_days = (
-            result.history_hours
-            / 24.0
-        )
-
-        result.latest_age_hours = (
-            calculate_latest_age_hours(
-                last_timestamp=(
-                    result.last_timestamp
-                ),
-                now_utc=now_utc,
-            )
-        )
-
-        result.latest_age_days = (
-            result.latest_age_hours
-            / 24.0
-        )
-
-        if (
-            result.invalid_timestamp_count
-            > 0
+        if not original_order.equals(
+            sorted_order
         ):
-            result.warnings.append(
-                "Invalid timestamps: "
-                f"{result.invalid_timestamp_count:,}"
+
+            errors.append(
+                "Timestamps are not sorted ascending."
             )
 
-        if (
-            result.duplicate_timestamp_count
-            > 0
-        ):
-            result.warnings.append(
-                "Duplicate timestamp rows: "
-                f"{result.duplicate_timestamp_count:,}"
-            )
+        expected_seconds = (
+            TIMEFRAME_SECONDS[
+                timeframe
+            ]
+        )
 
-        analyze_timestamp_gaps(
+        (
+            gap_count,
+            estimated_missing,
+            max_gap_seconds,
+        ) = analyze_timestamp_gaps(
+            valid_timestamps,
+            expected_seconds,
+        )
+
+        return AuditResult(
             timeframe=timeframe,
-            valid_unique_timestamps=(
-                unique_timestamps
+            market=market,
+            file=str(file_path),
+            readable=True,
+            rows=rows,
+            first_timestamp=first_timestamp,
+            last_timestamp=last_timestamp,
+            duplicate_timestamps=duplicate_timestamps,
+            gap_count=gap_count,
+            estimated_missing_candles=estimated_missing,
+            max_gap_seconds=max_gap_seconds,
+            source_sha256=source_sha256,
+            resumed=False,
+            errors=" | ".join(
+                errors
             ),
-            result=result,
         )
-
-        # ----------------------------------------------------
-        # SOURCE INTEGRITY
-        #
-        # Verify that the source file did not change while
-        # this individual file was being audited.
-        # ----------------------------------------------------
-
-        source_sha256_after = (
-            calculate_sha256(
-                path
-            )
-        )
-
-        if (
-            source_sha256_after
-            != source_sha256_before
-        ):
-            result.readable = False
-
-            result.errors.append(
-                "Source SHA256 changed during audit."
-            )
 
     except Exception as exc:
-        result.readable = False
 
-        result.errors.append(
-            "Unexpected audit error: "
+        errors.append(
             f"{type(exc).__name__}: {exc}"
         )
 
-    return result
-
-
-# ============================================================
-# TIMEFRAME AUDIT
-# ============================================================
-
-def audit_timeframe(
-    timeframe: str,
-    directory: Path,
-    now_utc: pd.Timestamp,
-    checkpoint: dict,
-) -> TimeframeAuditResult:
-
-    result = TimeframeAuditResult(
-        timeframe=timeframe,
-        directory=directory,
-    )
-
-    print()
-    print_separator("-")
-
-    print(
-        f"AUDITING TIMEFRAME: "
-        f"{timeframe.upper()}"
-    )
-
-    print_separator("-")
-
-    print(
-        f"Directory : {directory}"
-    )
-
-    if not directory.exists():
-        result.errors.append(
-            f"Directory not found: "
-            f"{directory}"
-        )
-
-        print(
-            "[FAIL] Directory not found."
-        )
-
-        return result
-
-    if not directory.is_dir():
-        result.errors.append(
-            f"Path is not a directory: "
-            f"{directory}"
-        )
-
-        print(
-            "[FAIL] Path is not a directory."
-        )
-
-        return result
-
-    result.directory_exists = True
-
-    files = sorted(
-        directory.glob(
-            "*.csv"
-        ),
-        key=lambda item: (
-            item.name.upper()
-        ),
-    )
-
-    result.file_count = len(
-        files
-    )
-
-    print(
-        f"CSV files : "
-        f"{result.file_count:,}"
-    )
-
-    if not files:
-        result.errors.append(
-            "No CSV files found."
-        )
-
-        print(
-            "[FAIL] No CSV files found."
-        )
-
-        return result
-
-    total_files = len(
-        files
-    )
-
-    print()
-    print(
-        "Reading market history + gaps..."
-    )
-    print()
-
-    for index, path in enumerate(
-        files,
-        start=1,
-    ):
-        market = (
-            path.stem.upper()
-        )
-
-        try:
-            current_sha256 = (
-                calculate_sha256(
-                    path
-                )
-            )
-
-        except Exception as exc:
-            market_result = (
-                MarketHistoryResult(
-                    timeframe=timeframe,
-                    market=market,
-                    path=path,
-                    readable=False,
-                )
-            )
-
-            market_result.errors.append(
-                "SHA256 read failed: "
-                f"{type(exc).__name__}: {exc}"
-            )
-
-        else:
-            resumed_result = (
-                get_resumable_result(
-                    checkpoint=checkpoint,
-                    timeframe=timeframe,
-                    path=path,
-                    current_sha256=(
-                        current_sha256
-                    ),
-                    now_utc=now_utc,
-                )
-            )
-
-            if resumed_result is not None:
-                market_result = (
-                    resumed_result
-                )
-
-            else:
-                market_result = (
-                    audit_market_file(
-                        timeframe=timeframe,
-                        path=path,
-                        now_utc=now_utc,
-                        source_sha256_before=(
-                            current_sha256
-                        ),
-                    )
-                )
-
-                # Only successfully audited source states are
-                # resumable.
-                #
-                # Unreadable/error files are intentionally
-                # checked again on the next run.
-                if market_result.readable:
-                    store_checkpoint_result(
-                        checkpoint,
-                        market_result,
-                    )
-
-        result.markets.append(
-            market_result
-        )
-
-        result.total_rows += (
-            market_result.row_count
-        )
-
-        if market_result.readable:
-            result.readable_file_count += 1
-            status = "OK"
-
-        else:
-            result.unreadable_file_count += 1
-            status = "FAIL"
-
-        if market_result.gap_count > 0:
-            result.gap_markets.append(
-                market_result.market
-            )
-
-            result.total_gap_count += (
-                market_result.gap_count
-            )
-
-            result.total_estimated_missing_candles += (
-                market_result
-                .estimated_missing_candles
-            )
-
-        resume_text = (
-            "RESUME"
-            if market_result.resumed
-            else "SCAN"
-        )
-
-        print(
-            f"[{index:03d}/{total_files:03d}] "
-            f"{market_result.market:<18} "
-            f"{status:<4} "
-            f"{resume_text:<6} "
-            f"rows={market_result.row_count:>8,} "
-            f"gaps={market_result.gap_count:>6,} "
-            f"missing≈"
-            f"{market_result.estimated_missing_candles:>7,} "
-            f"age="
-            f"{market_result.latest_age_hours:>8.2f}h"
-        )
-
-        for error in (
-            market_result.errors
-        ):
-            print(
-                f"    [ERROR] {error}"
-            )
-
-        for warning in (
-            market_result.warnings
-        ):
-            print(
-                f"    [WARN ] {warning}"
-            )
-
-    return result
-
-
-# ============================================================
-# RELATIVE HISTORY CLASSIFICATION
-# ============================================================
-
-def classify_relative_history(
-    result: TimeframeAuditResult,
-) -> None:
-
-    readable = [
-        item
-        for item in result.markets
-        if item.readable
-    ]
-
-    if not readable:
-        return
-
-    history_days = [
-        item.history_days
-        for item in readable
-    ]
-
-    median_days = median(
-        history_days
-    )
-
-    if median_days <= 0:
-        return
-
-    threshold_days = (
-        median_days
-        * SHORT_HISTORY_RATIO
-    )
-
-    for item in readable:
-        if (
-            item.history_days
-            < threshold_days
-        ):
-            item.is_short_history = True
-
-            result.short_history_markets.append(
-                item.market
-            )
-
-
-# ============================================================
-# STALE CLASSIFICATION
-# ============================================================
-
-def classify_stale_data(
-    result: TimeframeAuditResult,
-) -> None:
-
-    expected_interval_hours = (
-        TIMEFRAME_EXPECTED_INTERVAL_HOURS[
-            result.timeframe
-        ]
-    )
-
-    threshold_hours = (
-        expected_interval_hours
-        * STALE_INTERVAL_MULTIPLIER
-    )
-
-    for item in result.markets:
-        if not item.readable:
-            continue
-
-        if (
-            item.latest_age_hours
-            > threshold_hours
-        ):
-            item.is_stale = True
-
-            result.stale_markets.append(
-                item.market
-            )
-
-
-# ============================================================
-# STATISTICS HELPERS
-# ============================================================
-
-def get_readable_markets(
-    result: TimeframeAuditResult,
-) -> list[MarketHistoryResult]:
-
-    return [
-        item
-        for item in result.markets
-        if item.readable
-    ]
-
-
-def get_history_day_values(
-    result: TimeframeAuditResult,
-) -> list[float]:
-
-    return [
-        item.history_days
-        for item in get_readable_markets(
-            result
-        )
-    ]
-
-
-def get_row_count_values(
-    result: TimeframeAuditResult,
-) -> list[int]:
-
-    return [
-        item.row_count
-        for item in get_readable_markets(
-            result
-        )
-    ]
-
-
-def calculate_float_stats(
-    values: list[float],
-) -> tuple[
-    float,
-    float,
-    float,
-    float,
-]:
-
-    if not values:
-        return (
-            math.nan,
-            math.nan,
-            math.nan,
-            math.nan,
-        )
-
-    return (
-        min(values),
-        median(values),
-        mean(values),
-        max(values),
-    )
-
-
-def calculate_int_stats(
-    values: list[int],
-) -> tuple[
-    int,
-    float,
-    float,
-    int,
-]:
-
-    if not values:
-        return (
-            0,
-            0.0,
-            0.0,
-            0,
-        )
-
-    return (
-        min(values),
-        median(values),
-        mean(values),
-        max(values),
-    )
-
-
-# ============================================================
-# MARKET EXTREME HELPERS
-# ============================================================
-
-def get_shortest_history_market(
-    result: TimeframeAuditResult,
-) -> MarketHistoryResult | None:
-
-    readable = get_readable_markets(
-        result
-    )
-
-    if not readable:
-        return None
-
-    return min(
-        readable,
-        key=lambda item: (
-            item.history_days
-        ),
-    )
-
-
-def get_longest_history_market(
-    result: TimeframeAuditResult,
-) -> MarketHistoryResult | None:
-
-    readable = get_readable_markets(
-        result
-    )
-
-    if not readable:
-        return None
-
-    return max(
-        readable,
-        key=lambda item: (
-            item.history_days
-        ),
-    )
-
-
-def get_oldest_latest_candle(
-    result: TimeframeAuditResult,
-) -> MarketHistoryResult | None:
-
-    readable = get_readable_markets(
-        result
-    )
-
-    if not readable:
-        return None
-
-    return max(
-        readable,
-        key=lambda item: (
-            item.latest_age_hours
-        ),
-    )
-
-
-def get_largest_gap_market(
-    result: TimeframeAuditResult,
-) -> MarketHistoryResult | None:
-
-    candidates = [
-        item
-        for item in result.markets
-        if (
-            item.readable
-            and item.gap_count > 0
-        )
-    ]
-
-    if not candidates:
-        return None
-
-    return max(
-        candidates,
-        key=lambda item: (
-            item.largest_gap_seconds
-        ),
-    )
-
-
-# ============================================================
-# TIMEFRAME SUMMARY
-# ============================================================
-
-def print_timeframe_statistics(
-    result: TimeframeAuditResult,
-) -> None:
-
-    print()
-    print_separator("=")
-
-    print(
-        f"{result.timeframe.upper()} "
-        f"HISTORY + GAP STATISTICS"
-    )
-
-    print_separator("=")
-
-    history_days = (
-        get_history_day_values(
-            result
-        )
-    )
-
-    row_counts = (
-        get_row_count_values(
-            result
-        )
-    )
-
-    (
-        min_days,
-        median_days,
-        average_days,
-        max_days,
-    ) = calculate_float_stats(
-        history_days
-    )
-
-    (
-        min_rows,
-        median_rows,
-        average_rows,
-        max_rows,
-    ) = calculate_int_stats(
-        row_counts
-    )
-
-    print(
-        f"CSV files            : "
-        f"{result.file_count:,}"
-    )
-
-    print(
-        f"Readable files       : "
-        f"{result.readable_file_count:,}"
-    )
-
-    print(
-        f"Unreadable files     : "
-        f"{result.unreadable_file_count:,}"
-    )
-
-    print(
-        f"Total rows           : "
-        f"{result.total_rows:,}"
-    )
-
-    print(
-        f"Files with gaps      : "
-        f"{len(result.gap_markets):,}"
-    )
-
-    print(
-        f"Detected gap events  : "
-        f"{result.total_gap_count:,}"
-    )
-
-    print(
-        f"Estimated missing    : "
-        f"{result.total_estimated_missing_candles:,}"
-    )
-
-    print()
-
-    print(
-        "History span:"
-    )
-
-    print(
-        f"  Shortest           : "
-        f"{format_duration_days(min_days)}"
-    )
-
-    print(
-        f"  Median             : "
-        f"{format_duration_days(median_days)}"
-    )
-
-    print(
-        f"  Average            : "
-        f"{format_duration_days(average_days)}"
-    )
-
-    print(
-        f"  Longest            : "
-        f"{format_duration_days(max_days)}"
-    )
-
-    print()
-
-    print(
-        "Rows per market:"
-    )
-
-    print(
-        f"  Minimum            : "
-        f"{min_rows:,}"
-    )
-
-    print(
-        f"  Median             : "
-        f"{median_rows:,.2f}"
-    )
-
-    print(
-        f"  Average            : "
-        f"{average_rows:,.2f}"
-    )
-
-    print(
-        f"  Maximum            : "
-        f"{max_rows:,}"
-    )
-
-    shortest = (
-        get_shortest_history_market(
-            result
-        )
-    )
-
-    longest = (
-        get_longest_history_market(
-            result
-        )
-    )
-
-    oldest_latest = (
-        get_oldest_latest_candle(
-            result
-        )
-    )
-
-    largest_gap = (
-        get_largest_gap_market(
-            result
-        )
-    )
-
-    if shortest is not None:
-        print()
-        print(
-            "Shortest-history market:"
-        )
-
-        print(
-            f"  Market             : "
-            f"{shortest.market}"
-        )
-
-        print(
-            f"  Rows               : "
-            f"{shortest.row_count:,}"
-        )
-
-        print(
-            f"  First candle       : "
-            f"{format_timestamp(shortest.first_timestamp)}"
-        )
-
-        print(
-            f"  Last candle        : "
-            f"{format_timestamp(shortest.last_timestamp)}"
-        )
-
-        print(
-            f"  History            : "
-            f"{format_duration_days(shortest.history_days)}"
-        )
-
-    if longest is not None:
-        print()
-        print(
-            "Longest-history market:"
-        )
-
-        print(
-            f"  Market             : "
-            f"{longest.market}"
-        )
-
-        print(
-            f"  Rows               : "
-            f"{longest.row_count:,}"
-        )
-
-        print(
-            f"  First candle       : "
-            f"{format_timestamp(longest.first_timestamp)}"
-        )
-
-        print(
-            f"  Last candle        : "
-            f"{format_timestamp(longest.last_timestamp)}"
-        )
-
-        print(
-            f"  History            : "
-            f"{format_duration_days(longest.history_days)}"
-        )
-
-    if oldest_latest is not None:
-        print()
-        print(
-            "Oldest latest-candle:"
-        )
-
-        print(
-            f"  Market             : "
-            f"{oldest_latest.market}"
-        )
-
-        print(
-            f"  Last candle        : "
-            f"{format_timestamp(oldest_latest.last_timestamp)}"
-        )
-
-        print(
-            f"  Age                : "
-            f"{oldest_latest.latest_age_hours:,.2f} hours"
-        )
-
-    if largest_gap is not None:
-        print()
-        print(
-            "Largest detected gap:"
-        )
-
-        print(
-            f"  Market             : "
-            f"{largest_gap.market}"
-        )
-
-        print(
-            f"  Gap seconds        : "
-            f"{largest_gap.largest_gap_seconds:,.0f}"
-        )
-
-        print(
-            f"  Gap intervals      : "
-            f"{largest_gap.largest_gap_intervals:,}"
-        )
-
-        print(
-            f"  First gap start    : "
-            f"{format_timestamp(largest_gap.first_gap_start)}"
-        )
-
-        print(
-            f"  First gap end      : "
-            f"{format_timestamp(largest_gap.first_gap_end)}"
-        )
-
-    print()
-
-    print(
-        f"Relatively short histories "
-        f"(< {SHORT_HISTORY_RATIO:.0%} of median): "
-        f"{len(result.short_history_markets):,}"
-    )
-
-    print(
-        f"Stale-data flags     : "
-        f"{len(result.stale_markets):,}"
-    )
-
-    print(
-        f"Gap-market flags     : "
-        f"{len(result.gap_markets):,}"
-    )
-
-
-# ============================================================
-# GAP REPORT
-# ============================================================
-
-def print_gap_report(
-    result: TimeframeAuditResult,
-) -> None:
-
-    gap_items = [
-        item
-        for item in result.markets
-        if (
-            item.readable
-            and item.gap_count > 0
-        )
-    ]
-
-    if not gap_items:
-        print()
-        print_separator("-")
-
-        print(
-            f"{result.timeframe.upper()} "
-            f"GAP REPORT"
-        )
-
-        print_separator("-")
-
-        print(
-            "[PASS] No timestamp gaps detected."
-        )
-
-        return
-
-    gap_items = sorted(
-        gap_items,
-        key=lambda item: (
-            -item.estimated_missing_candles,
-            item.market,
-        ),
-    )
-
-    print()
-    print_separator("-")
-
-    print(
-        f"{result.timeframe.upper()} "
-        f"GAP REPORT"
-    )
-
-    print_separator("-")
-
-    print(
-        "Gap findings are diagnostic."
-    )
-
-    print(
-        "A gap does NOT automatically prove "
-        "Collector failure."
-    )
-
-    print()
-
-    for item in gap_items:
-        largest_hours = (
-            item.largest_gap_seconds
-            / 3600.0
-        )
-
-        print(
-            f"{item.market:<18} "
-            f"gaps={item.gap_count:>6,} "
-            f"missing≈"
-            f"{item.estimated_missing_candles:>8,} "
-            f"largest={largest_hours:>10.2f}h"
-        )
-
-        print(
-            f"    first gap : "
-            f"{format_timestamp(item.first_gap_start)}"
-            f" -> "
-            f"{format_timestamp(item.first_gap_end)}"
-        )
-
-        print(
-            f"    last gap  : "
-            f"{format_timestamp(item.last_gap_start)}"
-            f" -> "
-            f"{format_timestamp(item.last_gap_end)}"
-        )
-
-
-# ============================================================
-# SHORT HISTORY REPORT
-# ============================================================
-
-def print_short_history_report(
-    result: TimeframeAuditResult,
-) -> None:
-
-    short_items = [
-        item
-        for item in result.markets
-        if item.is_short_history
-    ]
-
-    if not short_items:
-        return
-
-    short_items = sorted(
-        short_items,
-        key=lambda item: (
-            item.history_days,
-            item.market,
-        ),
-    )
-
-    print()
-    print_separator("-")
-
-    print(
-        f"{result.timeframe.upper()} "
-        f"RELATIVELY SHORT HISTORIES"
-    )
-
-    print_separator("-")
-
-    print(
-        "This is diagnostic only."
-    )
-
-    print(
-        "Short history does NOT mean invalid data."
-    )
-
-    print()
-
-    for item in short_items:
-        print(
-            f"{item.market:<18} "
-            f"rows={item.row_count:>8,} "
-            f"history={item.history_days:>10.2f}d "
-            f"first="
-            f"{format_timestamp(item.first_timestamp)}"
-        )
-
-
-# ============================================================
-# STALE DATA REPORT
-# ============================================================
-
-def print_stale_report(
-    result: TimeframeAuditResult,
-) -> None:
-
-    stale_items = [
-        item
-        for item in result.markets
-        if item.is_stale
-    ]
-
-    if not stale_items:
-        return
-
-    stale_items = sorted(
-        stale_items,
-        key=lambda item: (
-            -item.latest_age_hours,
-            item.market,
-        ),
-    )
-
-    print()
-    print_separator("-")
-
-    print(
-        f"{result.timeframe.upper()} "
-        f"STALE-DATA FLAGS"
-    )
-
-    print_separator("-")
-
-    expected_interval_hours = (
-        TIMEFRAME_EXPECTED_INTERVAL_HOURS[
-            result.timeframe
-        ]
-    )
-
-    threshold_hours = (
-        expected_interval_hours
-        * STALE_INTERVAL_MULTIPLIER
-    )
-
-    print(
-        f"Expected interval     : "
-        f"{expected_interval_hours:,.2f} hours"
-    )
-
-    print(
-        f"Audit stale threshold : "
-        f"{threshold_hours:,.2f} hours"
-    )
-
-    print()
-
-    for item in stale_items:
-        print(
-            f"{item.market:<18} "
-            f"age={item.latest_age_hours:>10.2f}h "
-            f"last="
-            f"{format_timestamp(item.last_timestamp)}"
-        )
-
-
-# ============================================================
-# UNREADABLE FILE REPORT
-# ============================================================
-
-def print_unreadable_report(
-    result: TimeframeAuditResult,
-) -> None:
-
-    unreadable = [
-        item
-        for item in result.markets
-        if not item.readable
-    ]
-
-    if not unreadable:
-        return
-
-    print()
-    print_separator("-")
-
-    print(
-        f"{result.timeframe.upper()} "
-        f"UNREADABLE FILES"
-    )
-
-    print_separator("-")
-
-    for item in unreadable:
-        print(
-            f"{item.market}"
-        )
-
-        print(
-            f"  Path: {item.path}"
-        )
-
-        for error in item.errors:
-            print(
-                f"  ERROR: {error}"
-            )
-
-
-# ============================================================
-# CROSS-TIMEFRAME MARKET COVERAGE
-# ============================================================
-
-def get_market_set(
-    result: TimeframeAuditResult,
-) -> set[str]:
-
-    return {
-        item.market
-        for item in result.markets
-    }
-
-
-def print_cross_timeframe_coverage(
-    results: dict[
-        str,
-        TimeframeAuditResult,
-    ],
-) -> int:
-
-    print()
-    print_separator("=")
-
-    print(
-        "CROSS-TIMEFRAME HISTORY COVERAGE"
-    )
-
-    print_separator("=")
-
-    h1_markets = get_market_set(
-        results["h1"]
-    )
-
-    h4_markets = get_market_set(
-        results["h4"]
-    )
-
-    d1_markets = get_market_set(
-        results["d1"]
-    )
-
-    all_markets = (
-        h1_markets
-        | h4_markets
-        | d1_markets
-    )
-
-    mismatch_count = 0
-
-    for market in sorted(
-        all_markets
-    ):
-        missing: list[str] = []
-
-        if market not in h1_markets:
-            missing.append(
-                "h1"
-            )
-
-        if market not in h4_markets:
-            missing.append(
-                "h4"
-            )
-
-        if market not in d1_markets:
-            missing.append(
-                "d1"
-            )
-
-        if missing:
-            mismatch_count += 1
-
-            print(
-                f"[MISMATCH] {market}: "
-                f"missing from "
-                f"{', '.join(missing)}"
-            )
-
-    if mismatch_count == 0:
-        print(
-            "[PASS] h1 / h4 / d1 contain "
-            "the same stored market set."
-        )
-
-    else:
-        print(
-            f"[WARN] Markets with timeframe "
-            f"coverage differences: "
-            f"{mismatch_count:,}"
-        )
-
-    return mismatch_count
-
-
-# ============================================================
-# STATUS CSV
-# ============================================================
-
-def write_status_csv(
-    results: dict[
-        str,
-        TimeframeAuditResult,
-    ],
-) -> None:
-
-    STATUS_PATH.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    temp_path = STATUS_PATH.with_suffix(
-        ".csv.tmp"
-    )
-
-    with temp_path.open(
-        "w",
-        encoding="utf-8-sig",
-        newline="",
-    ) as handle:
-
-        writer = csv.DictWriter(
-            handle,
-            fieldnames=(
-                STATUS_FIELDNAMES
+        return AuditResult(
+            timeframe=timeframe,
+            market=market,
+            file=str(file_path),
+            readable=False,
+            rows=rows,
+            first_timestamp=first_timestamp,
+            last_timestamp=last_timestamp,
+            duplicate_timestamps=duplicate_timestamps,
+            gap_count=gap_count,
+            estimated_missing_candles=estimated_missing,
+            max_gap_seconds=max_gap_seconds,
+            source_sha256=source_sha256,
+            resumed=False,
+            errors=" | ".join(
+                errors
             ),
         )
 
-        writer.writeheader()
 
-        for timeframe in (
-            "h1",
-            "h4",
-            "d1",
-        ):
-            result = results[
-                timeframe
-            ]
+# ============================================================
+# DIRECTORY / MARKET DISCOVERY
+# ============================================================
 
-            for item in result.markets:
-                writer.writerow(
-                    {
-                        "timeframe": (
-                            item.timeframe
-                        ),
-                        "market": (
-                            item.market
-                        ),
-                        "source_path": (
-                            str(item.path)
-                        ),
-                        "source_sha256": (
-                            item.source_sha256
-                        ),
-                        "row_count": (
-                            item.row_count
-                        ),
-                        "timestamp_column": (
-                            item.timestamp_column
-                        ),
-                        "first_timestamp": (
-                            timestamp_to_json(
-                                item.first_timestamp
-                            )
-                            or ""
-                        ),
-                        "last_timestamp": (
-                            timestamp_to_json(
-                                item.last_timestamp
-                            )
-                            or ""
-                        ),
-                        "history_hours": (
-                            item.history_hours
-                        ),
-                        "history_days": (
-                            item.history_days
-                        ),
-                        "latest_age_hours": (
-                            item.latest_age_hours
-                        ),
-                        "latest_age_days": (
-                            item.latest_age_days
-                        ),
-                        "invalid_timestamp_count": (
-                            item.invalid_timestamp_count
-                        ),
-                        "duplicate_timestamp_count": (
-                            item.duplicate_timestamp_count
-                        ),
-                        "gap_count": (
-                            item.gap_count
-                        ),
-                        "estimated_missing_candles": (
-                            item.estimated_missing_candles
-                        ),
-                        "largest_gap_seconds": (
-                            item.largest_gap_seconds
-                        ),
-                        "largest_gap_intervals": (
-                            item.largest_gap_intervals
-                        ),
-                        "first_gap_start": (
-                            timestamp_to_json(
-                                item.first_gap_start
-                            )
-                            or ""
-                        ),
-                        "first_gap_end": (
-                            timestamp_to_json(
-                                item.first_gap_end
-                            )
-                            or ""
-                        ),
-                        "last_gap_start": (
-                            timestamp_to_json(
-                                item.last_gap_start
-                            )
-                            or ""
-                        ),
-                        "last_gap_end": (
-                            timestamp_to_json(
-                                item.last_gap_end
-                            )
-                            or ""
-                        ),
-                        "is_short_history": (
-                            item.is_short_history
-                        ),
-                        "is_stale": (
-                            item.is_stale
-                        ),
-                        "readable": (
-                            item.readable
-                        ),
-                        "errors": (
-                            " | ".join(
-                                item.errors
-                            )
-                        ),
-                        "warnings": (
-                            " | ".join(
-                                item.warnings
-                            )
-                        ),
-                    }
-                )
+def get_csv_files(
+    directory: Path,
+) -> List[Path]:
 
-        handle.flush()
-        os.fsync(
-            handle.fileno()
+    if not directory.exists():
+
+        raise FileNotFoundError(
+            f"Required directory not found: {directory}"
         )
 
-    os.replace(
-        temp_path,
-        STATUS_PATH,
+    files = sorted(
+        (
+            path
+            for path
+            in directory.glob("*.csv")
+            if path.is_file()
+        ),
+        key=lambda path: path.name.upper(),
     )
 
+    if not files:
 
-# ============================================================
-# FINAL SOURCE SHA256 VERIFICATION
-# ============================================================
+        raise RuntimeError(
+            f"No CSV files found: {directory}"
+        )
 
-def verify_all_source_hashes(
-    results: dict[
+    return files
+
+
+def verify_market_sets(
+    files_by_timeframe: Dict[
         str,
-        TimeframeAuditResult,
+        List[Path],
     ],
-) -> tuple[int, list[str]]:
+) -> List[str]:
 
-    mismatch_count = 0
-    messages: list[str] = []
-
-    print()
-    print_separator("=")
-
-    print(
-        "FINAL OHLCV SHA256 VERIFICATION"
-    )
-
-    print_separator("=")
-
-    all_items: list[
-        MarketHistoryResult
-    ] = []
-
-    for timeframe in (
-        "h1",
-        "h4",
-        "d1",
-    ):
-        all_items.extend(
-            results[
-                timeframe
-            ].markets
-        )
-
-    total = len(
-        all_items
-    )
-
-    for index, item in enumerate(
-        all_items,
-        start=1,
-    ):
-        if not item.source_sha256:
-            mismatch_count += 1
-
-            message = (
-                f"{item.timeframe.upper()} "
-                f"{item.market}: "
-                "original SHA256 unavailable."
-            )
-
-            messages.append(
-                message
-            )
-
-            print(
-                f"[{index:03d}/{total:03d}] "
-                f"[FAIL] {message}"
-            )
-
-            continue
-
-        try:
-            current_sha256 = (
-                calculate_sha256(
-                    item.path
-                )
-            )
-
-        except Exception as exc:
-            mismatch_count += 1
-
-            message = (
-                f"{item.timeframe.upper()} "
-                f"{item.market}: "
-                "final SHA256 read failed: "
-                f"{type(exc).__name__}: {exc}"
-            )
-
-            messages.append(
-                message
-            )
-
-            print(
-                f"[{index:03d}/{total:03d}] "
-                f"[FAIL] {message}"
-            )
-
-            continue
-
-        if (
-            current_sha256
-            != item.source_sha256
-        ):
-            mismatch_count += 1
-
-            message = (
-                f"{item.timeframe.upper()} "
-                f"{item.market}: "
-                "SHA256 changed."
-            )
-
-            messages.append(
-                message
-            )
-
-            print(
-                f"[{index:03d}/{total:03d}] "
-                f"[FAIL] {message}"
-            )
-
-        elif (
-            index == 1
-            or index == total
-            or index % 50 == 0
-        ):
-            print(
-                f"[{index:03d}/{total:03d}] "
-                "[PASS] SHA256 unchanged"
-            )
-
-    if mismatch_count == 0:
-        print()
-        print(
-            "[PASS] All OHLCV source SHA256 "
-            "values remained unchanged."
-        )
-
-    else:
-        print()
-        print(
-            f"[FAIL] SHA256 mismatches/errors: "
-            f"{mismatch_count:,}"
-        )
-
-    return (
-        mismatch_count,
-        messages,
-    )
-
-
-# ============================================================
-# OVERALL SUMMARY
-# ============================================================
-
-def print_overall_summary(
-    results: dict[
+    market_sets: Dict[
         str,
-        TimeframeAuditResult,
-    ],
-    mismatch_count: int,
-    hash_mismatch_count: int,
+        set[str],
+    ] = {}
+
+    for timeframe, files in (
+        files_by_timeframe.items()
+    ):
+
+        market_sets[
+            timeframe
+        ] = {
+            normalize_market_name(
+                file_path
+            )
+            for file_path
+            in files
+        }
+
+    h1 = market_sets["h1"]
+    h4 = market_sets["h4"]
+    d1 = market_sets["d1"]
+
+    if h1 != h4:
+
+        missing_h4 = sorted(
+            h1 - h4
+        )
+
+        extra_h4 = sorted(
+            h4 - h1
+        )
+
+        raise RuntimeError(
+            "h1 / h4 market set mismatch. "
+            f"Missing h4={missing_h4[:20]}, "
+            f"Extra h4={extra_h4[:20]}"
+        )
+
+    if h1 != d1:
+
+        missing_d1 = sorted(
+            h1 - d1
+        )
+
+        extra_d1 = sorted(
+            d1 - h1
+        )
+
+        raise RuntimeError(
+            "h1 / d1 market set mismatch. "
+            f"Missing d1={missing_d1[:20]}, "
+            f"Extra d1={extra_d1[:20]}"
+        )
+
+    return sorted(
+        h1
+    )
+
+
+# ============================================================
+# PROGRESS OUTPUT
+# ============================================================
+
+def print_job_result(
+    job_number: int,
+    total_jobs: int,
+    result: AuditResult,
+) -> None:
+
+    prefix = (
+        "[RESUME]"
+        if result.resumed
+        else "[AUDIT]"
+    )
+
+    safe_print(
+        f"{prefix} "
+        f"[{job_number}/{total_jobs}] "
+        f"{result.timeframe.upper()} "
+        f"{result.market} "
+        f"rows={result.rows:,} "
+        f"gaps={result.gap_count:,} "
+        f"missing_est={result.estimated_missing_candles:,} "
+        f"duplicates={result.duplicate_timestamps:,}"
+    )
+
+    if result.errors:
+
+        safe_print(
+            f"         notes={result.errors}"
+        )
+
+
+# ============================================================
+# SUMMARY
+# ============================================================
+
+def print_summary(
+    results: List[AuditResult],
+    markets: List[str],
     elapsed_seconds: float,
 ) -> None:
 
-    total_files = sum(
-        result.file_count
-        for result in results.values()
+    readable_count = sum(
+        1
+        for result
+        in results
+        if result.readable
     )
 
-    readable_files = sum(
-        result.readable_file_count
-        for result in results.values()
-    )
-
-    unreadable_files = sum(
-        result.unreadable_file_count
-        for result in results.values()
-    )
-
-    total_rows = sum(
-        result.total_rows
-        for result in results.values()
-    )
-
-    short_history_count = sum(
-        len(
-            result.short_history_markets
-        )
-        for result in results.values()
-    )
-
-    stale_count = sum(
-        len(
-            result.stale_markets
-        )
-        for result in results.values()
-    )
-
-    gap_file_count = sum(
-        len(
-            result.gap_markets
-        )
-        for result in results.values()
-    )
-
-    total_gap_count = sum(
-        result.total_gap_count
-        for result in results.values()
-    )
-
-    estimated_missing = sum(
-        result.total_estimated_missing_candles
-        for result in results.values()
+    failed_count = (
+        len(results)
+        - readable_count
     )
 
     resumed_count = sum(
         1
-        for result in results.values()
-        for item in result.markets
-        if item.resumed
+        for result
+        in results
+        if result.resumed
     )
 
-    scanned_count = (
-        total_files
+    audited_count = (
+        len(results)
         - resumed_count
     )
 
-    print()
-    print_separator("=")
-
-    print(
-        "DATA HISTORY + GAP AUDIT SUMMARY"
+    total_rows = sum(
+        result.rows
+        for result
+        in results
     )
 
-    print_separator("=")
-
-    print(
-        f"Project                 : "
-        f"{PROJECT_NAME}"
+    files_with_gaps = sum(
+        1
+        for result
+        in results
+        if result.gap_count > 0
     )
 
-    print(
-        f"Version                 : "
-        f"{VERSION}"
+    total_gap_events = sum(
+        result.gap_count
+        for result
+        in results
     )
 
-    print(
-        f"Mode                    : "
-        f"READ ONLY"
+    estimated_missing = sum(
+        result.estimated_missing_candles
+        for result
+        in results
     )
 
-    print(
-        f"Timeframes              : "
-        f"h1 / h4 / d1"
+    duplicate_count = sum(
+        result.duplicate_timestamps
+        for result
+        in results
     )
 
-    print(
-        f"Total CSV files         : "
-        f"{total_files:,}"
+    separator()
+
+    safe_print(
+        "FULL KRW DATA HISTORY AUDIT SUMMARY"
     )
 
-    print(
-        f"Readable CSV files      : "
-        f"{readable_files:,}"
+    separator()
+
+    safe_print(
+        f"Project          : {PROJECT_NAME}"
     )
 
-    print(
-        f"Unreadable CSV files    : "
-        f"{unreadable_files:,}"
+    safe_print(
+        f"Version          : {VERSION}"
     )
 
-    print(
-        f"Freshly scanned files   : "
-        f"{scanned_count:,}"
+    safe_print(
+        "Execution mode   : FULL KRW MARKET"
     )
 
-    print(
-        f"Resumed files           : "
-        f"{resumed_count:,}"
+    safe_print(
+        f"Markets          : {len(markets):,}"
     )
 
-    print(
-        f"Total OHLCV rows        : "
-        f"{total_rows:,}"
+    safe_print(
+        f"Timeframes       : {len(TIMEFRAME_DIRS):,}"
     )
 
-    print(
-        f"Relative short flags    : "
-        f"{short_history_count:,}"
+    safe_print(
+        f"Audit jobs       : {len(results):,}"
     )
 
-    print(
-        f"Stale-data flags        : "
-        f"{stale_count:,}"
+    safe_print(
+        f"Passed jobs      : {readable_count:,}"
     )
 
-    print(
-        f"Files containing gaps   : "
-        f"{gap_file_count:,}"
+    safe_print(
+        f"Failed jobs      : {failed_count:,}"
     )
 
-    print(
-        f"Timestamp gap events    : "
-        f"{total_gap_count:,}"
+    safe_print(
+        f"Fresh audits     : {audited_count:,}"
     )
 
-    print(
-        f"Estimated missing       : "
-        f"{estimated_missing:,}"
+    safe_print(
+        f"Resumed jobs     : {resumed_count:,}"
     )
 
-    print(
-        f"Coverage mismatches     : "
-        f"{mismatch_count:,}"
+    safe_print(
+        f"Total rows       : {total_rows:,}"
     )
 
-    print(
-        f"SHA256 mismatches       : "
-        f"{hash_mismatch_count:,}"
+    safe_print("")
+
+    safe_print(
+        "Gap audit:"
     )
 
-    print(
-        f"Elapsed total           : "
-        f"{elapsed_seconds:,.2f}s"
+    safe_print(
+        f"  Files w/gaps   : {files_with_gaps:,}"
     )
 
-    print()
+    safe_print(
+        f"  Gap events     : {total_gap_events:,}"
+    )
 
-    print(
+    safe_print(
+        f"  Missing est.   : {estimated_missing:,}"
+    )
+
+    safe_print(
+        f"  Duplicates     : {duplicate_count:,}"
+    )
+
+    safe_print("")
+
+    safe_print(
+        "Resume:"
+    )
+
+    safe_print(
+        f"  Checkpoint     : {CHECKPOINT_FILE}"
+    )
+
+    safe_print(
+        f"  Status CSV     : {STATUS_FILE}"
+    )
+
+    safe_print("")
+
+    safe_print(
         "Safety:"
     )
 
-    print(
-        "  OHLCV write           : DISABLED"
+    safe_print(
+        "  OHLCV write    : DISABLED"
     )
 
-    print(
-        "  OHLCV delete          : DISABLED"
+    safe_print(
+        "  OHLCV delete   : DISABLED"
     )
 
-    print(
-        "  Automatic gap repair  : DISABLED"
+    safe_print(
+        "  Gap repair     : DISABLED"
     )
 
-    print(
-        "  Feature generation    : DISABLED"
+    safe_print(
+        "  Feature build  : DISABLED"
     )
 
-    print(
-        "  256 Detector          : DISABLED"
+    safe_print(
+        "  256 Detector   : DISABLED"
     )
 
-    print(
-        "  Future labels         : DISABLED"
+    safe_print(
+        "  Future labels  : DISABLED"
     )
 
-    print(
-        "  Prediction            : DISABLED"
+    safe_print(
+        "  Prediction     : DISABLED"
     )
 
-    print(
-        "  Trading               : DISABLED"
+    safe_print(
+        "  Trading        : DISABLED"
     )
 
-    print(
-        "  Git reset             : DISABLED"
+    safe_print(
+        "  Git reset      : DISABLED"
     )
 
-    print(
-        "  Git clean             : DISABLED"
+    safe_print(
+        "  Git clean      : DISABLED"
     )
 
-    print(
-        "  Git commit            : DISABLED"
+    safe_print(
+        "  Git commit     : DISABLED"
     )
 
-    print(
-        "  Git push              : DISABLED"
+    safe_print(
+        "  Git push       : DISABLED"
     )
 
-    print()
+    safe_print("")
 
-    print(
-        "Runtime:"
+    safe_print(
+        f"Elapsed total    : {elapsed_seconds:.2f}s"
     )
 
-    print(
-        f"  Checkpoint            : "
-        f"{CHECKPOINT_PATH}"
-    )
+    separator()
 
-    print(
-        f"  Status CSV            : "
-        f"{STATUS_PATH}"
-    )
+    if failed_count > 0:
 
-    print()
-
-    print(
-        "Important:"
-    )
-
-    print(
-        "  Gap counts are diagnostic findings."
-    )
-
-    print(
-        "  They do not automatically prove "
-        "Collector failure."
-    )
-
-    print_separator("=")
-
-
-# ============================================================
-# FATAL ERROR CHECK
-# ============================================================
-
-def count_fatal_audit_errors(
-    results: dict[
-        str,
-        TimeframeAuditResult,
-    ],
-    coverage_mismatch_count: int,
-    hash_mismatch_count: int,
-) -> int:
-
-    fatal_count = 0
-
-    for result in results.values():
-        if not result.directory_exists:
-            fatal_count += 1
-
-        fatal_count += (
-            result.unreadable_file_count
+        safe_print(
+            "[RESULT] DATA HISTORY AUDIT FAILED"
         )
 
-    fatal_count += (
-        hash_mismatch_count
-    )
+        safe_print(
+            f"[FAIL] {failed_count:,} unreadable or invalid jobs detected."
+        )
 
-    # Cross-timeframe missing files are structural problems
-    # for the current full-market research dataset.
-    fatal_count += (
-        coverage_mismatch_count
-    )
+    else:
 
-    return fatal_count
+        safe_print(
+            "[RESULT] FULL KRW DATA HISTORY AUDIT PASSED"
+        )
+
+        safe_print(
+            f"[PASS] {len(markets):,} markets verified."
+        )
+
+        safe_print(
+            f"[PASS] {len(results):,} audit jobs verified."
+        )
+
+        safe_print(
+            "[PASS] OHLCV source files were read only."
+        )
+
+        safe_print(
+            "[PASS] Persistent Resume checkpoint is available."
+        )
+
+        if files_with_gaps > 0:
+
+            safe_print(
+                "[INFO] Historical timestamp gaps were detected."
+            )
+
+            safe_print(
+                "[NEXT] Review missing history before recovery."
+            )
+
+        else:
+
+            safe_print(
+                "[PASS] No internal timestamp gaps were detected."
+            )
+
+            safe_print(
+                "[NEXT] Historical dataset is ready for the next stage."
+            )
+
+    separator()
 
 
 # ============================================================
-# MAIN
+# MAIN AUDIT
 # ============================================================
 
 def main() -> int:
 
-    started_monotonic = (
-        time.monotonic()
+    started_at = time.perf_counter()
+
+    ensure_runtime_directories()
+
+    separator()
+
+    safe_print(
+        "UPBIT SURGE MONITOR"
     )
 
-    print_header(
-        "UPBIT SURGE MONITOR - "
-        "OHLCV DATA HISTORY + GAP AUDIT "
-        "CLEAN V003"
+    safe_print(
+        "FULL KRW DATA HISTORY AUDIT CLEAN V003"
     )
 
-    print(
-        f"Project root        : "
-        f"{BASE_DIR}"
+    separator()
+
+    safe_print(
+        f"Project          : {PROJECT_NAME}"
     )
 
-    print(
-        f"Data directory      : "
-        f"{DATA_DIR}"
+    safe_print(
+        f"Version          : {VERSION}"
     )
 
-    print(
-        f"OHLCV directory     : "
-        f"{OHLCV_DIR}"
+    safe_print(
+        f"Base directory   : {BASE_DIR}"
     )
 
-    print(
-        "Timeframes          : "
-        "h1 / h4 / d1"
+    safe_print(
+        f"OHLCV directory  : {OHLCV_DIR}"
     )
 
-    print()
+    safe_print("")
 
-    print(
-        "Mode                : READ ONLY"
+    safe_print(
+        "Mode:"
     )
 
-    print(
-        "Source modification : DISABLED"
+    safe_print(
+        "  Full KRW       : ENABLED"
     )
 
-    print(
-        "Source deletion     : DISABLED"
+    safe_print(
+        "  Read only      : ENABLED"
     )
 
-    print(
-        "Automatic repair    : DISABLED"
+    safe_print(
+        "  Resume         : ENABLED"
     )
 
-    print(
-        "Feature generation  : DISABLED"
+    safe_print(
+        "  Gap detection  : ENABLED"
     )
 
-    print(
-        "256 Detector        : DISABLED"
+    safe_print(
+        "  Gap repair     : DISABLED"
     )
 
-    print(
-        "Prediction          : DISABLED"
+    safe_print(
+        "  Feature build  : DISABLED"
     )
 
-    print(
-        "Trading             : DISABLED"
+    safe_print(
+        "  Detector       : DISABLED"
     )
 
-    print()
-
-    now_utc = get_now_utc()
-
-    print(
-        f"Audit UTC time      : "
-        f"{format_timestamp(now_utc)}"
+    safe_print(
+        "  Prediction     : DISABLED"
     )
 
-    print(
-        f"Checkpoint          : "
-        f"{CHECKPOINT_PATH}"
+    safe_print(
+        "  Trading        : DISABLED"
     )
 
-    print(
-        f"Status CSV          : "
-        f"{STATUS_PATH}"
+    safe_print("")
+
+    safe_print(
+        f"Audit UTC time   : {utc_now_iso()}"
     )
 
-    # --------------------------------------------------------
-    # VERIFY BASE DIRECTORIES
-    # --------------------------------------------------------
-
-    if not DATA_DIR.exists():
-        print()
-        print(
-            f"[FATAL] Data directory "
-            f"not found: {DATA_DIR}"
-        )
-
-        return 1
-
-    if not OHLCV_DIR.exists():
-        print()
-        print(
-            f"[FATAL] OHLCV directory "
-            f"not found: {OHLCV_DIR}"
-        )
-
-        return 1
-
-    VALIDATION_DIR.mkdir(
-        parents=True,
-        exist_ok=True,
+    safe_print(
+        f"Checkpoint       : {CHECKPOINT_FILE}"
     )
 
-    # --------------------------------------------------------
-    # LOAD CHECKPOINT
-    # --------------------------------------------------------
-
-    checkpoint = (
-        load_checkpoint()
+    safe_print(
+        f"Status CSV       : {STATUS_FILE}"
     )
 
-    completed_before = len(
-        checkpoint.get(
-            "completed",
-            {},
-        )
+    safe_print("")
+
+    checkpoint = load_checkpoint()
+
+    completed_entries = checkpoint.get(
+        "completed",
+        {}
     )
 
-    print()
-    print(
-        f"Checkpoint entries  : "
-        f"{completed_before:,}"
+    safe_print(
+        "Checkpoint entries : "
+        f"{len(completed_entries):,}"
     )
 
-    if completed_before > 0:
-        print(
-            "[RESUME] Existing completed audit "
-            "entries found."
-        )
+    if completed_entries:
 
-        print(
-            "[RESUME] Unchanged source files "
-            "will reuse their audit results."
-        )
-
-        print(
-            "[RESUME] Changed source files "
-            "will be scanned again."
+        safe_print(
+            "[RESUME] Existing completed checkpoint entries found."
         )
 
     else:
-        print(
-            "[RESUME] No completed checkpoint "
-            "entries found."
+
+        safe_print(
+            "[RESUME] No completed checkpoint entries found."
         )
 
-    # --------------------------------------------------------
-    # AUDIT TIMEFRAMES
-    # --------------------------------------------------------
+    safe_print("")
 
-    results: dict[
+    files_by_timeframe: Dict[
         str,
-        TimeframeAuditResult,
+        List[Path],
     ] = {}
 
-    for timeframe in (
-        "h1",
-        "h4",
-        "d1",
+    for timeframe, directory in (
+        TIMEFRAME_DIRS.items()
     ):
-        result = audit_timeframe(
-            timeframe=timeframe,
-            directory=TIMEFRAME_DIRS[
-                timeframe
-            ],
-            now_utc=now_utc,
-            checkpoint=checkpoint,
+
+        files_by_timeframe[
+            timeframe
+        ] = get_csv_files(
+            directory
         )
 
-        classify_relative_history(
-            result
-        )
+    markets = verify_market_sets(
+        files_by_timeframe
+    )
 
-        classify_stale_data(
-            result
-        )
+    total_jobs = sum(
+        len(files)
+        for files
+        in files_by_timeframe.values()
+    )
 
-        results[timeframe] = (
-            result
-        )
+    safe_print(
+        f"Markets          : {len(markets):,}"
+    )
 
-    # --------------------------------------------------------
-    # WRITE STATUS CSV
-    # --------------------------------------------------------
+    safe_print(
+        f"Timeframes       : {len(TIMEFRAME_DIRS):,}"
+    )
 
-    try:
-        write_status_csv(
-            results
-        )
+    safe_print(
+        f"Total jobs       : {total_jobs:,}"
+    )
 
-        print()
-        print(
-            "[PASS] Audit status CSV written:"
-        )
+    safe_print("")
 
-        print(
-            f"       {STATUS_PATH}"
-        )
+    results: List[
+        AuditResult
+    ] = []
 
-    except Exception as exc:
-        print()
-        print(
-            "[FATAL] Failed to write audit "
-            "status CSV."
-        )
-
-        print(
-            f"{type(exc).__name__}: {exc}"
-        )
-
-        return 1
-
-    # --------------------------------------------------------
-    # PRINT TIMEFRAME REPORTS
-    # --------------------------------------------------------
+    job_number = 0
 
     for timeframe in (
         "h1",
         "h4",
         "d1",
     ):
-        result = results[
+
+        directory = TIMEFRAME_DIRS[
             timeframe
         ]
 
-        print_timeframe_statistics(
-            result
+        files = files_by_timeframe[
+            timeframe
+        ]
+
+        separator(
+            "-",
+            76,
         )
 
-        print_gap_report(
-            result
+        safe_print(
+            f"AUDITING TIMEFRAME: {timeframe.upper()}"
         )
 
-        print_short_history_report(
-            result
+        separator(
+            "-",
+            76,
         )
 
-        print_stale_report(
-            result
+        safe_print(
+            f"Directory : {directory}"
         )
 
-        print_unreadable_report(
-            result
+        safe_print(
+            f"CSV files : {len(files):,}"
         )
 
-    # --------------------------------------------------------
-    # CROSS-TIMEFRAME COVERAGE
-    # --------------------------------------------------------
+        safe_print("")
 
-    coverage_mismatch_count = (
-        print_cross_timeframe_coverage(
-            results
+        safe_print(
+            "Reading market history + gaps..."
         )
-    )
 
-    # --------------------------------------------------------
-    # FINAL SOURCE HASH VERIFICATION
-    # --------------------------------------------------------
+        safe_print("")
 
-    (
-        hash_mismatch_count,
-        hash_messages,
-    ) = verify_all_source_hashes(
+        for file_path in files:
+
+            job_number += 1
+
+            market = normalize_market_name(
+                file_path
+            )
+
+            key = checkpoint_key(
+                timeframe,
+                market,
+            )
+
+            try:
+
+                source_sha256 = (
+                    calculate_sha256(
+                        file_path
+                    )
+                )
+
+            except Exception as exc:
+
+                result = AuditResult(
+                    timeframe=timeframe,
+                    market=market,
+                    file=str(file_path),
+                    readable=False,
+                    rows=0,
+                    first_timestamp="",
+                    last_timestamp="",
+                    duplicate_timestamps=0,
+                    gap_count=0,
+                    estimated_missing_candles=0,
+                    max_gap_seconds=0,
+                    source_sha256="",
+                    resumed=False,
+                    errors=(
+                        f"SHA256 failure: "
+                        f"{type(exc).__name__}: {exc}"
+                    ),
+                )
+
+                results.append(
+                    result
+                )
+
+                print_job_result(
+                    job_number,
+                    total_jobs,
+                    result,
+                )
+
+                write_status_csv(
+                    results
+                )
+
+                continue
+
+            checkpoint_entry = (
+                checkpoint[
+                    "completed"
+                ].get(
+                    key
+                )
+            )
+
+            if checkpoint_result_is_reusable(
+                checkpoint_entry,
+                source_sha256,
+            ):
+
+                result = (
+                    result_from_checkpoint(
+                        checkpoint_entry
+                    )
+                )
+
+                # Ensure current location metadata is correct.
+                result.timeframe = timeframe
+                result.market = market
+                result.file = str(
+                    file_path
+                )
+                result.source_sha256 = (
+                    source_sha256
+                )
+                result.resumed = True
+
+            else:
+
+                result = audit_file(
+                    timeframe=timeframe,
+                    file_path=file_path,
+                    source_sha256=source_sha256,
+                )
+
+                if result.readable:
+
+                    stored_result = asdict(
+                        result
+                    )
+
+                    stored_result[
+                        "resumed"
+                    ] = False
+
+                    checkpoint[
+                        "completed"
+                    ][
+                        key
+                    ] = {
+                        "source_sha256": source_sha256,
+                        "completed_at_utc": utc_now_iso(),
+                        "result": stored_result,
+                    }
+
+                    # Save after every successful job.
+                    #
+                    # This is intentionally frequent.
+                    # If the PC, runner or workflow stops,
+                    # already completed jobs remain reusable.
+                    save_checkpoint(
+                        checkpoint
+                    )
+
+            results.append(
+                result
+            )
+
+            print_job_result(
+                job_number,
+                total_jobs,
+                result,
+            )
+
+            # Keep a progressively updated status CSV.
+            #
+            # This file is runtime output only and should be
+            # ignored by Git.
+            write_status_csv(
+                results
+            )
+
+    # ========================================================
+    # FINAL STATUS WRITE
+    # ========================================================
+
+    write_status_csv(
         results
     )
 
-    if hash_messages:
-        print()
-
-        for message in hash_messages:
-            print(
-                f"[SHA256] {message}"
-            )
-
-    # --------------------------------------------------------
-    # OVERALL SUMMARY
-    # --------------------------------------------------------
+    save_checkpoint(
+        checkpoint
+    )
 
     elapsed_seconds = (
-        time.monotonic()
-        - started_monotonic
+        time.perf_counter()
+        - started_at
     )
 
-    print_overall_summary(
+    print_summary(
         results=results,
-        mismatch_count=(
-            coverage_mismatch_count
-        ),
-        hash_mismatch_count=(
-            hash_mismatch_count
-        ),
-        elapsed_seconds=(
-            elapsed_seconds
-        ),
+        markets=markets,
+        elapsed_seconds=elapsed_seconds,
     )
 
-    # --------------------------------------------------------
-    # FINAL RESULT
-    # --------------------------------------------------------
+    failed_jobs = [
+        result
+        for result
+        in results
+        if not result.readable
+    ]
 
-    fatal_error_count = (
-        count_fatal_audit_errors(
-            results=results,
-            coverage_mismatch_count=(
-                coverage_mismatch_count
-            ),
-            hash_mismatch_count=(
-                hash_mismatch_count
-            ),
-        )
-    )
+    if failed_jobs:
 
-    total_gap_files = sum(
-        len(
-            result.gap_markets
-        )
-        for result in results.values()
-    )
+        safe_print("")
 
-    total_gap_events = sum(
-        result.total_gap_count
-        for result in results.values()
-    )
-
-    total_missing_estimate = sum(
-        result.total_estimated_missing_candles
-        for result in results.values()
-    )
-
-    print()
-    print_separator("=")
-
-    if fatal_error_count > 0:
-        print(
-            "[RESULT] DATA HISTORY + GAP "
-            "AUDIT FAILED"
+        separator(
+            "-",
+            76,
         )
 
-        print(
-            f"[ERROR] Fatal structural/integrity "
-            f"problems: "
-            f"{fatal_error_count:,}"
+        safe_print(
+            "FAILED AUDIT JOBS"
         )
 
-        print(
-            "[SAFETY] No OHLCV source file "
-            "was intentionally modified."
+        separator(
+            "-",
+            76,
         )
 
-        print_separator("=")
+        max_display = 50
+
+        for result in (
+            failed_jobs[
+                :max_display
+            ]
+        ):
+
+            safe_print(
+                f"[FAILED] "
+                f"{result.timeframe.upper()} "
+                f"{result.market}"
+            )
+
+            safe_print(
+                f"         {result.errors}"
+            )
+
+        remaining = (
+            len(failed_jobs)
+            - max_display
+        )
+
+        if remaining > 0:
+
+            safe_print(
+                f"... additional failed jobs omitted: "
+                f"{remaining:,}"
+            )
 
         return 1
-
-    print(
-        "[RESULT] DATA HISTORY + GAP "
-        "AUDIT PASSED"
-    )
-
-    print(
-        "[PASS] All OHLCV CSV files were "
-        "read successfully."
-    )
-
-    print(
-        "[PASS] h1 / h4 / d1 market coverage "
-        "is structurally consistent."
-    )
-
-    print(
-        "[PASS] All OHLCV source SHA256 "
-        "values remained unchanged."
-    )
-
-    if total_gap_files == 0:
-        print(
-            "[PASS] No internal timestamp "
-            "gaps were detected."
-        )
-
-        print(
-            "[NEXT] OHLCV history integrity "
-            "is ready for the next stage."
-        )
-
-    else:
-        print(
-            f"[INFO] Files containing gaps : "
-            f"{total_gap_files:,}"
-        )
-
-        print(
-            f"[INFO] Gap events           : "
-            f"{total_gap_events:,}"
-        )
-
-        print(
-            f"[INFO] Estimated missing    : "
-            f"{total_missing_estimate:,}"
-        )
-
-        print(
-            "[NEXT] Review gap findings "
-            "before deciding whether "
-            "historical recovery is required."
-        )
-
-    print(
-        "[PASS] Resume/checkpoint support "
-        "is enabled."
-    )
-
-    print(
-        "[PASS] Original OHLCV data remained "
-        "READ ONLY."
-    )
-
-    print_separator("=")
 
     return 0
 
@@ -3531,62 +2039,91 @@ def main() -> int:
 if __name__ == "__main__":
 
     try:
+
         exit_code = main()
 
+        raise SystemExit(
+            exit_code
+        )
+
     except KeyboardInterrupt:
-        print()
-        print_separator("=")
 
-        print(
-            "[STOP] Data history audit "
-            "interrupted by user."
+        safe_print("")
+
+        separator()
+
+        safe_print(
+            "DATA HISTORY AUDIT INTERRUPTED"
         )
 
-        print(
-            "[RESUME] Completed file audits "
-            "remain stored in the checkpoint."
+        separator()
+
+        safe_print(
+            "[STOP] User or runner interrupted the audit."
         )
 
-        print(
-            "[RESUME] Run the same command "
-            "again to continue."
+        safe_print(
+            "[RESUME] Successfully completed checkpoint entries remain available."
         )
 
-        print_separator("=")
+        safe_print(
+            "[SAFETY] No automatic cleanup or source deletion was executed."
+        )
 
-        exit_code = 130
+        separator()
+
+        raise SystemExit(
+            130
+        )
+
+    except SystemExit:
+
+        raise
 
     except Exception as exc:
-        print()
-        print_separator("=")
 
-        print(
-            "DATA HISTORY + GAP AUDIT "
-            "FATAL ERROR"
+        safe_print("")
+
+        separator()
+
+        safe_print(
+            "DATA HISTORY + GAP AUDIT FATAL ERROR"
         )
 
-        print_separator("=")
+        separator()
 
-        print(
+        safe_print(
             f"{type(exc).__name__}: {exc}"
         )
 
-        print()
+        safe_print("")
 
-        print(
-            "[SAFETY] No automatic cleanup "
-            "or source deletion was executed."
+        safe_print(
+            "[TRACEBACK]"
         )
 
-        print(
-            "[RESUME] Successfully completed "
-            "checkpoint entries remain available."
+        try:
+
+            traceback.print_exc()
+
+        except UnicodeEncodeError:
+
+            safe_print(
+                "Traceback could not be printed because of console encoding."
+            )
+
+        safe_print("")
+
+        safe_print(
+            "[SAFETY] No automatic cleanup or source deletion was executed."
         )
 
-        print_separator("=")
+        safe_print(
+            "[RESUME] Successfully completed checkpoint entries remain available."
+        )
 
-        exit_code = 1
+        separator()
 
-    sys.exit(
-        exit_code
-    )
+        raise SystemExit(
+            1
+        )
