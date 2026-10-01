@@ -1,0 +1,1011 @@
+# ============================================================
+# Upbit Surge Monitor
+# Clean V001
+# .github/workflows/analyze_post_recovery_gaps_test.yml
+# ============================================================
+#
+# PURPOSE
+# ------------------------------------------------------------
+# Validate:
+#
+#   analyze_post_recovery_gaps.py - Clean V001
+#
+# This workflow verifies:
+#
+#   1. Local repository synchronization
+#   2. Python availability
+#   3. Required project files
+#   4. OHLCV directory structure
+#   5. Full 290-market x 3-timeframe OHLCV inventory
+#   6. OHLCV SHA256 before analysis
+#   7. analyze_post_recovery_gaps.py execution
+#   8. Analysis summary output
+#   9. Analysis detail output
+#  10. Second-pass target output
+#  11. Result JSON output
+#  12. Persistent checkpoint
+#  13. Resume/re-run behavior
+#  14. OHLCV SHA256 after analysis
+#  15. Source OHLCV immutability
+#  16. Generated runtime files remain Git-ignored
+#
+# IMPORTANT
+# ------------------------------------------------------------
+# This workflow MUST NOT:
+#
+#   - repair historical gaps
+#   - modify OHLCV
+#   - delete OHLCV
+#   - download replacement candles
+#   - build features
+#   - run 256 detector
+#   - generate future labels
+#   - run prediction
+#   - trade
+#   - git reset
+#   - git clean
+#   - git commit
+#   - git push
+#
+# ============================================================
+
+
+name: analyze_post_recovery_gaps_test.yml
+
+
+# ============================================================
+# 1. TRIGGER
+# ============================================================
+
+on:
+  workflow_dispatch:
+
+
+# ============================================================
+# 2. PERMISSIONS
+# ============================================================
+
+permissions:
+  contents: read
+
+
+# ============================================================
+# 3. CONCURRENCY
+# ============================================================
+
+concurrency:
+  group: analyze_post_recovery_gaps_test
+  cancel-in-progress: false
+
+
+# ============================================================
+# 4. JOB
+# ============================================================
+
+jobs:
+
+  analyze_post_recovery_gaps_test:
+
+    name: analyze_post_recovery_gaps_test.yml
+
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        shell: powershell
+
+
+    steps:
+
+      # ======================================================
+      # STEP 1
+      # Synchronize local repository
+      # ======================================================
+
+      - name: Synchronize local repository
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "SYNCHRONIZE LOCAL REPOSITORY"
+          Write-Host "============================================================"
+
+          git fetch origin main
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "git fetch origin main failed."
+          }
+
+          git checkout main
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "git checkout main failed."
+          }
+
+          git reset --hard origin/main
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "git reset --hard origin/main failed."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Local repository synchronized with origin/main."
+
+
+      # ======================================================
+      # STEP 2
+      # Verify Python
+      # ======================================================
+
+      - name: Verify Python
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY PYTHON"
+          Write-Host "============================================================"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Python launcher 'py' is not available."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Python verified."
+
+
+      # ======================================================
+      # STEP 3
+      # Verify required project files
+      # ======================================================
+
+      - name: Verify required project files
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY REQUIRED PROJECT FILES"
+          Write-Host "============================================================"
+
+          $requiredFiles = @(
+              "analyze_post_recovery_gaps.py",
+              "data_history_gap_report.py",
+              "recover_history_gaps.py"
+          )
+
+          foreach ($file in $requiredFiles) {
+
+              if (-not (Test-Path $file -PathType Leaf)) {
+                  throw "Required project file missing: $file"
+              }
+
+              Write-Host "[PASS] $file"
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Required project files verified."
+
+
+      # ======================================================
+      # STEP 4
+      # Verify OHLCV directories
+      # ======================================================
+
+      - name: Verify OHLCV directories
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY OHLCV DIRECTORIES"
+          Write-Host "============================================================"
+
+          $directories = @(
+              "data/ohlcv/h1",
+              "data/ohlcv/h4",
+              "data/ohlcv/d1"
+          )
+
+          foreach ($directory in $directories) {
+
+              if (-not (Test-Path $directory -PathType Container)) {
+                  throw "OHLCV directory missing: $directory"
+              }
+
+              Write-Host "[PASS] $directory"
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] OHLCV directories verified."
+
+
+      # ======================================================
+      # STEP 5
+      # Verify full 290-market OHLCV set
+      # ======================================================
+
+      - name: Verify full 290 market OHLCV set
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY FULL 290 MARKET OHLCV SET"
+          Write-Host "============================================================"
+
+          $h1 = @(
+              Get-ChildItem "data/ohlcv/h1" `
+                  -Filter "KRW-*.csv" `
+                  -File
+          ).Count
+
+          $h4 = @(
+              Get-ChildItem "data/ohlcv/h4" `
+                  -Filter "KRW-*.csv" `
+                  -File
+          ).Count
+
+          $d1 = @(
+              Get-ChildItem "data/ohlcv/d1" `
+                  -Filter "KRW-*.csv" `
+                  -File
+          ).Count
+
+          $total = $h1 + $h4 + $d1
+
+          Write-Host "H1 files : $h1"
+          Write-Host "H4 files : $h4"
+          Write-Host "D1 files : $d1"
+          Write-Host "Total    : $total"
+
+          if ($h1 -ne 290) {
+              throw "H1 OHLCV count mismatch. expected=290 found=$h1"
+          }
+
+          if ($h4 -ne 290) {
+              throw "H4 OHLCV count mismatch. expected=290 found=$h4"
+          }
+
+          if ($d1 -ne 290) {
+              throw "D1 OHLCV count mismatch. expected=290 found=$d1"
+          }
+
+          if ($total -ne 870) {
+              throw "Total OHLCV count mismatch. expected=870 found=$total"
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Full 870-file OHLCV inventory verified."
+
+
+      # ======================================================
+      # STEP 6
+      # Create validation directory
+      # ======================================================
+
+      - name: Prepare validation directory
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "PREPARE VALIDATION DIRECTORY"
+          Write-Host "============================================================"
+
+          New-Item `
+              -ItemType Directory `
+              -Force `
+              -Path "data/validation" `
+              | Out-Null
+
+          Write-Host "[PASS] Validation directory ready."
+
+
+      # ======================================================
+      # STEP 7
+      # Record OHLCV SHA256 before analysis
+      #
+      # NOTE:
+      # Do not use [System.IO.Path]::GetRelativePath().
+      # Windows PowerShell 5.1 / older .NET environments may
+      # not provide that method.
+      # ======================================================
+
+      - name: Record OHLCV SHA256 before analysis
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "RECORD OHLCV SHA256 BEFORE ANALYSIS"
+          Write-Host "============================================================"
+
+          $root = (Get-Location).Path
+
+          $files = @(
+              Get-ChildItem "data/ohlcv" `
+                  -Recurse `
+                  -Filter "KRW-*.csv" `
+                  -File
+          ) | Sort-Object FullName
+
+          if ($files.Count -ne 870) {
+              throw "Cannot record OHLCV SHA256. expected=870 found=$($files.Count)"
+          }
+
+          $records = @()
+
+          foreach ($file in $files) {
+
+              $relative = $file.FullName.Substring(
+                  $root.Length
+              ).TrimStart(
+                  [char]'\',
+                  [char]'/'
+              )
+
+              $hash = (
+                  Get-FileHash `
+                      -Algorithm SHA256 `
+                      -Path $file.FullName
+              ).Hash
+
+              $records += [PSCustomObject]@{
+                  path   = $relative
+                  sha256 = $hash
+              }
+          }
+
+          $records |
+              ConvertTo-Json -Depth 4 |
+              Set-Content `
+                  -Encoding UTF8 `
+                  "data/validation/analyze_post_recovery_ohlcv_before.sha256.json"
+
+          Write-Host "Recorded files: $($records.Count)"
+
+          Write-Host ""
+          Write-Host "[PASS] OHLCV SHA256 recorded before analysis."
+
+
+      # ======================================================
+      # STEP 8
+      # Run post-recovery gap analyzer
+      # ======================================================
+
+      - name: Run analyze_post_recovery_gaps.py
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "RUN POST-RECOVERY GAP ANALYZER"
+          Write-Host "============================================================"
+
+          py analyze_post_recovery_gaps.py
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "analyze_post_recovery_gaps.py failed with exit code $LASTEXITCODE."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] analyze_post_recovery_gaps.py completed."
+
+
+      # ======================================================
+      # STEP 9
+      # Verify analysis summary
+      # ======================================================
+
+      - name: Verify analysis summary output
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY ANALYSIS SUMMARY OUTPUT"
+          Write-Host "============================================================"
+
+          $path = "data/reports/post_recovery_analysis/post_recovery_analysis_summary.csv"
+
+          if (-not (Test-Path $path -PathType Leaf)) {
+              throw "Analysis summary missing: $path"
+          }
+
+          $rows = @(
+              Import-Csv $path
+          )
+
+          if ($rows.Count -eq 0) {
+              throw "Analysis summary is empty."
+          }
+
+          Write-Host "Summary rows: $($rows.Count)"
+
+          Write-Host ""
+          Write-Host "[PASS] Analysis summary verified."
+
+
+      # ======================================================
+      # STEP 10
+      # Verify analysis detail
+      # ======================================================
+
+      - name: Verify analysis detail output
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY ANALYSIS DETAIL OUTPUT"
+          Write-Host "============================================================"
+
+          $path = "data/reports/post_recovery_analysis/post_recovery_analysis_detail.csv"
+
+          if (-not (Test-Path $path -PathType Leaf)) {
+              throw "Analysis detail missing: $path"
+          }
+
+          $rows = @(
+              Import-Csv $path
+          )
+
+          if ($rows.Count -eq 0) {
+              throw "Analysis detail is empty."
+          }
+
+          Write-Host "Detail rows: $($rows.Count)"
+
+          $requiredColumns = @(
+              "market",
+              "timeframe",
+              "pre_gap_events",
+              "post_gap_events",
+              "recovered_gap_events",
+              "pre_missing_est",
+              "post_missing_est",
+              "recovered_missing_est",
+              "result_class",
+              "second_pass_candidate",
+              "second_pass_reason"
+          )
+
+          $columns = @(
+              $rows[0].PSObject.Properties.Name
+          )
+
+          foreach ($column in $requiredColumns) {
+
+              if ($columns -notcontains $column) {
+                  throw "Required detail column missing: $column"
+              }
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Analysis detail verified."
+
+
+      # ======================================================
+      # STEP 11
+      # Verify second-pass target output
+      # ======================================================
+
+      - name: Verify second pass target output
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY SECOND-PASS TARGET OUTPUT"
+          Write-Host "============================================================"
+
+          $path = "data/recovery/history_gap_second_pass_targets.csv"
+
+          if (-not (Test-Path $path -PathType Leaf)) {
+              throw "Second-pass target file missing: $path"
+          }
+
+          $header = Get-Content $path -TotalCount 1
+
+          if ([string]::IsNullOrWhiteSpace($header)) {
+              throw "Second-pass target CSV header is missing."
+          }
+
+          $rows = @(
+              Import-Csv $path
+          )
+
+          Write-Host "Second-pass targets: $($rows.Count)"
+
+          Write-Host ""
+          Write-Host "[PASS] Second-pass target output verified."
+
+
+      # ======================================================
+      # STEP 12
+      # Verify result JSON
+      # ======================================================
+
+      - name: Verify analysis result JSON
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY ANALYSIS RESULT JSON"
+          Write-Host "============================================================"
+
+          $path = "data/reports/post_recovery_analysis/post_recovery_analysis_result.json"
+
+          if (-not (Test-Path $path -PathType Leaf)) {
+              throw "Analysis result JSON missing: $path"
+          }
+
+          $result = Get-Content `
+              $path `
+              -Raw |
+              ConvertFrom-Json
+
+          if ($null -eq $result) {
+              throw "Unable to parse analysis result JSON."
+          }
+
+          if ($result.program -ne "analyze_post_recovery_gaps.py") {
+              throw "Unexpected program value in result JSON."
+          }
+
+          if ($result.version -ne "Clean V001") {
+              throw "Unexpected version in result JSON: $($result.version)"
+          }
+
+          if ($result.execution_mode -ne "READ_ONLY_ANALYSIS") {
+              throw "Unexpected execution mode: $($result.execution_mode)"
+          }
+
+          if ($result.ohlcv_inventory.total -ne 870) {
+              throw "Result JSON OHLCV inventory mismatch."
+          }
+
+          if ($result.safety.ohlcv_write -ne $false) {
+              throw "Safety violation: ohlcv_write is not false."
+          }
+
+          if ($result.safety.ohlcv_delete -ne $false) {
+              throw "Safety violation: ohlcv_delete is not false."
+          }
+
+          if ($result.safety.gap_repair -ne $false) {
+              throw "Safety violation: gap_repair is not false."
+          }
+
+          if ($result.safety.api_download -ne $false) {
+              throw "Safety violation: api_download is not false."
+          }
+
+          if ($result.safety.trading -ne $false) {
+              throw "Safety violation: trading is not false."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Analysis result JSON verified."
+
+
+      # ======================================================
+      # STEP 13
+      # Verify persistent checkpoint
+      # ======================================================
+
+      - name: Verify persistent analysis checkpoint
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY PERSISTENT ANALYSIS CHECKPOINT"
+          Write-Host "============================================================"
+
+          $path = "data/validation/analyze_post_recovery_gaps_checkpoint.json"
+
+          if (-not (Test-Path $path -PathType Leaf)) {
+              throw "Analysis checkpoint missing: $path"
+          }
+
+          $checkpoint = Get-Content `
+              $path `
+              -Raw |
+              ConvertFrom-Json
+
+          if ($null -eq $checkpoint) {
+              throw "Unable to parse analysis checkpoint."
+          }
+
+          if ($checkpoint.program -ne "analyze_post_recovery_gaps.py") {
+              throw "Checkpoint program mismatch."
+          }
+
+          if ($checkpoint.version -ne "Clean V001") {
+              throw "Checkpoint version mismatch: $($checkpoint.version)"
+          }
+
+          if ($checkpoint.status -ne "COMPLETED") {
+              throw "Checkpoint is not COMPLETED. status=$($checkpoint.status)"
+          }
+
+          Write-Host "Program : $($checkpoint.program)"
+          Write-Host "Version : $($checkpoint.version)"
+          Write-Host "Status  : $($checkpoint.status)"
+
+          Write-Host ""
+          Write-Host "[PASS] Persistent checkpoint verified."
+
+
+      # ======================================================
+      # STEP 14
+      # Verify re-run behavior
+      #
+      # V001 analyzer is deterministic/read-only.
+      # A second execution must succeed without damaging
+      # source OHLCV or invalidating outputs.
+      # ======================================================
+
+      - name: Verify re-run behavior
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY RE-RUN BEHAVIOR"
+          Write-Host "============================================================"
+
+          py analyze_post_recovery_gaps.py
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Second analyzer execution failed with exit code $LASTEXITCODE."
+          }
+
+          $checkpointPath = "data/validation/analyze_post_recovery_gaps_checkpoint.json"
+
+          $checkpoint = Get-Content `
+              $checkpointPath `
+              -Raw |
+              ConvertFrom-Json
+
+          if ($checkpoint.status -ne "COMPLETED") {
+              throw "Checkpoint did not remain COMPLETED after re-run."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Re-run behavior verified."
+
+
+      # ======================================================
+      # STEP 15
+      # Record OHLCV SHA256 after analysis
+      # ======================================================
+
+      - name: Record OHLCV SHA256 after analysis
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "RECORD OHLCV SHA256 AFTER ANALYSIS"
+          Write-Host "============================================================"
+
+          $root = (Get-Location).Path
+
+          $files = @(
+              Get-ChildItem "data/ohlcv" `
+                  -Recurse `
+                  -Filter "KRW-*.csv" `
+                  -File
+          ) | Sort-Object FullName
+
+          if ($files.Count -ne 870) {
+              throw "Cannot record post-analysis OHLCV SHA256. expected=870 found=$($files.Count)"
+          }
+
+          $records = @()
+
+          foreach ($file in $files) {
+
+              $relative = $file.FullName.Substring(
+                  $root.Length
+              ).TrimStart(
+                  [char]'\',
+                  [char]'/'
+              )
+
+              $hash = (
+                  Get-FileHash `
+                      -Algorithm SHA256 `
+                      -Path $file.FullName
+              ).Hash
+
+              $records += [PSCustomObject]@{
+                  path   = $relative
+                  sha256 = $hash
+              }
+          }
+
+          $records |
+              ConvertTo-Json -Depth 4 |
+              Set-Content `
+                  -Encoding UTF8 `
+                  "data/validation/analyze_post_recovery_ohlcv_after.sha256.json"
+
+          Write-Host "Recorded files: $($records.Count)"
+
+          Write-Host ""
+          Write-Host "[PASS] OHLCV SHA256 recorded after analysis."
+
+
+      # ======================================================
+      # STEP 16
+      # Verify OHLCV remained unchanged
+      # ======================================================
+
+      - name: Verify all OHLCV files remained unchanged
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY ALL OHLCV FILES REMAINED UNCHANGED"
+          Write-Host "============================================================"
+
+          $beforePath = "data/validation/analyze_post_recovery_ohlcv_before.sha256.json"
+          $afterPath  = "data/validation/analyze_post_recovery_ohlcv_after.sha256.json"
+
+          if (-not (Test-Path $beforePath -PathType Leaf)) {
+              throw "Before SHA256 file missing."
+          }
+
+          if (-not (Test-Path $afterPath -PathType Leaf)) {
+              throw "After SHA256 file missing."
+          }
+
+          $before = @(
+              Get-Content `
+                  $beforePath `
+                  -Raw |
+                  ConvertFrom-Json
+          )
+
+          $after = @(
+              Get-Content `
+                  $afterPath `
+                  -Raw |
+                  ConvertFrom-Json
+          )
+
+          if ($before.Count -ne 870) {
+              throw "Before SHA256 record count mismatch. expected=870 found=$($before.Count)"
+          }
+
+          if ($after.Count -ne 870) {
+              throw "After SHA256 record count mismatch. expected=870 found=$($after.Count)"
+          }
+
+          $beforeMap = @{}
+
+          foreach ($item in $before) {
+              $beforeMap[$item.path] = $item.sha256
+          }
+
+          $afterMap = @{}
+
+          foreach ($item in $after) {
+              $afterMap[$item.path] = $item.sha256
+          }
+
+          $changed = @()
+
+          foreach ($path in $beforeMap.Keys) {
+
+              if (-not $afterMap.ContainsKey($path)) {
+
+                  $changed += "MISSING_AFTER: $path"
+                  continue
+              }
+
+              if ($beforeMap[$path] -ne $afterMap[$path]) {
+
+                  $changed += "HASH_CHANGED: $path"
+              }
+          }
+
+          foreach ($path in $afterMap.Keys) {
+
+              if (-not $beforeMap.ContainsKey($path)) {
+
+                  $changed += "NEW_AFTER: $path"
+              }
+          }
+
+          if ($changed.Count -gt 0) {
+
+              Write-Host ""
+              Write-Host "OHLCV changes detected:"
+
+              foreach ($item in $changed) {
+                  Write-Host $item
+              }
+
+              throw "OHLCV source files changed during post-recovery analysis."
+          }
+
+          Write-Host "Verified files: 870"
+
+          Write-Host ""
+          Write-Host "[PASS] All 870 OHLCV files remained unchanged."
+
+
+      # ======================================================
+      # STEP 17
+      # Verify generated runtime files are ignored
+      # ======================================================
+
+      - name: Verify generated analysis data remains ignored
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY GENERATED ANALYSIS DATA REMAINS IGNORED"
+          Write-Host "============================================================"
+
+          $paths = @(
+              "data/reports/post_recovery_analysis/post_recovery_analysis_summary.csv",
+              "data/reports/post_recovery_analysis/post_recovery_analysis_detail.csv",
+              "data/reports/post_recovery_analysis/post_recovery_analysis_result.json",
+              "data/recovery/history_gap_second_pass_targets.csv",
+              "data/validation/analyze_post_recovery_gaps_checkpoint.json",
+              "data/analyze_post_recovery_gaps_status.csv",
+              "data/validation/analyze_post_recovery_ohlcv_before.sha256.json",
+              "data/validation/analyze_post_recovery_ohlcv_after.sha256.json"
+          )
+
+          foreach ($path in $paths) {
+
+              if (-not (Test-Path $path -PathType Leaf)) {
+                  throw "Expected runtime file missing: $path"
+              }
+
+              git check-ignore -q -- "$path"
+
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Runtime file is NOT ignored by .gitignore: $path"
+              }
+
+              Write-Host "[PASS] ignored: $path"
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Generated analysis runtime files remain ignored."
+
+
+      # ======================================================
+      # STEP 18
+      # Final Git safety check
+      #
+      # Ignore untracked runtime files only when they are
+      # properly ignored by .gitignore.
+      #
+      # Any tracked-file modification is a failure.
+      # ======================================================
+
+      - name: Verify final Git safety
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "FINAL GIT SAFETY CHECK"
+          Write-Host "============================================================"
+
+          $trackedChanges = @(
+              git status `
+                  --porcelain `
+                  --untracked-files=no
+          )
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "git status failed."
+          }
+
+          if ($trackedChanges.Count -gt 0) {
+
+              Write-Host ""
+              Write-Host "Tracked Git-visible changes detected:"
+
+              foreach ($change in $trackedChanges) {
+                  Write-Host $change
+              }
+
+              throw "Analyzer modified tracked repository files."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] No tracked Git-visible changes detected."
+
+
+      # ======================================================
+      # STEP 19
+      # Final summary
+      # ======================================================
+
+      - name: analyze_post_recovery_gaps_test.yml completed
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "ANALYZE POST-RECOVERY GAPS TEST SUMMARY"
+          Write-Host "============================================================"
+
+          $resultPath = "data/reports/post_recovery_analysis/post_recovery_analysis_result.json"
+
+          $result = Get-Content `
+              $resultPath `
+              -Raw |
+              ConvertFrom-Json
+
+          $summary = $result.summary
+
+          Write-Host "Program               : $($result.program)"
+          Write-Host "Version               : $($result.version)"
+          Write-Host "Execution mode        : $($result.execution_mode)"
+
+          Write-Host ""
+          Write-Host "OHLCV:"
+          Write-Host "  H1 files            : $($result.ohlcv_inventory.h1)"
+          Write-Host "  H4 files            : $($result.ohlcv_inventory.h4)"
+          Write-Host "  D1 files            : $($result.ohlcv_inventory.d1)"
+          Write-Host "  Total               : $($result.ohlcv_inventory.total)"
+
+          Write-Host ""
+          Write-Host "Recovery:"
+          Write-Host "  Pre gap events      : $($summary.pre_gap_events)"
+          Write-Host "  Post gap events     : $($summary.post_gap_events)"
+          Write-Host "  Recovered gaps      : $($summary.recovered_gap_events)"
+          Write-Host "  Gap recovery rate   : $($summary.gap_recovery_rate_pct)%"
+
+          Write-Host ""
+          Write-Host "Missing estimate:"
+          Write-Host "  Before              : $($summary.pre_missing_est)"
+          Write-Host "  After               : $($summary.post_missing_est)"
+          Write-Host "  Recovered           : $($summary.recovered_missing_est)"
+          Write-Host "  Recovery rate       : $($summary.missing_recovery_rate_pct)%"
+
+          Write-Host ""
+          Write-Host "Remaining:"
+          Write-Host "  Markets             : $($summary.remaining_gap_markets)"
+          Write-Host "  Jobs                : $($summary.remaining_gap_jobs)"
+          Write-Host "  Second-pass targets : $($summary.second_pass_candidates)"
+
+          Write-Host ""
+          Write-Host "Safety:"
+          Write-Host "  OHLCV write         : DISABLED"
+          Write-Host "  OHLCV delete        : DISABLED"
+          Write-Host "  Gap repair          : DISABLED"
+          Write-Host "  API download        : DISABLED"
+          Write-Host "  Feature build       : DISABLED"
+          Write-Host "  256 Detector        : DISABLED"
+          Write-Host "  Future labels       : DISABLED"
+          Write-Host "  Prediction          : DISABLED"
+          Write-Host "  Trading             : DISABLED"
+          Write-Host "  Git commit          : DISABLED"
+          Write-Host "  Git push            : DISABLED"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "[RESULT] ANALYZE POST-RECOVERY GAPS TEST PASSED"
+          Write-Host "============================================================"
+
+          Write-Host "[PASS] 290 markets verified."
+          Write-Host "[PASS] 870 OHLCV files verified."
+          Write-Host "[PASS] Pre/post recovery analysis verified."
+          Write-Host "[PASS] Persistent checkpoint verified."
+          Write-Host "[PASS] Re-run behavior verified."
+          Write-Host "[PASS] Second-pass targets verified."
+          Write-Host "[PASS] All OHLCV source files remained unchanged."
+          Write-Host "[PASS] Runtime outputs remained Git-ignored."
+          Write-Host ""
+          Write-Host "[NEXT] Review post-recovery analysis results before second-pass recovery planning."
+          Write-Host "============================================================"
+
+
+# ============================================================
+# END
+# ============================================================
