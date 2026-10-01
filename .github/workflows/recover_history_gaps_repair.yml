@@ -1,0 +1,1543 @@
+# ============================================================
+# Upbit Surge Monitor
+# recover_history_gaps_repair.yml
+# Clean V001
+#
+# Target:
+#   recover_history_gaps.py - Clean V003
+#
+# Purpose:
+#   Execute ACTUAL historical OHLCV gap recovery.
+#
+# IMPORTANT:
+#   This workflow DOES use:
+#
+#       --repair
+#
+#   Therefore this workflow MAY modify OHLCV CSV files.
+#
+# Recovery policy:
+#   - Preserve existing valid candles first.
+#   - Add only candles actually returned by Upbit.
+#   - Never create synthetic/fake candles.
+#   - Never delete valid historical candles.
+#   - Resume from persistent V003 checkpoint.
+#   - Failed/uncommitted events remain retryable.
+#
+# Expected source:
+#   Markets        : 290
+#   Timeframes     : 3
+#   OHLCV files    : 870
+#
+# Runner:
+#   Self-hosted Windows
+#
+# Safety:
+#   - NO checkpoint reset
+#   - NO git reset
+#   - NO git clean
+#   - NO git commit
+#   - NO git push
+#   - NO Feature build
+#   - NO 256 Detector
+#   - NO Future labels
+#   - NO Prediction
+#   - NO Trading
+# ============================================================
+
+
+name: recover_history_gaps_repair.yml
+
+
+# ============================================================
+# TRIGGER
+# ============================================================
+
+on:
+  workflow_dispatch:
+
+
+# ============================================================
+# PERMISSIONS
+# ============================================================
+
+permissions:
+  contents: read
+
+
+# ============================================================
+# JOB
+# ============================================================
+
+jobs:
+
+  recover-history-gaps-repair:
+
+    name: recover_history_gaps_repair.yml
+
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+
+    timeout-minutes: 720
+
+
+    defaults:
+      run:
+        shell: powershell
+
+
+    steps:
+
+
+      # ======================================================
+      # STEP 1
+      # Synchronize repository
+      #
+      # IMPORTANT:
+      # Never use git reset/clean.
+      #
+      # Runtime/checkpoint files must survive between runs.
+      # ======================================================
+
+      - name: Synchronize local repository
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "SYNCHRONIZE LOCAL REPOSITORY"
+          Write-Host "============================================================"
+
+          Write-Host ""
+          Write-Host "Workspace:"
+          Write-Host $env:GITHUB_WORKSPACE
+
+          Write-Host ""
+          Write-Host "Current branch:"
+
+          git branch --show-current
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Failed to determine current Git branch."
+          }
+
+          Write-Host ""
+          Write-Host "Fetching origin/main..."
+
+          git fetch origin main
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "git fetch origin main failed."
+          }
+
+          Write-Host ""
+          Write-Host "Fast-forwarding repository..."
+
+          git merge --ff-only origin/main
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "git merge --ff-only origin/main failed."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Repository synchronized."
+
+          Write-Host ""
+          Write-Host "[SAFETY] git reset NOT executed."
+          Write-Host "[SAFETY] git clean NOT executed."
+
+
+      # ======================================================
+      # STEP 2
+      # Verify Python
+      # ======================================================
+
+      - name: Verify Python
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY PYTHON"
+          Write-Host "============================================================"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Python launcher 'py' is unavailable."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Python verified."
+
+
+      # ======================================================
+      # STEP 3
+      # Verify required Python packages
+      # ======================================================
+
+      - name: Verify Python packages
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY PYTHON PACKAGES"
+          Write-Host "============================================================"
+
+          py -c "import pandas; import requests; print('pandas:', pandas.__version__); print('requests:', requests.__version__)"
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Required Python package validation failed."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] pandas verified."
+          Write-Host "[PASS] requests verified."
+
+
+      # ======================================================
+      # STEP 4
+      # Verify recovery script
+      # ======================================================
+
+      - name: Verify recovery script
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY RECOVERY SCRIPT"
+          Write-Host "============================================================"
+
+          $script = "recover_history_gaps.py"
+
+          if (-not (Test-Path $script -PathType Leaf)) {
+              throw "Missing required file: $script"
+          }
+
+          $item = Get-Item $script
+
+          Write-Host ""
+          Write-Host "File:"
+          Write-Host $item.FullName
+
+          Write-Host ""
+          Write-Host "Size:"
+          Write-Host "$($item.Length) bytes"
+
+          Write-Host ""
+          Write-Host "[PASS] Recovery script found."
+
+
+      # ======================================================
+      # STEP 5
+      # Verify Clean V003 source identity
+      # ======================================================
+
+      - name: Verify Clean V003 identity
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY CLEAN V003 IDENTITY"
+          Write-Host "============================================================"
+
+          $pythonCode = @'
+          from pathlib import Path
+
+          path = Path("recover_history_gaps.py")
+
+          text = path.read_text(
+              encoding="utf-8"
+          )
+
+          required = [
+              "Historical Gap Recovery Clean V003",
+              "--repair",
+              "--reset-repair-checkpoint",
+              "recover_history_gaps_repair_checkpoint_v003.json",
+          ]
+
+          for token in required:
+
+              if token not in text:
+
+                  raise RuntimeError(
+                      f"Required Clean V003 token missing: {token}"
+                  )
+
+          print("Clean V003 identity      : VERIFIED")
+          print("--repair                 : VERIFIED")
+          print("V003 checkpoint          : VERIFIED")
+          print("checkpoint reset option  : VERIFIED")
+          '@
+
+          $tempPython = Join-Path `
+              $env:RUNNER_TEMP `
+              "verify_recover_v003.py"
+
+          $pythonCode |
+              Set-Content `
+                  -Path $tempPython `
+                  -Encoding UTF8
+
+          py $tempPython
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Clean V003 identity validation failed."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Clean V003 verified."
+
+
+      # ======================================================
+      # STEP 6
+      # Verify OHLCV directories
+      # ======================================================
+
+      - name: Verify OHLCV directories
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY OHLCV DIRECTORIES"
+          Write-Host "============================================================"
+
+          $directories = @(
+              "data\ohlcv\h1",
+              "data\ohlcv\h4",
+              "data\ohlcv\d1"
+          )
+
+          foreach ($directory in $directories) {
+
+              if (-not (
+                  Test-Path `
+                      $directory `
+                      -PathType Container
+              )) {
+
+                  throw (
+                      "Required directory missing: " +
+                      $directory
+                  )
+              }
+
+              Write-Host "[PASS] $directory"
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] OHLCV directories verified."
+
+
+      # ======================================================
+      # STEP 7
+      # Verify complete 290 x 3 OHLCV universe
+      # ======================================================
+
+      - name: Verify full 290 market OHLCV set
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY FULL 290 MARKET OHLCV SET"
+          Write-Host "============================================================"
+
+          $expectedMarkets = 290
+          $expectedFiles = 870
+
+          $timeframes = @(
+              "h1",
+              "h4",
+              "d1"
+          )
+
+          $marketSets = @{}
+          $total = 0
+
+          foreach ($timeframe in $timeframes) {
+
+              $directory = "data\ohlcv\$timeframe"
+
+              $files = @(
+                  Get-ChildItem `
+                      -Path $directory `
+                      -Filter "KRW-*.csv" `
+                      -File
+              )
+
+              $count = $files.Count
+
+              Write-Host ""
+              Write-Host "$timeframe files : $count"
+
+              if ($count -ne $expectedMarkets) {
+
+                  throw (
+                      "Expected $expectedMarkets files for " +
+                      "$timeframe. Found: $count"
+                  )
+              }
+
+              $markets = @(
+                  $files |
+                  ForEach-Object {
+                      $_.BaseName
+                  } |
+                  Sort-Object -Unique
+              )
+
+              if ($markets.Count -ne $expectedMarkets) {
+
+                  throw (
+                      "Unique market count mismatch for " +
+                      "$timeframe."
+                  )
+              }
+
+              $marketSets[$timeframe] = $markets
+
+              $total += $count
+          }
+
+          if ($total -ne $expectedFiles) {
+
+              throw (
+                  "Expected 870 OHLCV files. " +
+                  "Found: $total"
+              )
+          }
+
+          $baseMarkets = $marketSets["h1"]
+
+          foreach ($timeframe in @("h4", "d1")) {
+
+              $difference = @(
+                  Compare-Object `
+                      -ReferenceObject $baseMarkets `
+                      -DifferenceObject $marketSets[$timeframe]
+              )
+
+              if ($difference.Count -gt 0) {
+
+                  $difference |
+                      Format-Table -AutoSize
+
+                  throw (
+                      "Market universe differs between " +
+                      "timeframes."
+                  )
+              }
+          }
+
+          Write-Host ""
+          Write-Host "Markets    : 290"
+          Write-Host "Timeframes : 3"
+          Write-Host "OHLCV files: 870"
+
+          Write-Host ""
+          Write-Host "[PASS] Full OHLCV universe verified."
+
+
+      # ======================================================
+      # STEP 8
+      # Verify reviewed recovery inputs
+      # ======================================================
+
+      - name: Verify reviewed recovery inputs
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY REVIEWED RECOVERY INPUTS"
+          Write-Host "============================================================"
+
+          $targets = `
+              "data\recovery\history_gap_recovery_targets.csv"
+
+          $plan = `
+              "data\recovery\history_gap_recovery_plan.json"
+
+          if (-not (
+              Test-Path `
+                  $targets `
+                  -PathType Leaf
+          )) {
+
+              throw (
+                  "Recovery targets missing: " +
+                  $targets
+              )
+          }
+
+          if (-not (
+              Test-Path `
+                  $plan `
+                  -PathType Leaf
+          )) {
+
+              throw (
+                  "Recovery plan missing: " +
+                  $plan
+              )
+          }
+
+          $targetItem = Get-Item $targets
+          $planItem = Get-Item $plan
+
+          if ($targetItem.Length -le 0) {
+              throw "Recovery target CSV is empty."
+          }
+
+          if ($planItem.Length -le 0) {
+              throw "Recovery plan JSON is empty."
+          }
+
+          Write-Host ""
+          Write-Host "Targets:"
+          Write-Host $targets
+          Write-Host "Size: $($targetItem.Length) bytes"
+
+          Write-Host ""
+          Write-Host "Plan:"
+          Write-Host $plan
+          Write-Host "Size: $($planItem.Length) bytes"
+
+          Write-Host ""
+          Write-Host "[PASS] Recovery inputs verified."
+
+
+      # ======================================================
+      # STEP 9
+      # Record recovery inputs SHA256
+      # ======================================================
+
+      - name: Record recovery input SHA256
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "RECORD RECOVERY INPUT SHA256"
+          Write-Host "============================================================"
+
+          $manifest = Join-Path `
+              $env:RUNNER_TEMP `
+              "repair_recovery_inputs_before.sha256"
+
+          $files = @(
+              "data\recovery\history_gap_recovery_targets.csv",
+              "data\recovery\history_gap_recovery_plan.json"
+          )
+
+          $rows = @()
+
+          foreach ($file in $files) {
+
+              $hash = (
+                  Get-FileHash `
+                      -Path $file `
+                      -Algorithm SHA256
+              ).Hash
+
+              $rows += "$hash`t$file"
+
+              Write-Host "[HASH] $file"
+          }
+
+          $rows |
+              Set-Content `
+                  -Path $manifest `
+                  -Encoding UTF8
+
+          Write-Host ""
+          Write-Host "[PASS] Recovery input hashes recorded."
+
+
+      # ======================================================
+      # STEP 10
+      # Record complete OHLCV SHA256 BEFORE repair
+      #
+      # This is evidence of the exact pre-repair state.
+      #
+      # We DO NOT expect these hashes to remain unchanged,
+      # because valid repaired files are supposed to change.
+      # ======================================================
+
+      - name: Record OHLCV SHA256 before repair
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "RECORD OHLCV SHA256 BEFORE REPAIR"
+          Write-Host "============================================================"
+
+          $manifest = Join-Path `
+              $env:RUNNER_TEMP `
+              "repair_ohlcv_before.sha256"
+
+          $workspacePath = (
+              Resolve-Path $env:GITHUB_WORKSPACE
+          ).Path.TrimEnd('\')
+
+          $files = @(
+              Get-ChildItem `
+                  -Path "data\ohlcv" `
+                  -Filter "KRW-*.csv" `
+                  -File `
+                  -Recurse |
+              Sort-Object FullName
+          )
+
+          if ($files.Count -ne 870) {
+
+              throw (
+                  "Expected 870 OHLCV files. Found: " +
+                  "$($files.Count)"
+              )
+          }
+
+          $rows = @()
+
+          foreach ($file in $files) {
+
+              $fullPath = $file.FullName
+
+              $relative = $fullPath.Substring(
+                  $workspacePath.Length
+              ).TrimStart('\')
+
+              $hash = (
+                  Get-FileHash `
+                      -Path $fullPath `
+                      -Algorithm SHA256
+              ).Hash
+
+              $rows += "$hash`t$relative"
+          }
+
+          $rows |
+              Set-Content `
+                  -Path $manifest `
+                  -Encoding UTF8
+
+          Write-Host ""
+          Write-Host "Files hashed : $($files.Count)"
+
+          Write-Host ""
+          Write-Host "[PASS] Pre-repair OHLCV manifest recorded."
+
+
+      # ======================================================
+      # STEP 11
+      # Inspect V003 repair checkpoint
+      #
+      # NEVER reset it here.
+      #
+      # Existing checkpoint = Resume.
+      # Missing checkpoint  = Fresh repair.
+      # ======================================================
+
+      - name: Inspect V003 repair checkpoint
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "INSPECT V003 REPAIR CHECKPOINT"
+          Write-Host "============================================================"
+
+          $checkpoint = `
+              "data\recovery\checkpoint\recover_history_gaps_repair_checkpoint_v003.json"
+
+          if (Test-Path $checkpoint -PathType Leaf) {
+
+              $item = Get-Item $checkpoint
+
+              Write-Host ""
+              Write-Host "[RESUME] Existing checkpoint detected."
+              Write-Host "Path       : $checkpoint"
+              Write-Host "Size       : $($item.Length) bytes"
+              Write-Host "Last write : $($item.LastWriteTime)"
+
+              Write-Host ""
+              Write-Host (
+                  "[RESUME] Completed repair events will " +
+                  "remain checkpointed."
+              )
+          }
+          else {
+
+              Write-Host ""
+              Write-Host "[FRESH] No V003 repair checkpoint found."
+              Write-Host "[FRESH] Recovery will begin normally."
+          }
+
+          Write-Host ""
+          Write-Host (
+              "[SAFETY] --reset-repair-checkpoint " +
+              "will NOT be used."
+          )
+
+
+      # ======================================================
+      # STEP 12
+      # ACTUAL HISTORICAL GAP REPAIR
+      #
+      # This is the only step that intentionally enables
+      # historical OHLCV modification.
+      #
+      # IMPORTANT:
+      #
+      # DO NOT ADD:
+      #
+      #   --reset-repair-checkpoint
+      #
+      # ======================================================
+
+      - name: Run actual historical gap repair
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "ACTUAL HISTORICAL GAP REPAIR"
+          Write-Host "============================================================"
+
+          Write-Host ""
+          Write-Host "Command:"
+          Write-Host "py recover_history_gaps.py --repair"
+
+          Write-Host ""
+          Write-Host "Repair mode : ENABLED"
+          Write-Host "Resume      : ENABLED"
+          Write-Host "Reset       : DISABLED"
+
+          Write-Host ""
+          Write-Host (
+              "[IMPORTANT] Existing valid candles must " +
+              "remain preserved."
+          )
+
+          Write-Host (
+              "[IMPORTANT] Only actual Upbit candles may " +
+              "be added."
+          )
+
+          Write-Host (
+              "[IMPORTANT] Synthetic candles are forbidden."
+          )
+
+          Write-Host ""
+
+          py recover_history_gaps.py --repair
+
+          if ($LASTEXITCODE -ne 0) {
+
+              throw (
+                  "Historical gap repair failed with exit " +
+                  "code $LASTEXITCODE."
+              )
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Historical repair process completed."
+
+
+      # ======================================================
+      # STEP 13
+      # Verify recovery inputs unchanged
+      # ======================================================
+
+      - name: Verify recovery inputs remained unchanged
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY RECOVERY INPUTS REMAINED UNCHANGED"
+          Write-Host "============================================================"
+
+          $manifest = Join-Path `
+              $env:RUNNER_TEMP `
+              "repair_recovery_inputs_before.sha256"
+
+          if (-not (
+              Test-Path `
+                  $manifest `
+                  -PathType Leaf
+          )) {
+
+              throw "Recovery input manifest missing."
+          }
+
+          $rows = @(
+              Get-Content $manifest
+          )
+
+          $checked = 0
+
+          foreach ($row in $rows) {
+
+              if ([string]::IsNullOrWhiteSpace($row)) {
+                  continue
+              }
+
+              $parts = $row -split "`t", 2
+
+              if ($parts.Count -ne 2) {
+                  throw "Invalid recovery manifest row."
+              }
+
+              $expectedHash = $parts[0].Trim()
+              $file = $parts[1].Trim()
+
+              if (-not (
+                  Test-Path `
+                      $file `
+                      -PathType Leaf
+              )) {
+
+                  throw (
+                      "Recovery input disappeared: " +
+                      $file
+                  )
+              }
+
+              $actualHash = (
+                  Get-FileHash `
+                      -Path $file `
+                      -Algorithm SHA256
+              ).Hash
+
+              if ($actualHash -ne $expectedHash) {
+
+                  throw (
+                      "Recovery input was modified: " +
+                      $file
+                  )
+              }
+
+              $checked += 1
+
+              Write-Host "[UNCHANGED] $file"
+          }
+
+          if ($checked -ne 2) {
+
+              throw (
+                  "Expected 2 recovery inputs. Verified: " +
+                  "$checked"
+              )
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Recovery inputs remained unchanged."
+
+
+      # ======================================================
+      # STEP 14
+      # Verify all 870 OHLCV files still exist
+      # ======================================================
+
+      - name: Verify OHLCV file set after repair
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY OHLCV FILE SET AFTER REPAIR"
+          Write-Host "============================================================"
+
+          $timeframes = @(
+              "h1",
+              "h4",
+              "d1"
+          )
+
+          $total = 0
+
+          foreach ($timeframe in $timeframes) {
+
+              $files = @(
+                  Get-ChildItem `
+                      -Path "data\ohlcv\$timeframe" `
+                      -Filter "KRW-*.csv" `
+                      -File
+              )
+
+              if ($files.Count -ne 290) {
+
+                  throw (
+                      "Post-repair OHLCV file count mismatch " +
+                      "for $timeframe. Expected 290, found " +
+                      "$($files.Count)."
+                  )
+              }
+
+              $total += $files.Count
+
+              Write-Host (
+                  "[PASS] $timeframe : " +
+                  "$($files.Count)"
+              )
+          }
+
+          if ($total -ne 870) {
+
+              throw (
+                  "Expected 870 total OHLCV files after " +
+                  "repair. Found: $total"
+              )
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] All 870 OHLCV files preserved."
+
+
+      # ======================================================
+      # STEP 15
+      # Validate every OHLCV CSV structurally
+      #
+      # Checks:
+      #   - readable CSV
+      #   - non-empty
+      #   - candle_date_time_utc exists
+      #   - no invalid UTC timestamps
+      #   - no duplicate candle timestamps
+      #   - chronological ascending order
+      #
+      # No file is modified.
+      # ======================================================
+
+      - name: Validate OHLCV integrity after repair
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "VALIDATE OHLCV INTEGRITY AFTER REPAIR"
+          Write-Host "============================================================"
+
+          $pythonCode = @'
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path("data/ohlcv")
+
+          files = sorted(
+              root.glob("*/*.csv")
+          )
+
+          files = [
+              p
+              for p in files
+              if p.name.startswith("KRW-")
+          ]
+
+          if len(files) != 870:
+
+              raise RuntimeError(
+                  f"Expected 870 OHLCV files, "
+                  f"found {len(files)}"
+              )
+
+          checked = 0
+
+          for path in files:
+
+              try:
+                  df = pd.read_csv(path)
+
+              except Exception as exc:
+
+                  raise RuntimeError(
+                      f"CSV read failed: {path}: {exc}"
+                  ) from exc
+
+              if df.empty:
+
+                  raise RuntimeError(
+                      f"Empty OHLCV file: {path}"
+                  )
+
+              column = "candle_date_time_utc"
+
+              if column not in df.columns:
+
+                  raise RuntimeError(
+                      f"Missing {column}: {path}"
+                  )
+
+              ts = pd.to_datetime(
+                  df[column],
+                  errors="coerce",
+                  utc=True,
+              )
+
+              if ts.isna().any():
+
+                  bad = int(ts.isna().sum())
+
+                  raise RuntimeError(
+                      f"Invalid UTC timestamp(s): "
+                      f"{path}: {bad}"
+                  )
+
+              duplicate_count = int(
+                  ts.duplicated().sum()
+              )
+
+              if duplicate_count != 0:
+
+                  raise RuntimeError(
+                      f"Duplicate candle timestamp(s): "
+                      f"{path}: {duplicate_count}"
+                  )
+
+              if not ts.is_monotonic_increasing:
+
+                  raise RuntimeError(
+                      f"OHLCV is not chronological "
+                      f"ascending: {path}"
+                  )
+
+              checked += 1
+
+          print(
+              f"OHLCV files checked : {checked}"
+          )
+
+          print(
+              "Duplicate timestamps : 0"
+          )
+
+          print(
+              "Chronological order  : VERIFIED"
+          )
+
+          print(
+              "UTC timestamps       : VERIFIED"
+          )
+          '@
+
+          $tempPython = Join-Path `
+              $env:RUNNER_TEMP `
+              "validate_repaired_ohlcv.py"
+
+          $pythonCode |
+              Set-Content `
+                  -Path $tempPython `
+                  -Encoding UTF8
+
+          py $tempPython
+
+          if ($LASTEXITCODE -ne 0) {
+
+              throw (
+                  "Post-repair OHLCV integrity validation " +
+                  "failed."
+              )
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] OHLCV integrity verified."
+
+
+      # ======================================================
+      # STEP 16
+      # Record OHLCV SHA256 AFTER repair
+      #
+      # This records exactly which files changed.
+      # ======================================================
+
+      - name: Record OHLCV SHA256 after repair
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "RECORD OHLCV SHA256 AFTER REPAIR"
+          Write-Host "============================================================"
+
+          $beforeManifest = Join-Path `
+              $env:RUNNER_TEMP `
+              "repair_ohlcv_before.sha256"
+
+          $afterManifest = Join-Path `
+              $env:RUNNER_TEMP `
+              "repair_ohlcv_after.sha256"
+
+          $workspacePath = (
+              Resolve-Path $env:GITHUB_WORKSPACE
+          ).Path.TrimEnd('\')
+
+          $files = @(
+              Get-ChildItem `
+                  -Path "data\ohlcv" `
+                  -Filter "KRW-*.csv" `
+                  -File `
+                  -Recurse |
+              Sort-Object FullName
+          )
+
+          $rows = @()
+
+          foreach ($file in $files) {
+
+              $relative = $file.FullName.Substring(
+                  $workspacePath.Length
+              ).TrimStart('\')
+
+              $hash = (
+                  Get-FileHash `
+                      -Path $file.FullName `
+                      -Algorithm SHA256
+              ).Hash
+
+              $rows += "$hash`t$relative"
+          }
+
+          $rows |
+              Set-Content `
+                  -Path $afterManifest `
+                  -Encoding UTF8
+
+          $beforeRows = @(
+              Get-Content $beforeManifest
+          )
+
+          $afterRows = @(
+              Get-Content $afterManifest
+          )
+
+          $beforeMap = @{}
+
+          foreach ($row in $beforeRows) {
+
+              if ([string]::IsNullOrWhiteSpace($row)) {
+                  continue
+              }
+
+              $parts = $row -split "`t", 2
+
+              if ($parts.Count -eq 2) {
+                  $beforeMap[$parts[1]] = $parts[0]
+              }
+          }
+
+          $afterMap = @{}
+
+          foreach ($row in $afterRows) {
+
+              if ([string]::IsNullOrWhiteSpace($row)) {
+                  continue
+              }
+
+              $parts = $row -split "`t", 2
+
+              if ($parts.Count -eq 2) {
+                  $afterMap[$parts[1]] = $parts[0]
+              }
+          }
+
+          $changed = @()
+
+          foreach ($path in $afterMap.Keys) {
+
+              if (-not $beforeMap.ContainsKey($path)) {
+
+                  throw (
+                      "Unexpected new OHLCV file: " +
+                      $path
+                  )
+              }
+
+              if (
+                  $beforeMap[$path] -ne
+                  $afterMap[$path]
+              ) {
+
+                  $changed += $path
+              }
+          }
+
+          foreach ($path in $beforeMap.Keys) {
+
+              if (-not $afterMap.ContainsKey($path)) {
+
+                  throw (
+                      "OHLCV file disappeared during repair: " +
+                      $path
+                  )
+              }
+          }
+
+          Write-Host ""
+          Write-Host "Total OHLCV files : $($afterMap.Count)"
+          Write-Host "Changed files     : $($changed.Count)"
+
+          if ($changed.Count -gt 0) {
+
+              Write-Host ""
+              Write-Host "Changed OHLCV files:"
+
+              foreach ($path in (
+                  $changed |
+                  Sort-Object
+              )) {
+
+                  Write-Host "  $path"
+              }
+          }
+          else {
+
+              Write-Host ""
+              Write-Host (
+                  "[INFO] No OHLCV hash changes detected."
+              )
+
+              Write-Host (
+                  "[INFO] This is valid if all repair events " +
+                  "were already completed or no API candles " +
+                  "were recoverable."
+              )
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Post-repair SHA256 manifest recorded."
+
+
+      # ======================================================
+      # STEP 17
+      # Verify V003 repair outputs
+      #
+      # Exact V003 runtime paths.
+      # ======================================================
+
+      - name: Verify V003 repair outputs
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY V003 REPAIR OUTPUTS"
+          Write-Host "============================================================"
+
+          $expected = @(
+              "data\recover_history_gaps_repair_status_v003.csv",
+              "data\recovery\reports\historical_gap_repair_detail_v003.csv",
+              "data\recovery\reports\historical_gap_repair_summary_v003.csv",
+              "data\recovery\reports\historical_gap_repair_meta_v003.json"
+          )
+
+          foreach ($file in $expected) {
+
+              if (-not (
+                  Test-Path `
+                      $file `
+                      -PathType Leaf
+              )) {
+
+                  throw (
+                      "Expected V003 repair output missing: " +
+                      $file
+                  )
+              }
+
+              $item = Get-Item $file
+
+              if ($item.Length -le 0) {
+
+                  throw (
+                      "V003 repair output is empty: " +
+                      $file
+                  )
+              }
+
+              Write-Host (
+                  "[PASS] $file | " +
+                  "$($item.Length) bytes"
+              )
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] V003 repair outputs verified."
+
+
+      # ======================================================
+      # STEP 18
+      # Verify V003 checkpoint exists
+      # ======================================================
+
+      - name: Verify V003 repair checkpoint
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY V003 REPAIR CHECKPOINT"
+          Write-Host "============================================================"
+
+          $checkpoint = `
+              "data\recovery\checkpoint\recover_history_gaps_repair_checkpoint_v003.json"
+
+          if (-not (
+              Test-Path `
+                  $checkpoint `
+                  -PathType Leaf
+          )) {
+
+              throw (
+                  "V003 repair checkpoint was not found."
+              )
+          }
+
+          $item = Get-Item $checkpoint
+
+          if ($item.Length -le 0) {
+
+              throw (
+                  "V003 repair checkpoint is empty."
+              )
+          }
+
+          Write-Host ""
+          Write-Host "Checkpoint:"
+          Write-Host $checkpoint
+
+          Write-Host ""
+          Write-Host "Size:"
+          Write-Host "$($item.Length) bytes"
+
+          Write-Host ""
+          Write-Host "[PASS] Persistent V003 checkpoint verified."
+          Write-Host "[PASS] Resume state preserved."
+
+
+      # ======================================================
+      # STEP 19
+      # Verify legacy V001 checkpoint was not deleted
+      #
+      # Informational when not present.
+      # ======================================================
+
+      - name: Verify legacy checkpoint preservation
+
+        run: |
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY LEGACY CHECKPOINT PRESERVATION"
+          Write-Host "============================================================"
+
+          $legacy = `
+              "data\recovery\checkpoint\recover_history_gaps_checkpoint.json"
+
+          if (Test-Path $legacy -PathType Leaf) {
+
+              Write-Host ""
+              Write-Host "[PASS] Legacy V001 checkpoint preserved."
+          }
+          else {
+
+              Write-Host ""
+              Write-Host (
+                  "[INFO] Legacy V001 checkpoint is not " +
+                  "currently present."
+              )
+
+              Write-Host (
+                  "[INFO] This workflow performed no " +
+                  "checkpoint deletion."
+              )
+          }
+
+
+      # ======================================================
+      # STEP 20
+      # Final Git safety
+      #
+      # IMPORTANT:
+      # OHLCV files may legitimately appear modified.
+      #
+      # We do NOT clean/reset them.
+      # We do NOT commit/push them.
+      # ======================================================
+
+      - name: Final Git safety report
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "============================================================"
+          Write-Host "FINAL GIT SAFETY REPORT"
+          Write-Host "============================================================"
+
+          $status = @(
+              git status --short
+          )
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "git status failed."
+          }
+
+          Write-Host ""
+
+          if ($status.Count -eq 0) {
+
+              Write-Host "[INFO] Git working tree is clean."
+          }
+          else {
+
+              Write-Host "Git-visible changes:"
+              Write-Host ""
+
+              foreach ($line in $status) {
+                  Write-Host $line
+              }
+          }
+
+          Write-Host ""
+          Write-Host "[SAFETY] git reset  : DISABLED"
+          Write-Host "[SAFETY] git clean  : DISABLED"
+          Write-Host "[SAFETY] git commit : DISABLED"
+          Write-Host "[SAFETY] git push   : DISABLED"
+
+          Write-Host ""
+          Write-Host "[PASS] No automatic Git mutation executed."
+
+
+      # ======================================================
+      # STEP 21
+      # Final result
+      # ======================================================
+
+      - name: recover_history_gaps_repair.yml completed
+
+        if: success()
+
+        run: |
+
+          Write-Host "============================================================"
+          Write-Host "[RESULT] recover_history_gaps_repair.yml PASSED"
+          Write-Host "============================================================"
+
+          Write-Host ""
+          Write-Host "Target:"
+          Write-Host "  recover_history_gaps.py - Clean V003"
+
+          Write-Host ""
+          Write-Host "Execution:"
+          Write-Host "  Mode            : ACTUAL REPAIR"
+          Write-Host "  --repair        : ENABLED"
+          Write-Host "  Markets         : 290"
+          Write-Host "  Timeframes      : 3"
+          Write-Host "  OHLCV files     : 870"
+
+          Write-Host ""
+          Write-Host "Recovery:"
+          Write-Host "  Existing candle : PRESERVE FIRST"
+          Write-Host "  API candle      : REAL DATA ONLY"
+          Write-Host "  Fake candle     : FORBIDDEN"
+          Write-Host "  Resume          : ENABLED"
+          Write-Host "  Checkpoint      : V003 PERSISTENT"
+          Write-Host "  Reset checkpoint: DISABLED"
+
+          Write-Host ""
+          Write-Host "Post validation:"
+          Write-Host "  870 files       : VERIFIED"
+          Write-Host "  CSV readable    : VERIFIED"
+          Write-Host "  UTC timestamp   : VERIFIED"
+          Write-Host "  Duplicate time  : NONE"
+          Write-Host "  Sort order      : VERIFIED"
+          Write-Host "  Repair reports  : VERIFIED"
+
+          Write-Host ""
+          Write-Host "Disabled:"
+          Write-Host "  Feature build   : DISABLED"
+          Write-Host "  256 Detector    : DISABLED"
+          Write-Host "  Future labels   : DISABLED"
+          Write-Host "  Prediction      : DISABLED"
+          Write-Host "  Trading         : DISABLED"
+          Write-Host "  Git reset       : DISABLED"
+          Write-Host "  Git clean       : DISABLED"
+          Write-Host "  Git commit      : DISABLED"
+          Write-Host "  Git push        : DISABLED"
+
+          Write-Host ""
+          Write-Host (
+              "[PASS] Historical gap recovery execution " +
+              "and structural validation completed."
+          )
+
+          Write-Host ""
+          Write-Host (
+              "[NEXT] Re-run historical gap audit/report " +
+              "to measure remaining gaps."
+          )
+
+          Write-Host "============================================================"
