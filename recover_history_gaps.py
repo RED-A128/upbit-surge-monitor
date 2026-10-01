@@ -1,5 +1,5 @@
 """
-Upbit Surge Monitor - Historical Gap Recovery Clean V002
+Upbit Surge Monitor - Historical Gap Recovery Clean V003
 =========================================================
 
 File:
@@ -9,7 +9,7 @@ Purpose:
     Historical OHLCV Gap Report에서 확인된 누락 구간을
     Upbit Candle API를 이용하여 실제로 복구한다.
 
-Clean V002:
+Clean V003:
     - 실제 Upbit Candle API 복구 지원
     - --repair 명시 시에만 OHLCV 수정
     - 기존 정상 OHLCV candle 최우선 보존
@@ -30,9 +30,9 @@ IMPORTANT:
     기존 Clean V001 DRY-RUN checkpoint는 절대로 사용하거나
     삭제하지 않는다.
 
-    Clean V002 실제 복구 checkpoint:
+    Clean V003 실제 복구 checkpoint:
         data/recovery/checkpoint/
-        recover_history_gaps_repair_checkpoint.json
+        recover_history_gaps_repair_checkpoint_v003.json
 
 Safety:
     py recover_history_gaps.py
@@ -85,7 +85,7 @@ import requests
 # ============================================================
 
 PROJECT_NAME = "Upbit Surge Monitor"
-VERSION = "Historical Gap Recovery Clean V002"
+VERSION = "Historical Gap Recovery Clean V003"
 
 TIMEFRAMES: Tuple[str, ...] = (
     "h1",
@@ -135,7 +135,7 @@ REPORT_DIR = RUNTIME_DIR / "reports"
 # Clean V001 DRY-RUN checkpoint
 #
 # IMPORTANT:
-#     V002에서는 절대 수정하거나 삭제하지 않는다.
+#     V003에서는 절대 수정하거나 삭제하지 않는다.
 # ------------------------------------------------------------
 
 V001_CHECKPOINT_FILE = (
@@ -144,32 +144,32 @@ V001_CHECKPOINT_FILE = (
 )
 
 # ------------------------------------------------------------
-# Clean V002 실제 복구 checkpoint
+# Clean V003 실제 복구 checkpoint
 # ------------------------------------------------------------
 
 REPAIR_CHECKPOINT_FILE = (
     CHECKPOINT_DIR
-    / "recover_history_gaps_repair_checkpoint.json"
+    / "recover_history_gaps_repair_checkpoint_v003.json"
 )
 
 STATUS_FILE = (
     DATA_DIR
-    / "recover_history_gaps_repair_status.csv"
+    / "recover_history_gaps_repair_status_v003.csv"
 )
 
 REPAIR_DETAIL_FILE = (
     REPORT_DIR
-    / "historical_gap_repair_detail.csv"
+    / "historical_gap_repair_detail_v003.csv"
 )
 
 REPAIR_SUMMARY_FILE = (
     REPORT_DIR
-    / "historical_gap_repair_summary.csv"
+    / "historical_gap_repair_summary_v003.csv"
 )
 
 REPAIR_META_FILE = (
     REPORT_DIR
-    / "historical_gap_repair_meta.json"
+    / "historical_gap_repair_meta_v003.json"
 )
 
 GAP_REPORT_SEARCH_DIRS: Tuple[Path, ...] = (
@@ -4170,7 +4170,7 @@ def run(
     )
 
     safe_print(
-        "HISTORICAL GAP RECOVERY - CLEAN V002"
+        "HISTORICAL GAP RECOVERY - CLEAN V003"
     )
 
     safe_print(
@@ -4384,14 +4384,14 @@ def run(
 
             safe_print()
             safe_print(
-                "[INFO] Clean V002 repair checkpoint reset."
+                "[INFO] Clean V003 repair checkpoint reset."
             )
 
         else:
 
             safe_print()
             safe_print(
-                "[INFO] No Clean V002 repair checkpoint "
+                "[INFO] No Clean V003 repair checkpoint "
                 "exists to reset."
             )
 
@@ -5439,7 +5439,7 @@ def parse_args() -> argparse.Namespace:
         "--reset-repair-checkpoint",
         action="store_true",
         help=(
-            "Reset only the Clean V002 actual repair "
+            "Reset only the Clean V003 actual repair "
             "checkpoint. Clean V001 DRY-RUN checkpoint "
             "is never modified."
         ),
@@ -5484,7 +5484,7 @@ def main() -> int:
 
         safe_print(
             "[RESUME] Successfully completed "
-            "Clean V002 events remain checkpointed."
+            "Clean V003 events remain checkpointed."
         )
 
         safe_print(
