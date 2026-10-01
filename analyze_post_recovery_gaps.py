@@ -1,45 +1,37 @@
 # ============================================================
 # Upbit Surge Monitor
 # analyze_post_recovery_gaps.py
-# Clean V001
+# Clean V002
 # ============================================================
 #
 # PURPOSE
 # ------------------------------------------------------------
-# Analyze historical OHLCV gaps AFTER the first real recovery.
+# Analyze historical OHLCV gaps AFTER real historical recovery.
 #
-# This program is READ ONLY for:
+# Clean V002 fixes unsafe/incorrect report discovery from V001.
 #
-#   data/ohlcv/h1/
-#   data/ohlcv/h4/
-#   data/ohlcv/d1/
+# IMPORTANT:
 #
-# It does NOT:
-#
-#   - modify OHLCV
-#   - delete OHLCV
-#   - download candles
-#   - repair gaps
-#   - run feature build
-#   - run detector
-#   - run prediction
-#   - trade
-#   - git reset
-#   - git clean
-#   - git commit
-#   - git push
+#   - OHLCV is READ ONLY.
+#   - This program does NOT download candles.
+#   - This program does NOT repair gaps.
+#   - This program does NOT delete OHLCV.
+#   - This program does NOT run features.
+#   - This program does NOT run detector/prediction/trading.
 #
 # It DOES:
 #
-#   1. Locate pre-recovery gap report
-#   2. Locate post-recovery gap report
-#   3. Detect report schema
-#   4. Compare pre/post gap state
-#   5. Calculate recovery performance
-#   6. Identify remaining gaps
-#   7. Classify second-pass recovery candidates
-#   8. Write analysis reports
-#   9. Maintain persistent checkpoint
+#   1. Verify 290 x 3 = 870 OHLCV files
+#   2. Discover pre-recovery gap report
+#   3. Discover post-recovery gap report
+#   4. Validate candidate report schema BEFORE selection
+#   5. Reject recovery-target / classification files
+#   6. Compare pre/post gap state
+#   7. Calculate recovery performance
+#   8. Identify remaining gaps
+#   9. Build second-pass recovery candidate list
+#  10. Write analysis reports
+#  11. Maintain persistent checkpoint/status
 #
 # ============================================================
 
@@ -49,7 +41,6 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
-import os
 import sys
 import traceback
 
@@ -63,7 +54,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 # 1. VERSION
 # ============================================================
 
-VERSION = "Clean V001"
+VERSION = "Clean V002"
 PROGRAM_NAME = "analyze_post_recovery_gaps.py"
 
 
@@ -84,7 +75,10 @@ REPORTS_DIR = DATA_DIR / "reports"
 VALIDATION_DIR = DATA_DIR / "validation"
 RECOVERY_DIR = DATA_DIR / "recovery"
 
-ANALYSIS_DIR = REPORTS_DIR / "post_recovery_analysis"
+ANALYSIS_DIR = (
+    REPORTS_DIR
+    / "post_recovery_analysis"
+)
 
 CHECKPOINT_PATH = (
     VALIDATION_DIR
@@ -123,8 +117,10 @@ RESULT_JSON_PATH = (
 
 EXPECTED_MARKETS = 290
 EXPECTED_TIMEFRAMES = 3
+
 EXPECTED_OHLCV_FILES = (
-    EXPECTED_MARKETS * EXPECTED_TIMEFRAMES
+    EXPECTED_MARKETS
+    * EXPECTED_TIMEFRAMES
 )
 
 
@@ -134,8 +130,10 @@ EXPECTED_OHLCV_FILES = (
 
 ALLOW_OHLCV_WRITE = False
 ALLOW_OHLCV_DELETE = False
+
 ALLOW_GAP_REPAIR = False
 ALLOW_API_DOWNLOAD = False
+
 ALLOW_FEATURE_BUILD = False
 ALLOW_256_DETECTOR = False
 ALLOW_FUTURE_LABELS = False
@@ -149,52 +147,7 @@ ALLOW_GIT_PUSH = False
 
 
 # ============================================================
-# 5. REPORT SEARCH LOCATIONS
-# ============================================================
-
-PRE_REPORT_CANDIDATES = [
-    REPORTS_DIR
-    / "history_gap"
-    / "data_history_gap_report.csv",
-
-    REPORTS_DIR
-    / "history_gap"
-    / "history_gap_report.csv",
-
-    REPORTS_DIR
-    / "history_gap"
-    / "history_gap_detail.csv",
-
-    DATA_DIR
-    / "reports"
-    / "history_gap"
-    / "data_history_gap_report.csv",
-]
-
-POST_REPORT_CANDIDATES = [
-    REPORTS_DIR
-    / "post_recovery_gap_audit"
-    / "data_history_gap_report.csv",
-
-    REPORTS_DIR
-    / "post_recovery_gap_audit"
-    / "history_gap_report.csv",
-
-    REPORTS_DIR
-    / "post_recovery_gap_audit"
-    / "post_recovery_gap_report.csv",
-
-    REPORTS_DIR
-    / "history_gap"
-    / "post_recovery_gap_report.csv",
-
-    DATA_DIR
-    / "post_recovery_gap_report.csv",
-]
-
-
-# ============================================================
-# 6. COLUMN ALIASES
+# 5. COLUMN ALIASES
 # ============================================================
 
 MARKET_ALIASES = [
@@ -259,7 +212,105 @@ RECOVERABLE_ALIASES = [
 
 
 # ============================================================
-# 7. UTILITY FUNCTIONS
+# 6. REPORT DISCOVERY CONFIGURATION
+# ============================================================
+
+# ------------------------------------------------------------
+# Files that are known to be classification / recovery targets
+# and therefore MUST NOT be treated as a gap report.
+# ------------------------------------------------------------
+
+FORBIDDEN_REPORT_NAME_PARTS = [
+    "recovery_targets",
+    "second_pass_targets",
+    "classification_summary",
+    "classification_review",
+    "classification_detail",
+    "recovery_plan",
+    "manual_review",
+    "structural",
+    "status",
+    "checkpoint",
+    "before.sha256",
+    "ohlcv_before",
+    "source_before",
+    "analysis_summary",
+    "analysis_detail",
+]
+
+
+# ------------------------------------------------------------
+# Explicit PRE-recovery candidates.
+#
+# Ordered by priority.
+# ------------------------------------------------------------
+
+PRE_REPORT_CANDIDATES = [
+    REPORTS_DIR
+    / "history_gap"
+    / "data_history_gap_report_before_recovery.csv",
+
+    REPORTS_DIR
+    / "history_gap"
+    / "pre_recovery_gap_report.csv",
+
+    REPORTS_DIR
+    / "post_recovery_gap_audit"
+    / "pre_recovery_gap_report.csv",
+
+    REPORTS_DIR
+    / "history_gap"
+    / "data_history_gap_report.csv",
+
+    REPORTS_DIR
+    / "history_gap"
+    / "history_gap_report.csv",
+
+    REPORTS_DIR
+    / "history_gap"
+    / "history_gap_detail.csv",
+]
+
+
+# ------------------------------------------------------------
+# Explicit POST-recovery candidates.
+#
+# The post-recovery audit directory always has priority.
+# ------------------------------------------------------------
+
+POST_REPORT_CANDIDATES = [
+    REPORTS_DIR
+    / "post_recovery_gap_audit"
+    / "data_history_gap_report.csv",
+
+    REPORTS_DIR
+    / "post_recovery_gap_audit"
+    / "post_recovery_gap_report.csv",
+
+    REPORTS_DIR
+    / "post_recovery_gap_audit"
+    / "history_gap_report.csv",
+
+    REPORTS_DIR
+    / "post_recovery_gap_audit"
+    / "history_gap_detail.csv",
+
+    REPORTS_DIR
+    / "history_gap"
+    / "post_recovery_gap_report.csv",
+
+    REPORTS_DIR
+    / "history_gap"
+    / "data_history_gap_report_after_recovery.csv",
+
+    REPORTS_DIR
+    / "history_gap"
+    / "after_recovery_gap_report.csv",
+]
+
+
+# ============================================================
+# 7. BASIC UTILITY FUNCTIONS
 # ============================================================
 
 def utc_now_iso() -> str:
@@ -294,33 +345,65 @@ def normalize_text(value: Any) -> str:
     return str(value).strip()
 
 
-def normalize_column_name(value: str) -> str:
-    value = normalize_text(value).lower()
+def normalize_column_name(
+    value: str,
+) -> str:
 
-    value = value.replace("-", "_")
-    value = value.replace(" ", "_")
-    value = value.replace(".", "_")
+    value = normalize_text(
+        value
+    ).lower()
+
+    value = value.replace(
+        "-",
+        "_",
+    )
+
+    value = value.replace(
+        " ",
+        "_",
+    )
+
+    value = value.replace(
+        ".",
+        "_",
+    )
 
     while "__" in value:
-        value = value.replace("__", "_")
+        value = value.replace(
+            "__",
+            "_",
+        )
 
     return value.strip("_")
 
 
-def safe_int(value: Any) -> int:
-    text = normalize_text(value)
+def safe_int(
+    value: Any,
+) -> int:
+
+    text = normalize_text(
+        value
+    )
 
     if not text:
         return 0
 
     try:
-        return int(float(text))
+        return int(
+            float(text)
+        )
+
     except Exception:
         return 0
 
 
-def safe_bool(value: Any) -> Optional[bool]:
-    text = normalize_text(value).lower()
+def safe_bool(
+    value: Any,
+) -> Optional[bool]:
+
+    text = normalize_text(
+        value
+    ).lower()
 
     if text in {
         "1",
@@ -345,28 +428,43 @@ def safe_bool(value: Any) -> Optional[bool]:
     return None
 
 
-def file_sha256(path: Path) -> str:
+def file_sha256(
+    path: Path,
+) -> str:
+
     digest = hashlib.sha256()
 
-    with path.open("rb") as handle:
+    with path.open(
+        "rb"
+    ) as handle:
+
         while True:
-            block = handle.read(1024 * 1024)
+            block = handle.read(
+                1024 * 1024
+            )
 
             if not block:
                 break
 
-            digest.update(block)
+            digest.update(
+                block
+            )
 
     return digest.hexdigest()
 
 
-def count_csv_files(directory: Path) -> int:
+def count_csv_files(
+    directory: Path,
+) -> int:
+
     if not directory.exists():
         return 0
 
     return len(
         list(
-            directory.glob("KRW-*.csv")
+            directory.glob(
+                "KRW-*.csv"
+            )
         )
     )
 
@@ -377,7 +475,10 @@ def count_csv_files(directory: Path) -> int:
 
 def read_csv_rows(
     path: Path,
-) -> Tuple[List[str], List[Dict[str, str]]]:
+) -> Tuple[
+    List[str],
+    List[Dict[str, str]],
+]:
 
     encodings = [
         "utf-8-sig",
@@ -385,9 +486,12 @@ def read_csv_rows(
         "cp949",
     ]
 
-    last_error: Optional[Exception] = None
+    last_error: Optional[
+        Exception
+    ] = None
 
     for encoding in encodings:
+
         try:
             with path.open(
                 "r",
@@ -395,7 +499,9 @@ def read_csv_rows(
                 newline="",
             ) as handle:
 
-                reader = csv.DictReader(handle)
+                reader = csv.DictReader(
+                    handle
+                )
 
                 if reader.fieldnames is None:
                     raise RuntimeError(
@@ -404,25 +510,40 @@ def read_csv_rows(
 
                 fieldnames = [
                     normalize_text(name)
-                    for name in reader.fieldnames
+                    for name
+                    in reader.fieldnames
                 ]
 
-                rows = []
+                rows: List[
+                    Dict[str, str]
+                ] = []
 
                 for row in reader:
-                    clean_row = {}
+
+                    clean_row: Dict[
+                        str,
+                        str,
+                    ] = {}
 
                     for key, value in row.items():
+
                         if key is None:
                             continue
 
                         clean_row[
                             normalize_text(key)
-                        ] = normalize_text(value)
+                        ] = normalize_text(
+                            value
+                        )
 
-                    rows.append(clean_row)
+                    rows.append(
+                        clean_row
+                    )
 
-                return fieldnames, rows
+                return (
+                    fieldnames,
+                    rows,
+                )
 
         except UnicodeDecodeError as exc:
             last_error = exc
@@ -435,10 +556,67 @@ def read_csv_rows(
     )
 
 
+def read_csv_header(
+    path: Path,
+) -> List[str]:
+
+    encodings = [
+        "utf-8-sig",
+        "utf-8",
+        "cp949",
+    ]
+
+    last_error: Optional[
+        Exception
+    ] = None
+
+    for encoding in encodings:
+
+        try:
+            with path.open(
+                "r",
+                encoding=encoding,
+                newline="",
+            ) as handle:
+
+                reader = csv.reader(
+                    handle
+                )
+
+                header = next(
+                    reader,
+                    None,
+                )
+
+                if not header:
+                    raise RuntimeError(
+                        f"No CSV header: {path}"
+                    )
+
+                return [
+                    normalize_text(
+                        value
+                    )
+                    for value in header
+                ]
+
+        except UnicodeDecodeError as exc:
+            last_error = exc
+
+    if last_error is not None:
+        raise last_error
+
+    raise RuntimeError(
+        f"Unable to read CSV header: {path}"
+    )
+
+
 def write_csv(
     path: Path,
     fieldnames: Sequence[str],
-    rows: Iterable[Dict[str, Any]],
+    rows: Iterable[
+        Dict[str, Any]
+    ],
 ) -> None:
 
     path.parent.mkdir(
@@ -454,143 +632,22 @@ def write_csv(
 
         writer = csv.DictWriter(
             handle,
-            fieldnames=list(fieldnames),
+            fieldnames=list(
+                fieldnames
+            ),
             extrasaction="ignore",
         )
 
         writer.writeheader()
 
         for row in rows:
-            writer.writerow(row)
+            writer.writerow(
+                row
+            )
 
 
 # ============================================================
-# 9. REPORT DISCOVERY
-# ============================================================
-
-def find_existing_candidate(
-    candidates: Sequence[Path],
-) -> Optional[Path]:
-
-    for path in candidates:
-        if path.exists() and path.is_file():
-            return path
-
-    return None
-
-
-def find_csv_by_keywords(
-    root: Path,
-    required_keywords: Sequence[str],
-) -> Optional[Path]:
-
-    if not root.exists():
-        return None
-
-    matches: List[Path] = []
-
-    for path in root.rglob("*.csv"):
-        lower_name = path.name.lower()
-        lower_full = str(path).lower()
-
-        matched = True
-
-        for keyword in required_keywords:
-            keyword = keyword.lower()
-
-            if (
-                keyword not in lower_name
-                and keyword not in lower_full
-            ):
-                matched = False
-                break
-
-        if matched:
-            matches.append(path)
-
-    if not matches:
-        return None
-
-    matches.sort(
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-
-    return matches[0]
-
-
-def discover_pre_report() -> Path:
-
-    direct = find_existing_candidate(
-        PRE_REPORT_CANDIDATES
-    )
-
-    if direct is not None:
-        return direct
-
-    candidates = [
-        ("history", "gap"),
-        ("gap", "report"),
-    ]
-
-    for keywords in candidates:
-        result = find_csv_by_keywords(
-            REPORTS_DIR,
-            keywords,
-        )
-
-        if result is not None:
-            lower = str(result).lower()
-
-            if "post_recovery" not in lower:
-                return result
-
-    raise FileNotFoundError(
-        "Unable to locate pre-recovery gap report."
-    )
-
-
-def discover_post_report(
-    pre_report: Path,
-) -> Path:
-
-    direct = find_existing_candidate(
-        POST_REPORT_CANDIDATES
-    )
-
-    if (
-        direct is not None
-        and direct.resolve()
-        != pre_report.resolve()
-    ):
-        return direct
-
-    keyword_sets = [
-        ("post", "recovery", "gap"),
-        ("post_recovery", "gap"),
-        ("recovery", "gap", "report"),
-    ]
-
-    for keywords in keyword_sets:
-        result = find_csv_by_keywords(
-            REPORTS_DIR,
-            keywords,
-        )
-
-        if (
-            result is not None
-            and result.resolve()
-            != pre_report.resolve()
-        ):
-            return result
-
-    raise FileNotFoundError(
-        "Unable to locate post-recovery gap report."
-    )
-
-
-# ============================================================
-# 10. COLUMN DETECTION
+# 9. COLUMN DETECTION
 # ============================================================
 
 def detect_column(
@@ -599,16 +656,23 @@ def detect_column(
 ) -> Optional[str]:
 
     normalized_map = {
-        normalize_column_name(name): name
+        normalize_column_name(name):
+        name
         for name in fieldnames
     }
 
     for alias in aliases:
-        normalized_alias = normalize_column_name(
-            alias
+
+        normalized_alias = (
+            normalize_column_name(
+                alias
+            )
         )
 
-        if normalized_alias in normalized_map:
+        if (
+            normalized_alias
+            in normalized_map
+        ):
             return normalized_map[
                 normalized_alias
             ]
@@ -618,41 +682,62 @@ def detect_column(
 
 def detect_schema(
     fieldnames: Sequence[str],
-) -> Dict[str, Optional[str]]:
+) -> Dict[
+    str,
+    Optional[str],
+]:
 
-    schema = {
-        "market": detect_column(
-            fieldnames,
-            MARKET_ALIASES,
-        ),
-        "timeframe": detect_column(
-            fieldnames,
-            TIMEFRAME_ALIASES,
-        ),
-        "gap_count": detect_column(
-            fieldnames,
-            GAP_COUNT_ALIASES,
-        ),
-        "missing_count": detect_column(
-            fieldnames,
-            MISSING_COUNT_ALIASES,
-        ),
-        "gap_start": detect_column(
-            fieldnames,
-            GAP_START_ALIASES,
-        ),
-        "gap_end": detect_column(
-            fieldnames,
-            GAP_END_ALIASES,
-        ),
-        "classification": detect_column(
-            fieldnames,
-            CLASS_ALIASES,
-        ),
-        "recoverable": detect_column(
-            fieldnames,
-            RECOVERABLE_ALIASES,
-        ),
+    schema: Dict[
+        str,
+        Optional[str],
+    ] = {
+        "market":
+            detect_column(
+                fieldnames,
+                MARKET_ALIASES,
+            ),
+
+        "timeframe":
+            detect_column(
+                fieldnames,
+                TIMEFRAME_ALIASES,
+            ),
+
+        "gap_count":
+            detect_column(
+                fieldnames,
+                GAP_COUNT_ALIASES,
+            ),
+
+        "missing_count":
+            detect_column(
+                fieldnames,
+                MISSING_COUNT_ALIASES,
+            ),
+
+        "gap_start":
+            detect_column(
+                fieldnames,
+                GAP_START_ALIASES,
+            ),
+
+        "gap_end":
+            detect_column(
+                fieldnames,
+                GAP_END_ALIASES,
+            ),
+
+        "classification":
+            detect_column(
+                fieldnames,
+                CLASS_ALIASES,
+            ),
+
+        "recoverable":
+            detect_column(
+                fieldnames,
+                RECOVERABLE_ALIASES,
+            ),
     }
 
     if schema["market"] is None:
@@ -667,7 +752,8 @@ def detect_schema(
 
     if (
         schema["gap_count"] is None
-        and schema["missing_count"] is None
+        and
+        schema["missing_count"] is None
     ):
         raise RuntimeError(
             "Unable to detect gap/missing column."
@@ -677,65 +763,680 @@ def detect_schema(
 
 
 # ============================================================
-# 11. NORMALIZED REPORT RECORD
+# 10. REPORT VALIDATION
 # ============================================================
 
-def normalize_timeframe(value: str) -> str:
-    text = normalize_text(value).lower()
+def is_forbidden_report(
+    path: Path,
+) -> Tuple[bool, str]:
+
+    lower_name = (
+        path.name.lower()
+    )
+
+    lower_full = (
+        str(path).lower()
+    )
+
+    for part in (
+        FORBIDDEN_REPORT_NAME_PARTS
+    ):
+
+        part_lower = part.lower()
+
+        if (
+            part_lower in lower_name
+            or
+            part_lower in lower_full
+        ):
+            return (
+                True,
+                f"forbidden-name:{part}",
+            )
+
+    return (
+        False,
+        "",
+    )
+
+
+def validate_gap_report_candidate(
+    path: Path,
+) -> Tuple[
+    bool,
+    str,
+    Optional[
+        Dict[
+            str,
+            Optional[str],
+        ]
+    ],
+]:
+
+    if not path.exists():
+        return (
+            False,
+            "file-not-found",
+            None,
+        )
+
+    if not path.is_file():
+        return (
+            False,
+            "not-a-file",
+            None,
+        )
+
+    if (
+        path.suffix.lower()
+        != ".csv"
+    ):
+        return (
+            False,
+            "not-csv",
+            None,
+        )
+
+    forbidden, reason = (
+        is_forbidden_report(
+            path
+        )
+    )
+
+    if forbidden:
+        return (
+            False,
+            reason,
+            None,
+        )
+
+    try:
+        fieldnames = (
+            read_csv_header(
+                path
+            )
+        )
+
+    except Exception as exc:
+        return (
+            False,
+            (
+                "header-read-error:"
+                f"{type(exc).__name__}"
+            ),
+            None,
+        )
+
+    try:
+        schema = detect_schema(
+            fieldnames
+        )
+
+    except Exception as exc:
+        return (
+            False,
+            (
+                "invalid-gap-schema:"
+                f"{exc}"
+            ),
+            None,
+        )
+
+    return (
+        True,
+        "valid-gap-report",
+        schema,
+    )
+
+
+def print_candidate_result(
+    label: str,
+    path: Path,
+    valid: bool,
+    reason: str,
+) -> None:
+
+    state = (
+        "ACCEPT"
+        if valid
+        else "REJECT"
+    )
+
+    print(
+        f"[{state}] "
+        f"{label}: "
+        f"{path}"
+    )
+
+    print(
+        f"         reason: "
+        f"{reason}"
+    )
+
+
+# ============================================================
+# 11. REPORT DISCOVERY
+# ============================================================
+
+def select_explicit_candidate(
+    label: str,
+    candidates: Sequence[Path],
+    excluded_paths: Optional[
+        Sequence[Path]
+    ] = None,
+) -> Optional[Path]:
+
+    excluded_resolved = set()
+
+    if excluded_paths:
+
+        for item in excluded_paths:
+
+            try:
+                excluded_resolved.add(
+                    item.resolve()
+                )
+
+            except Exception:
+                pass
+
+    for path in candidates:
+
+        if not path.exists():
+            continue
+
+        try:
+            resolved = (
+                path.resolve()
+            )
+
+        except Exception:
+            resolved = path
+
+        if (
+            resolved
+            in excluded_resolved
+        ):
+            print_candidate_result(
+                label,
+                path,
+                False,
+                "same-as-excluded-report",
+            )
+            continue
+
+        (
+            valid,
+            reason,
+            _schema,
+        ) = validate_gap_report_candidate(
+            path
+        )
+
+        print_candidate_result(
+            label,
+            path,
+            valid,
+            reason,
+        )
+
+        if valid:
+            return path
+
+    return None
+
+
+def find_valid_gap_reports(
+    root: Path,
+) -> List[Path]:
+
+    if not root.exists():
+        return []
+
+    results: List[Path] = []
+
+    for path in root.rglob(
+        "*.csv"
+    ):
+
+        (
+            valid,
+            _reason,
+            _schema,
+        ) = validate_gap_report_candidate(
+            path
+        )
+
+        if valid:
+            results.append(
+                path
+            )
+
+    results.sort(
+        key=lambda item:
+        item.stat().st_mtime,
+        reverse=True,
+    )
+
+    return results
+
+
+def score_pre_report(
+    path: Path,
+) -> int:
+
+    text = str(
+        path
+    ).lower()
+
+    name = (
+        path.name.lower()
+    )
+
+    score = 0
+
+    if "history_gap" in text:
+        score += 20
+
+    if "data_history_gap_report" in name:
+        score += 40
+
+    if "pre_recovery" in text:
+        score += 100
+
+    if "before_recovery" in text:
+        score += 100
+
+    if "post_recovery" in text:
+        score -= 200
+
+    if "after_recovery" in text:
+        score -= 200
+
+    if "classification" in text:
+        score -= 100
+
+    if "recovery_targets" in text:
+        score -= 500
+
+    return score
+
+
+def score_post_report(
+    path: Path,
+) -> int:
+
+    text = str(
+        path
+    ).lower()
+
+    name = (
+        path.name.lower()
+    )
+
+    score = 0
+
+    if "post_recovery_gap_audit" in text:
+        score += 300
+
+    if "post_recovery" in text:
+        score += 200
+
+    if "after_recovery" in text:
+        score += 150
+
+    if "data_history_gap_report" in name:
+        score += 50
+
+    if "history_gap_report" in name:
+        score += 40
+
+    if "history_gap" in text:
+        score += 20
+
+    if "pre_recovery" in text:
+        score -= 300
+
+    if "before_recovery" in text:
+        score -= 300
+
+    if "classification" in text:
+        score -= 200
+
+    if "recovery_targets" in text:
+        score -= 1000
+
+    return score
+
+
+def discover_pre_report() -> Path:
+
+    print("")
+    print(
+        "============================================================"
+    )
+    print(
+        "DISCOVER PRE-RECOVERY GAP REPORT"
+    )
+    print(
+        "============================================================"
+    )
+
+    direct = select_explicit_candidate(
+        "PRE",
+        PRE_REPORT_CANDIDATES,
+    )
+
+    if direct is not None:
+
+        print(
+            "[SELECTED PRE] "
+            f"{direct}"
+        )
+
+        return direct
+
+    print("")
+    print(
+        "[INFO] No explicit PRE candidate selected."
+    )
+
+    print(
+        "[INFO] Searching validated gap reports..."
+    )
+
+    candidates = (
+        find_valid_gap_reports(
+            REPORTS_DIR
+        )
+    )
+
+    candidates = [
+        path
+        for path in candidates
+        if (
+            "post_recovery"
+            not in str(path).lower()
+            and
+            "after_recovery"
+            not in str(path).lower()
+        )
+    ]
+
+    if not candidates:
+        raise FileNotFoundError(
+            "Unable to locate a valid "
+            "pre-recovery gap report."
+        )
+
+    candidates.sort(
+        key=lambda path: (
+            score_pre_report(
+                path
+            ),
+            path.stat().st_mtime,
+        ),
+        reverse=True,
+    )
+
+    for path in candidates[:10]:
+
+        print(
+            "[PRE CANDIDATE] "
+            f"score={score_pre_report(path)} "
+            f"{path}"
+        )
+
+    selected = candidates[0]
+
+    print(
+        "[SELECTED PRE] "
+        f"{selected}"
+    )
+
+    return selected
+
+
+def discover_post_report(
+    pre_report: Path,
+) -> Path:
+
+    print("")
+    print(
+        "============================================================"
+    )
+    print(
+        "DISCOVER POST-RECOVERY GAP REPORT"
+    )
+    print(
+        "============================================================"
+    )
+
+    direct = select_explicit_candidate(
+        "POST",
+        POST_REPORT_CANDIDATES,
+        excluded_paths=[
+            pre_report
+        ],
+    )
+
+    if direct is not None:
+
+        print(
+            "[SELECTED POST] "
+            f"{direct}"
+        )
+
+        return direct
+
+    print("")
+    print(
+        "[INFO] No explicit POST candidate selected."
+    )
+
+    print(
+        "[INFO] Searching validated post-recovery reports..."
+    )
+
+    all_candidates = (
+        find_valid_gap_reports(
+            REPORTS_DIR
+        )
+    )
+
+    candidates: List[Path] = []
+
+    pre_resolved = (
+        pre_report.resolve()
+    )
+
+    for path in all_candidates:
+
+        try:
+            if (
+                path.resolve()
+                == pre_resolved
+            ):
+                continue
+
+        except Exception:
+            pass
+
+        text = str(
+            path
+        ).lower()
+
+        # ----------------------------------------------------
+        # Post report fallback MUST contain post/after recovery
+        # evidence.
+        #
+        # This prevents files such as:
+        #
+        # history_gap_recovery_targets.csv
+        #
+        # from ever becoming the post report.
+        # ----------------------------------------------------
+
+        if (
+            "post_recovery" not in text
+            and
+            "after_recovery" not in text
+        ):
+            continue
+
+        candidates.append(
+            path
+        )
+
+    if not candidates:
+
+        print("")
+        print(
+            "[ERROR] Valid CSV files may exist, "
+            "but none can safely be identified "
+            "as a POST-recovery gap report."
+        )
+
+        print("")
+        print(
+            "Validated gap-report candidates:"
+        )
+
+        for path in all_candidates[:30]:
+            print(
+                f"  - {path}"
+            )
+
+        raise FileNotFoundError(
+            "Unable to locate a validated "
+            "post-recovery gap report. "
+            "Recovery target/classification files "
+            "will not be used as fallback."
+        )
+
+    candidates.sort(
+        key=lambda path: (
+            score_post_report(
+                path
+            ),
+            path.stat().st_mtime,
+        ),
+        reverse=True,
+    )
+
+    for path in candidates[:10]:
+
+        print(
+            "[POST CANDIDATE] "
+            f"score={score_post_report(path)} "
+            f"{path}"
+        )
+
+    selected = candidates[0]
+
+    print(
+        "[SELECTED POST] "
+        f"{selected}"
+    )
+
+    return selected
+
+
+# ============================================================
+# 12. NORMALIZATION
+# ============================================================
+
+def normalize_timeframe(
+    value: str,
+) -> str:
+
+    text = normalize_text(
+        value
+    ).lower()
 
     mapping = {
         "1h": "h1",
         "h1": "h1",
         "60": "h1",
         "60m": "h1",
+
         "4h": "h4",
         "h4": "h4",
         "240": "h4",
         "240m": "h4",
+
         "1d": "d1",
         "d1": "d1",
         "day": "d1",
         "daily": "d1",
     }
 
-    return mapping.get(text, text)
+    return mapping.get(
+        text,
+        text,
+    )
 
 
-def normalize_market(value: str) -> str:
-    return normalize_text(value).upper()
+def normalize_market(
+    value: str,
+) -> str:
+
+    return normalize_text(
+        value
+    ).upper()
 
 
 def normalized_record(
     row: Dict[str, str],
-    schema: Dict[str, Optional[str]],
+    schema: Dict[
+        str,
+        Optional[str],
+    ],
 ) -> Dict[str, Any]:
 
-    market_column = schema["market"]
-    timeframe_column = schema["timeframe"]
-
-    market = normalize_market(
-        row.get(market_column or "", "")
+    market_column = (
+        schema["market"]
     )
 
-    timeframe = normalize_timeframe(
-        row.get(timeframe_column or "", "")
+    timeframe_column = (
+        schema["timeframe"]
+    )
+
+    market = normalize_market(
+        row.get(
+            market_column or "",
+            "",
+        )
+    )
+
+    timeframe = (
+        normalize_timeframe(
+            row.get(
+                timeframe_column or "",
+                "",
+            )
+        )
     )
 
     gap_count = 0
     missing_count = 0
 
     if schema["gap_count"]:
+
         gap_count = safe_int(
             row.get(
-                schema["gap_count"] or "",
+                schema["gap_count"]
+                or "",
                 "",
             )
         )
 
     if schema["missing_count"]:
+
         missing_count = safe_int(
             row.get(
-                schema["missing_count"] or "",
+                schema["missing_count"]
+                or "",
                 "",
             )
         )
@@ -743,19 +1444,31 @@ def normalized_record(
     classification = ""
 
     if schema["classification"]:
-        classification = normalize_text(
-            row.get(
-                schema["classification"] or "",
-                "",
+
+        classification = (
+            normalize_text(
+                row.get(
+                    schema[
+                        "classification"
+                    ]
+                    or "",
+                    "",
+                )
             )
         )
 
-    recoverable: Optional[bool] = None
+    recoverable: Optional[
+        bool
+    ] = None
 
     if schema["recoverable"]:
+
         recoverable = safe_bool(
             row.get(
-                schema["recoverable"] or "",
+                schema[
+                    "recoverable"
+                ]
+                or "",
                 "",
             )
         )
@@ -763,43 +1476,78 @@ def normalized_record(
     gap_start = ""
 
     if schema["gap_start"]:
-        gap_start = normalize_text(
-            row.get(
-                schema["gap_start"] or "",
-                "",
+
+        gap_start = (
+            normalize_text(
+                row.get(
+                    schema[
+                        "gap_start"
+                    ]
+                    or "",
+                    "",
+                )
             )
         )
 
     gap_end = ""
 
     if schema["gap_end"]:
-        gap_end = normalize_text(
-            row.get(
-                schema["gap_end"] or "",
-                "",
+
+        gap_end = (
+            normalize_text(
+                row.get(
+                    schema[
+                        "gap_end"
+                    ]
+                    or "",
+                    "",
+                )
             )
         )
 
     return {
-        "market": market,
-        "timeframe": timeframe,
-        "gap_count": gap_count,
-        "missing_count": missing_count,
-        "classification": classification,
-        "recoverable": recoverable,
-        "gap_start": gap_start,
-        "gap_end": gap_end,
+        "market":
+            market,
+
+        "timeframe":
+            timeframe,
+
+        "gap_count":
+            gap_count,
+
+        "missing_count":
+            missing_count,
+
+        "classification":
+            classification,
+
+        "recoverable":
+            recoverable,
+
+        "gap_start":
+            gap_start,
+
+        "gap_end":
+            gap_end,
     }
 
 
 # ============================================================
-# 12. AGGREGATION
+# 13. REPORT AGGREGATION
 # ============================================================
 
 def aggregate_report(
-    rows: Sequence[Dict[str, str]],
-    schema: Dict[str, Optional[str]],
-) -> Dict[Tuple[str, str], Dict[str, Any]]:
+    rows: Sequence[
+        Dict[str, str]
+    ],
+    schema: Dict[
+        str,
+        Optional[str],
+    ],
+) -> Dict[
+    Tuple[str, str],
+    Dict[str, Any],
+]:
 
     result: Dict[
         Tuple[str, str],
@@ -807,6 +1555,7 @@ def aggregate_report(
     ] = {}
 
     for raw_row in rows:
+
         row = normalized_record(
             raw_row,
             schema,
@@ -815,7 +1564,11 @@ def aggregate_report(
         market = row["market"]
         timeframe = row["timeframe"]
 
-        if not market or not timeframe:
+        if (
+            not market
+            or
+            not timeframe
+        ):
             continue
 
         key = (
@@ -824,40 +1577,70 @@ def aggregate_report(
         )
 
         if key not in result:
+
             result[key] = {
-                "market": market,
-                "timeframe": timeframe,
-                "gap_count": 0,
-                "missing_count": 0,
-                "rows": 0,
+                "market":
+                    market,
+
+                "timeframe":
+                    timeframe,
+
+                "gap_count":
+                    0,
+
+                "missing_count":
+                    0,
+
+                "rows":
+                    0,
             }
 
-        result[key]["gap_count"] += int(
+        result[key][
+            "gap_count"
+        ] += safe_int(
             row["gap_count"]
         )
 
-        result[key]["missing_count"] += int(
+        result[key][
+            "missing_count"
+        ] += safe_int(
             row["missing_count"]
         )
 
-        result[key]["rows"] += 1
+        result[key][
+            "rows"
+        ] += 1
 
     return result
 
 
 # ============================================================
-# 13. OHLCV INVENTORY VALIDATION
+# 14. OHLCV INVENTORY VALIDATION
 # ============================================================
 
-def validate_ohlcv_inventory() -> Dict[str, int]:
+def validate_ohlcv_inventory(
+) -> Dict[str, int]:
 
     counts = {
-        "h1": count_csv_files(H1_DIR),
-        "h4": count_csv_files(H4_DIR),
-        "d1": count_csv_files(D1_DIR),
+        "h1":
+            count_csv_files(
+                H1_DIR
+            ),
+
+        "h4":
+            count_csv_files(
+                H4_DIR
+            ),
+
+        "d1":
+            count_csv_files(
+                D1_DIR
+            ),
     }
 
-    total = sum(counts.values())
+    total = sum(
+        counts.values()
+    )
 
     print("")
     print(
@@ -873,38 +1656,53 @@ def validate_ohlcv_inventory() -> Dict[str, int]:
     print(
         f"H1 files : {counts['h1']}"
     )
+
     print(
         f"H4 files : {counts['h4']}"
     )
+
     print(
         f"D1 files : {counts['d1']}"
     )
+
     print(
         f"Total    : {total}"
     )
 
-    if counts["h1"] != EXPECTED_MARKETS:
+    if (
+        counts["h1"]
+        != EXPECTED_MARKETS
+    ):
         raise RuntimeError(
             "H1 market count mismatch. "
             f"expected={EXPECTED_MARKETS}, "
             f"found={counts['h1']}"
         )
 
-    if counts["h4"] != EXPECTED_MARKETS:
+    if (
+        counts["h4"]
+        != EXPECTED_MARKETS
+    ):
         raise RuntimeError(
             "H4 market count mismatch. "
             f"expected={EXPECTED_MARKETS}, "
             f"found={counts['h4']}"
         )
 
-    if counts["d1"] != EXPECTED_MARKETS:
+    if (
+        counts["d1"]
+        != EXPECTED_MARKETS
+    ):
         raise RuntimeError(
             "D1 market count mismatch. "
             f"expected={EXPECTED_MARKETS}, "
             f"found={counts['d1']}"
         )
 
-    if total != EXPECTED_OHLCV_FILES:
+    if (
+        total
+        != EXPECTED_OHLCV_FILES
+    ):
         raise RuntimeError(
             "Total OHLCV file count mismatch. "
             f"expected={EXPECTED_OHLCV_FILES}, "
@@ -915,7 +1713,7 @@ def validate_ohlcv_inventory() -> Dict[str, int]:
 
 
 # ============================================================
-# 14. ANALYSIS CLASSIFICATION
+# 15. RESULT CLASSIFICATION
 # ============================================================
 
 def determine_result_class(
@@ -927,31 +1725,41 @@ def determine_result_class(
 
     if (
         post_gaps == 0
-        and post_missing == 0
+        and
+        post_missing == 0
     ):
+
         if (
             pre_gaps > 0
-            or pre_missing > 0
+            or
+            pre_missing > 0
         ):
-            return "FULLY_RECOVERED"
+            return (
+                "FULLY_RECOVERED"
+            )
 
         return "NO_GAP"
 
     if (
         post_gaps < pre_gaps
-        or post_missing < pre_missing
+        or
+        post_missing < pre_missing
     ):
-        return "PARTIALLY_RECOVERED"
+        return (
+            "PARTIALLY_RECOVERED"
+        )
 
     if (
         post_gaps == pre_gaps
-        and post_missing == pre_missing
+        and
+        post_missing == pre_missing
     ):
         return "UNCHANGED"
 
     if (
         post_gaps > pre_gaps
-        or post_missing > pre_missing
+        or
+        post_missing > pre_missing
     ):
         return "INCREASED"
 
@@ -966,39 +1774,61 @@ def determine_second_pass(
 
     if (
         post_gaps <= 0
-        and post_missing <= 0
+        and
+        post_missing <= 0
     ):
         return (
             False,
             "NO_REMAINING_GAP",
         )
 
-    if result_class == "PARTIALLY_RECOVERED":
+    if (
+        result_class
+        == "PARTIALLY_RECOVERED"
+    ):
         return (
             True,
-            "REMAINING_AFTER_PARTIAL_RECOVERY",
+            (
+                "REMAINING_AFTER_"
+                "PARTIAL_RECOVERY"
+            ),
         )
 
-    if result_class == "UNCHANGED":
+    if (
+        result_class
+        == "UNCHANGED"
+    ):
         return (
             True,
-            "UNCHANGED_GAP_REQUIRES_REVIEW",
+            (
+                "UNCHANGED_GAP_"
+                "REQUIRES_REVIEW"
+            ),
         )
 
-    if result_class == "INCREASED":
+    if (
+        result_class
+        == "INCREASED"
+    ):
         return (
             False,
-            "INCREASED_GAP_MANUAL_REVIEW_FIRST",
+            (
+                "INCREASED_GAP_"
+                "MANUAL_REVIEW_FIRST"
+            ),
         )
 
     return (
         True,
-        "REMAINING_GAP_REQUIRES_CLASSIFICATION",
+        (
+            "REMAINING_GAP_"
+            "REQUIRES_CLASSIFICATION"
+        ),
     )
 
 
 # ============================================================
-# 15. COMPARE PRE / POST
+# 16. COMPARE PRE / POST
 # ============================================================
 
 def compare_reports(
@@ -1010,91 +1840,150 @@ def compare_reports(
         Tuple[str, str],
         Dict[str, Any],
     ],
-) -> List[Dict[str, Any]]:
+) -> List[
+    Dict[str, Any]
+]:
 
     all_keys = sorted(
-        set(pre_data.keys())
-        | set(post_data.keys())
+        set(
+            pre_data.keys()
+        )
+        |
+        set(
+            post_data.keys()
+        )
     )
 
-    output: List[Dict[str, Any]] = []
+    output: List[
+        Dict[str, Any]
+    ] = []
 
-    for market, timeframe in all_keys:
+    for (
+        market,
+        timeframe,
+    ) in all_keys:
 
         pre = pre_data.get(
-            (market, timeframe),
+            (
+                market,
+                timeframe,
+            ),
             {},
         )
 
         post = post_data.get(
-            (market, timeframe),
+            (
+                market,
+                timeframe,
+            ),
             {},
         )
 
         pre_gaps = safe_int(
-            pre.get("gap_count", 0)
+            pre.get(
+                "gap_count",
+                0,
+            )
         )
 
         pre_missing = safe_int(
-            pre.get("missing_count", 0)
+            pre.get(
+                "missing_count",
+                0,
+            )
         )
 
         post_gaps = safe_int(
-            post.get("gap_count", 0)
+            post.get(
+                "gap_count",
+                0,
+            )
         )
 
         post_missing = safe_int(
-            post.get("missing_count", 0)
+            post.get(
+                "missing_count",
+                0,
+            )
         )
 
         recovered_gap_events = max(
             0,
-            pre_gaps - post_gaps,
+            pre_gaps
+            - post_gaps,
         )
 
         recovered_missing = max(
             0,
-            pre_missing - post_missing,
+            pre_missing
+            - post_missing,
         )
 
-        result_class = determine_result_class(
-            pre_gaps=pre_gaps,
-            pre_missing=pre_missing,
-            post_gaps=post_gaps,
-            post_missing=post_missing,
-        )
+        result_class = (
+            determine_result_class(
+                pre_gaps=
+                    pre_gaps,
 
-        second_pass, second_pass_reason = (
-            determine_second_pass(
-                result_class=result_class,
-                post_gaps=post_gaps,
-                post_missing=post_missing,
+                pre_missing=
+                    pre_missing,
+
+                post_gaps=
+                    post_gaps,
+
+                post_missing=
+                    post_missing,
             )
+        )
+
+        (
+            second_pass,
+            second_pass_reason,
+        ) = determine_second_pass(
+            result_class=
+                result_class,
+
+            post_gaps=
+                post_gaps,
+
+            post_missing=
+                post_missing,
         )
 
         output.append(
             {
-                "market": market,
-                "timeframe": timeframe,
+                "market":
+                    market,
 
-                "pre_gap_events": pre_gaps,
-                "post_gap_events": post_gaps,
+                "timeframe":
+                    timeframe,
+
+                "pre_gap_events":
+                    pre_gaps,
+
+                "post_gap_events":
+                    post_gaps,
 
                 "recovered_gap_events":
                     recovered_gap_events,
 
-                "pre_missing_est": pre_missing,
-                "post_missing_est": post_missing,
+                "pre_missing_est":
+                    pre_missing,
+
+                "post_missing_est":
+                    post_missing,
 
                 "recovered_missing_est":
                     recovered_missing,
 
-                "result_class": result_class,
+                "result_class":
+                    result_class,
 
                 "second_pass_candidate":
-                    "YES"
-                    if second_pass
-                    else "NO",
+                    (
+                        "YES"
+                        if second_pass
+                        else "NO"
+                    ),
 
                 "second_pass_reason":
                     second_pass_reason,
@@ -1105,41 +1994,53 @@ def compare_reports(
 
 
 # ============================================================
-# 16. SUMMARY CALCULATION
+# 17. SUMMARY CALCULATION
 # ============================================================
 
 def build_summary(
-    detail_rows: Sequence[Dict[str, Any]],
+    detail_rows: Sequence[
+        Dict[str, Any]
+    ],
 ) -> Dict[str, Any]:
 
     pre_gap_events = sum(
-        safe_int(row["pre_gap_events"])
+        safe_int(
+            row["pre_gap_events"]
+        )
         for row in detail_rows
     )
 
     post_gap_events = sum(
-        safe_int(row["post_gap_events"])
+        safe_int(
+            row["post_gap_events"]
+        )
         for row in detail_rows
     )
 
     pre_missing = sum(
-        safe_int(row["pre_missing_est"])
+        safe_int(
+            row["pre_missing_est"]
+        )
         for row in detail_rows
     )
 
     post_missing = sum(
-        safe_int(row["post_missing_est"])
+        safe_int(
+            row["post_missing_est"]
+        )
         for row in detail_rows
     )
 
     recovered_gap_events = max(
         0,
-        pre_gap_events - post_gap_events,
+        pre_gap_events
+        - post_gap_events,
     )
 
     recovered_missing = max(
         0,
-        pre_missing - post_missing,
+        pre_missing
+        - post_missing,
     )
 
     gap_recovery_rate = (
@@ -1164,7 +2065,9 @@ def build_summary(
 
     class_counter = Counter(
         normalize_text(
-            row["result_class"]
+            row[
+                "result_class"
+            ]
         )
         for row in detail_rows
     )
@@ -1172,8 +2075,12 @@ def build_summary(
     second_pass_count = sum(
         1
         for row in detail_rows
-        if row["second_pass_candidate"]
-        == "YES"
+        if (
+            row[
+                "second_pass_candidate"
+            ]
+            == "YES"
+        )
     )
 
     markets_with_remaining_gap = {
@@ -1181,10 +2088,15 @@ def build_summary(
         for row in detail_rows
         if (
             safe_int(
-                row["post_gap_events"]
+                row[
+                    "post_gap_events"
+                ]
             ) > 0
-            or safe_int(
-                row["post_missing_est"]
+            or
+            safe_int(
+                row[
+                    "post_missing_est"
+                ]
             ) > 0
         )
     }
@@ -1194,10 +2106,15 @@ def build_summary(
         for row in detail_rows
         if (
             safe_int(
-                row["post_gap_events"]
+                row[
+                    "post_gap_events"
+                ]
             ) > 0
-            or safe_int(
-                row["post_missing_est"]
+            or
+            safe_int(
+                row[
+                    "post_missing_est"
+                ]
             ) > 0
         )
     )
@@ -1277,11 +2194,13 @@ def build_summary(
 
 
 # ============================================================
-# 17. OUTPUT BUILDERS
+# 18. OUTPUT BUILDERS
 # ============================================================
 
 def write_detail_report(
-    rows: Sequence[Dict[str, Any]],
+    rows: Sequence[
+        Dict[str, Any]
+    ],
 ) -> None:
 
     fields = [
@@ -1310,24 +2229,36 @@ def write_detail_report(
 
 
 def write_second_pass_targets(
-    rows: Sequence[Dict[str, Any]],
+    rows: Sequence[
+        Dict[str, Any]
+    ],
 ) -> None:
 
     targets = [
         row
         for row in rows
-        if row["second_pass_candidate"]
-        == "YES"
+        if (
+            row[
+                "second_pass_candidate"
+            ]
+            == "YES"
+        )
     ]
 
     targets.sort(
         key=lambda row: (
             -safe_int(
-                row["post_missing_est"]
+                row[
+                    "post_missing_est"
+                ]
             ),
+
             -safe_int(
-                row["post_gap_events"]
+                row[
+                    "post_gap_events"
+                ]
             ),
+
             row["market"],
             row["timeframe"],
         )
@@ -1350,16 +2281,24 @@ def write_second_pass_targets(
 
 
 def write_summary_report(
-    summary: Dict[str, Any],
+    summary: Dict[
+        str,
+        Any,
+    ],
 ) -> None:
 
     rows = [
         {
-            "metric": key,
-            "value": value,
+            "metric":
+                key,
+
+            "value":
+                value,
         }
-        for key, value
-        in summary.items()
+        for (
+            key,
+            value,
+        ) in summary.items()
     ]
 
     write_csv(
@@ -1373,15 +2312,25 @@ def write_summary_report(
 
 
 def write_result_json(
-    summary: Dict[str, Any],
+    summary: Dict[
+        str,
+        Any,
+    ],
     pre_report: Path,
     post_report: Path,
-    inventory: Dict[str, int],
+    inventory: Dict[
+        str,
+        int,
+    ],
 ) -> None:
 
     payload = {
-        "program": PROGRAM_NAME,
-        "version": VERSION,
+        "program":
+            PROGRAM_NAME,
+
+        "version":
+            VERSION,
+
         "execution_mode":
             "READ_ONLY_ANALYSIS",
 
@@ -1390,28 +2339,44 @@ def write_result_json(
 
         "source": {
             "pre_recovery_gap_report":
-                str(pre_report),
+                str(
+                    pre_report
+                ),
 
             "post_recovery_gap_report":
-                str(post_report),
+                str(
+                    post_report
+                ),
 
             "pre_report_sha256":
-                file_sha256(pre_report),
+                file_sha256(
+                    pre_report
+                ),
 
             "post_report_sha256":
-                file_sha256(post_report),
+                file_sha256(
+                    post_report
+                ),
         },
 
         "ohlcv_inventory": {
-            "h1": inventory["h1"],
-            "h4": inventory["h4"],
-            "d1": inventory["d1"],
-            "total": sum(
-                inventory.values()
-            ),
+            "h1":
+                inventory["h1"],
+
+            "h4":
+                inventory["h4"],
+
+            "d1":
+                inventory["d1"],
+
+            "total":
+                sum(
+                    inventory.values()
+                ),
         },
 
-        "summary": summary,
+        "summary":
+            summary,
 
         "safety": {
             "ohlcv_write":
@@ -1464,6 +2429,7 @@ def write_result_json(
         "w",
         encoding="utf-8",
     ) as handle:
+
         json.dump(
             payload,
             handle,
@@ -1473,37 +2439,67 @@ def write_result_json(
 
 
 # ============================================================
-# 18. CHECKPOINT
+# 19. CHECKPOINT
 # ============================================================
 
 def write_checkpoint(
     status: str,
-    pre_report: Optional[Path] = None,
-    post_report: Optional[Path] = None,
+    pre_report: Optional[
+        Path
+    ] = None,
+    post_report: Optional[
+        Path
+    ] = None,
     summary: Optional[
         Dict[str, Any]
     ] = None,
+    error: Optional[
+        str
+    ] = None,
 ) -> None:
 
-    payload = {
-        "program": PROGRAM_NAME,
-        "version": VERSION,
-        "status": status,
-        "updated_utc": utc_now_iso(),
+    payload: Dict[
+        str,
+        Any,
+    ] = {
+        "program":
+            PROGRAM_NAME,
+
+        "version":
+            VERSION,
+
+        "status":
+            status,
+
+        "updated_utc":
+            utc_now_iso(),
     }
 
     if pre_report is not None:
+
         payload[
             "pre_recovery_gap_report"
-        ] = str(pre_report)
+        ] = str(
+            pre_report
+        )
 
     if post_report is not None:
+
         payload[
             "post_recovery_gap_report"
-        ] = str(post_report)
+        ] = str(
+            post_report
+        )
 
     if summary is not None:
-        payload["summary"] = summary
+        payload[
+            "summary"
+        ] = summary
+
+    if error is not None:
+        payload[
+            "error"
+        ] = error
 
     CHECKPOINT_PATH.parent.mkdir(
         parents=True,
@@ -1514,6 +2510,7 @@ def write_checkpoint(
         "w",
         encoding="utf-8",
     ) as handle:
+
         json.dump(
             payload,
             handle,
@@ -1523,7 +2520,7 @@ def write_checkpoint(
 
 
 # ============================================================
-# 19. STATUS
+# 20. STATUS
 # ============================================================
 
 def write_status(
@@ -1531,7 +2528,9 @@ def write_status(
     message: str,
 ) -> None:
 
-    exists = STATUS_PATH.exists()
+    exists = (
+        STATUS_PATH.exists()
+    )
 
     STATUS_PATH.parent.mkdir(
         parents=True,
@@ -1571,11 +2570,14 @@ def write_status(
 
 
 # ============================================================
-# 20. CONSOLE SUMMARY
+# 21. CONSOLE SUMMARY
 # ============================================================
 
 def print_summary(
-    summary: Dict[str, Any],
+    summary: Dict[
+        str,
+        Any,
+    ],
     pre_report: Path,
     post_report: Path,
 ) -> None:
@@ -1603,11 +2605,13 @@ def print_summary(
     print("Source:")
 
     print(
-        f"  Pre report         : {pre_report}"
+        "  Pre report         : "
+        f"{pre_report}"
     )
 
     print(
-        f"  Post report        : {post_report}"
+        "  Post report        : "
+        f"{post_report}"
     )
 
     print("")
@@ -1634,7 +2638,9 @@ def print_summary(
     )
 
     print("")
-    print("Missing estimate:")
+    print(
+        "Missing estimate:"
+    )
 
     print(
         "  Before             : "
@@ -1657,7 +2663,9 @@ def print_summary(
     )
 
     print("")
-    print("Job classification:")
+    print(
+        "Job classification:"
+    )
 
     print(
         "  Fully recovered    : "
@@ -1682,6 +2690,11 @@ def print_summary(
     print(
         "  No gap             : "
         f"{summary['no_gap_jobs']}"
+    )
+
+    print(
+        "  Review required    : "
+        f"{summary['review_required_jobs']}"
     )
 
     print("")
@@ -1763,7 +2776,7 @@ def print_summary(
 
 
 # ============================================================
-# 21. MAIN
+# 22. MAIN
 # ============================================================
 
 def main() -> int:
@@ -1808,156 +2821,213 @@ def main() -> int:
 
     write_status(
         "STARTED",
-        "Post-recovery gap analysis started.",
+        (
+            "Post-recovery gap "
+            "analysis started."
+        ),
     )
 
     write_checkpoint(
         status="STARTED",
     )
 
+    pre_report: Optional[
+        Path
+    ] = None
+
+    post_report: Optional[
+        Path
+    ] = None
+
     try:
-        # ----------------------------------------------------
+
+        # ====================================================
         # STEP 1
-        # Validate OHLCV inventory.
-        # ----------------------------------------------------
+        # OHLCV inventory
+        # ====================================================
 
-        inventory = validate_ohlcv_inventory()
+        inventory = (
+            validate_ohlcv_inventory()
+        )
 
-        # ----------------------------------------------------
+        # ====================================================
         # STEP 2
-        # Discover source reports.
-        # ----------------------------------------------------
+        # Discover PRE report
+        # ====================================================
 
-        print("")
-        print(
-            "============================================================"
-        )
-        print(
-            "DISCOVER SOURCE REPORTS"
-        )
-        print(
-            "============================================================"
+        pre_report = (
+            discover_pre_report()
         )
 
-        pre_report = discover_pre_report()
-
-        post_report = discover_post_report(
-            pre_report
-        )
-
-        print(
-            f"Pre-recovery report  : {pre_report}"
-        )
-
-        print(
-            f"Post-recovery report : {post_report}"
-        )
-
-        if (
-            pre_report.resolve()
-            == post_report.resolve()
-        ):
-            raise RuntimeError(
-                "Pre/post report resolved to "
-                "the same file."
-            )
-
-        # ----------------------------------------------------
+        # ====================================================
         # STEP 3
-        # Read reports.
-        # ----------------------------------------------------
+        # Discover POST report
+        # ====================================================
 
-        pre_fields, pre_rows = (
-            read_csv_rows(
+        post_report = (
+            discover_post_report(
                 pre_report
             )
         )
 
-        post_fields, post_rows = (
-            read_csv_rows(
-                post_report
+        if (
+            pre_report.resolve()
+            ==
+            post_report.resolve()
+        ):
+            raise RuntimeError(
+                "Pre/post report resolved "
+                "to the same file."
+            )
+
+        # ====================================================
+        # STEP 4
+        # Read reports
+        # ====================================================
+
+        (
+            pre_fields,
+            pre_rows,
+        ) = read_csv_rows(
+            pre_report
+        )
+
+        (
+            post_fields,
+            post_rows,
+        ) = read_csv_rows(
+            post_report
+        )
+
+        print("")
+        print(
+            "============================================================"
+        )
+        print(
+            "SOURCE REPORT SUMMARY"
+        )
+        print(
+            "============================================================"
+        )
+
+        print(
+            "Pre-recovery report  : "
+            f"{pre_report}"
+        )
+
+        print(
+            "Post-recovery report : "
+            f"{post_report}"
+        )
+
+        print(
+            "Pre rows              : "
+            f"{len(pre_rows)}"
+        )
+
+        print(
+            "Post rows             : "
+            f"{len(post_rows)}"
+        )
+
+        # ====================================================
+        # STEP 5
+        # Schema validation
+        # ====================================================
+
+        pre_schema = (
+            detect_schema(
+                pre_fields
+            )
+        )
+
+        post_schema = (
+            detect_schema(
+                post_fields
             )
         )
 
         print("")
         print(
-            "Pre rows             : "
-            f"{len(pre_rows)}"
-        )
-
-        print(
-            "Post rows            : "
-            f"{len(post_rows)}"
-        )
-
-        # ----------------------------------------------------
-        # STEP 4
-        # Detect schemas.
-        # ----------------------------------------------------
-
-        pre_schema = detect_schema(
-            pre_fields
-        )
-
-        post_schema = detect_schema(
-            post_fields
-        )
-
-        print("")
-        print(
-            "Pre schema           : "
+            "Pre schema            : "
             f"{pre_schema}"
         )
 
         print(
-            "Post schema          : "
+            "Post schema           : "
             f"{post_schema}"
         )
 
-        # ----------------------------------------------------
-        # STEP 5
-        # Aggregate reports.
-        # ----------------------------------------------------
+        # ====================================================
+        # STEP 6
+        # Aggregate
+        # ====================================================
 
-        pre_data = aggregate_report(
-            pre_rows,
-            pre_schema,
+        pre_data = (
+            aggregate_report(
+                pre_rows,
+                pre_schema,
+            )
         )
 
-        post_data = aggregate_report(
-            post_rows,
-            post_schema,
+        post_data = (
+            aggregate_report(
+                post_rows,
+                post_schema,
+            )
         )
 
         print("")
         print(
-            "Pre jobs             : "
+            "Pre jobs              : "
             f"{len(pre_data)}"
         )
 
         print(
-            "Post jobs            : "
+            "Post jobs             : "
             f"{len(post_data)}"
         )
 
-        # ----------------------------------------------------
-        # STEP 6
-        # Compare.
-        # ----------------------------------------------------
+        if not pre_data:
+            raise RuntimeError(
+                "Pre-recovery report "
+                "produced zero jobs."
+            )
 
-        detail_rows = compare_reports(
-            pre_data,
-            post_data,
-        )
+        if not post_data:
+            raise RuntimeError(
+                "Post-recovery report "
+                "produced zero jobs."
+            )
 
-        summary = build_summary(
-            detail_rows
-        )
-
-        # ----------------------------------------------------
+        # ====================================================
         # STEP 7
-        # Write outputs.
-        # ----------------------------------------------------
+        # Compare
+        # ====================================================
+
+        detail_rows = (
+            compare_reports(
+                pre_data,
+                post_data,
+            )
+        )
+
+        if not detail_rows:
+            raise RuntimeError(
+                "Pre/post comparison "
+                "produced zero rows."
+            )
+
+        summary = (
+            build_summary(
+                detail_rows
+            )
+        )
+
+        # ====================================================
+        # STEP 8
+        # Write outputs
+        # ====================================================
 
         write_detail_report(
             detail_rows
@@ -1978,10 +3048,10 @@ def main() -> int:
             inventory=inventory,
         )
 
-        # ----------------------------------------------------
-        # STEP 8
-        # Final checkpoint.
-        # ----------------------------------------------------
+        # ====================================================
+        # STEP 9
+        # Final checkpoint
+        # ====================================================
 
         write_checkpoint(
             status="COMPLETED",
@@ -1993,15 +3063,16 @@ def main() -> int:
         write_status(
             "COMPLETED",
             (
-                "Post-recovery gap analysis "
-                "completed successfully."
+                "Post-recovery gap "
+                "analysis completed "
+                "successfully."
             ),
         )
 
-        # ----------------------------------------------------
-        # STEP 9
-        # Console summary.
-        # ----------------------------------------------------
+        # ====================================================
+        # STEP 10
+        # Console summary
+        # ====================================================
 
         print_summary(
             summary=summary,
@@ -2011,36 +3082,68 @@ def main() -> int:
 
         print("")
         print(
-            "[RESULT] POST-RECOVERY GAP ANALYSIS PASSED"
+            "============================================================"
         )
 
         print(
-            "[PASS] 870 OHLCV source files verified."
+            "[RESULT] POST-RECOVERY "
+            "GAP ANALYSIS PASSED"
         )
 
         print(
-            "[PASS] Pre/post recovery reports compared."
+            "[PASS] 870 OHLCV source "
+            "files verified."
         )
 
         print(
-            "[PASS] Recovery performance calculated."
+            "[PASS] Pre-recovery gap "
+            "report schema verified."
         )
 
         print(
-            "[PASS] Remaining gap jobs identified."
+            "[PASS] Post-recovery gap "
+            "report schema verified."
         )
 
         print(
-            "[PASS] Second-pass candidates generated."
+            "[PASS] Recovery target/"
+            "classification files rejected "
+            "from report discovery."
         )
 
         print(
-            "[PASS] OHLCV source data was not modified."
+            "[PASS] Pre/post recovery "
+            "reports compared."
         )
 
         print(
-            "[NEXT] Validate analysis outputs before "
-            "second-pass recovery planning."
+            "[PASS] Recovery performance "
+            "calculated."
+        )
+
+        print(
+            "[PASS] Remaining gap jobs "
+            "identified."
+        )
+
+        print(
+            "[PASS] Second-pass candidates "
+            "generated."
+        )
+
+        print(
+            "[PASS] OHLCV source data "
+            "was not modified."
+        )
+
+        print(
+            "[NEXT] Validate analysis "
+            "outputs before second-pass "
+            "recovery planning."
+        )
+
+        print(
+            "============================================================"
         )
 
         return 0
@@ -2052,14 +3155,16 @@ def main() -> int:
             "============================================================"
         )
         print(
-            "POST-RECOVERY GAP ANALYSIS FATAL ERROR"
+            "POST-RECOVERY GAP ANALYSIS "
+            "FATAL ERROR"
         )
         print(
             "============================================================"
         )
 
         print(
-            f"{type(exc).__name__}: {exc}"
+            f"{type(exc).__name__}: "
+            f"{exc}"
         )
 
         print("")
@@ -2067,19 +3172,33 @@ def main() -> int:
 
         print("")
         print(
-            "[SAFETY] No OHLCV deletion was executed."
+            "[SAFETY] No OHLCV deletion "
+            "was executed."
         )
 
         print(
-            "[SAFETY] No historical gap repair was executed."
+            "[SAFETY] No historical gap "
+            "repair was executed."
         )
 
         print(
-            "[SAFETY] No Git reset/clean was executed."
+            "[SAFETY] No API candle "
+            "download was executed."
+        )
+
+        print(
+            "[SAFETY] No Git reset/clean "
+            "was executed."
         )
 
         write_checkpoint(
             status="FAILED",
+            pre_report=pre_report,
+            post_report=post_report,
+            error=(
+                f"{type(exc).__name__}: "
+                f"{exc}"
+            ),
         )
 
         write_status(
@@ -2094,11 +3213,13 @@ def main() -> int:
 
 
 # ============================================================
-# 22. ENTRY POINT
+# 23. ENTRY POINT
 # ============================================================
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(
+        main()
+    )
 
 
 # ============================================================
