@@ -1,4 +1,4 @@
-name: Full KRW Data History Gap Report Clean V001
+name: Full KRW Data History Gap Report Clean V002
 
 on:
   workflow_dispatch:
@@ -7,12 +7,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: full-krw-data-history-gap-report-clean-v001
+  group: full-krw-data-history-gap-report-clean-v002
   cancel-in-progress: false
 
 jobs:
   full-history-gap-report:
-    name: Full KRW Data History Gap Report Clean V001
+    name: Full KRW Data History Gap Report Clean V002
 
     runs-on:
       - self-hosted
@@ -25,8 +25,9 @@ jobs:
         shell: powershell
 
     steps:
+
       # ============================================================
-      # 01. Repository
+      # 01. Repository synchronization
       # ============================================================
 
       - name: Synchronize local repository
@@ -40,9 +41,7 @@ jobs:
           Set-Location "${{ github.workspace }}"
 
           git fetch origin main
-
           git checkout main
-
           git reset --hard origin/main
 
           Write-Host ""
@@ -50,7 +49,7 @@ jobs:
 
 
       # ============================================================
-      # 02. Python
+      # 02. Python verification
       # ============================================================
 
       - name: Verify Python
@@ -70,7 +69,7 @@ jobs:
 
 
       # ============================================================
-      # 03. Required files
+      # 03. Program verification
       # ============================================================
 
       - name: Verify gap report program
@@ -91,7 +90,7 @@ jobs:
 
 
       # ============================================================
-      # 04. Verify OHLCV directories
+      # 04. OHLCV directories
       # ============================================================
 
       - name: Verify full OHLCV dataset directories
@@ -116,12 +115,14 @@ jobs:
                   throw "Required directory not found: $directory"
               }
 
-              $count = (
+              $files = @(
                   Get-ChildItem `
                       -Path $directory `
                       -Filter "*.csv" `
                       -File
-              ).Count
+              )
+
+              $count = $files.Count
 
               Write-Host "$directory : $count CSV files"
 
@@ -135,7 +136,7 @@ jobs:
 
 
       # ============================================================
-      # 05. Verify market sets
+      # 05. Market set verification
       # ============================================================
 
       - name: Verify identical market sets
@@ -148,40 +149,91 @@ jobs:
 
           Set-Location "${{ github.workspace }}"
 
-          $h1 = Get-ChildItem "data\ohlcv\h1" -Filter "*.csv" -File |
-              ForEach-Object { $_.BaseName } |
+          $h1 = @(
+              Get-ChildItem `
+                  "data\ohlcv\h1" `
+                  -Filter "*.csv" `
+                  -File |
+              ForEach-Object {
+                  $_.BaseName
+              } |
               Sort-Object
+          )
 
-          $h4 = Get-ChildItem "data\ohlcv\h4" -Filter "*.csv" -File |
-              ForEach-Object { $_.BaseName } |
+          $h4 = @(
+              Get-ChildItem `
+                  "data\ohlcv\h4" `
+                  -Filter "*.csv" `
+                  -File |
+              ForEach-Object {
+                  $_.BaseName
+              } |
               Sort-Object
+          )
 
-          $d1 = Get-ChildItem "data\ohlcv\d1" -Filter "*.csv" -File |
-              ForEach-Object { $_.BaseName } |
+          $d1 = @(
+              Get-ChildItem `
+                  "data\ohlcv\d1" `
+                  -Filter "*.csv" `
+                  -File |
+              ForEach-Object {
+                  $_.BaseName
+              } |
               Sort-Object
+          )
 
-          $h1h4 = Compare-Object $h1 $h4
-          $h1d1 = Compare-Object $h1 $d1
+          if ($h1.Count -ne 290) {
+              throw "H1 market count must be 290. Found: $($h1.Count)"
+          }
 
-          if ($h1h4) {
+          if ($h4.Count -ne 290) {
+              throw "H4 market count must be 290. Found: $($h4.Count)"
+          }
+
+          if ($d1.Count -ne 290) {
+              throw "D1 market count must be 290. Found: $($d1.Count)"
+          }
+
+          $h1h4 = @(
+              Compare-Object `
+                  -ReferenceObject $h1 `
+                  -DifferenceObject $h4
+          )
+
+          $h1d1 = @(
+              Compare-Object `
+                  -ReferenceObject $h1 `
+                  -DifferenceObject $d1
+          )
+
+          if ($h1h4.Count -gt 0) {
+
               Write-Host ""
               Write-Host "H1/H4 mismatch:"
-              $h1h4 | Format-Table
+
+              $h1h4 |
+                  Format-Table
+
               throw "H1/H4 market sets are different."
           }
 
-          if ($h1d1) {
+          if ($h1d1.Count -gt 0) {
+
               Write-Host ""
               Write-Host "H1/D1 mismatch:"
-              $h1d1 | Format-Table
+
+              $h1d1 |
+                  Format-Table
+
               throw "H1/D1 market sets are different."
           }
 
+          Write-Host ""
           Write-Host "[PASS] Identical 290-market set verified."
 
 
       # ============================================================
-      # 06. Record OHLCV hashes before execution
+      # 06. OHLCV SHA256 BEFORE
       # ============================================================
 
       - name: Record OHLCV SHA256 before gap report
@@ -210,11 +262,13 @@ jobs:
 
           foreach ($timeframe in @("h1", "h4", "d1")) {
 
-              $files = Get-ChildItem `
-                  -Path "data\ohlcv\$timeframe" `
-                  -Filter "*.csv" `
-                  -File |
+              $files = @(
+                  Get-ChildItem `
+                      -Path "data\ohlcv\$timeframe" `
+                      -Filter "*.csv" `
+                      -File |
                   Sort-Object Name
+              )
 
               foreach ($file in $files) {
 
@@ -240,19 +294,20 @@ jobs:
                   -Path $beforeFile `
                   -Encoding UTF8
 
-          $count = $records.Count
+          $recordCount = @($records).Count
 
-          Write-Host "Recorded hashes : $count"
+          Write-Host "Recorded hashes : $recordCount"
 
-          if ($count -ne 870) {
-              throw "Expected 870 OHLCV hashes. Found: $count"
+          if ($recordCount -ne 870) {
+              throw "Expected 870 OHLCV hashes. Found: $recordCount"
           }
 
+          Write-Host ""
           Write-Host "[PASS] 870 OHLCV SHA256 hashes recorded."
 
 
       # ============================================================
-      # 07. Inspect checkpoint
+      # 07. Existing checkpoint inspection
       # ============================================================
 
       - name: Inspect persistent gap report checkpoint
@@ -265,22 +320,44 @@ jobs:
 
           Set-Location "${{ github.workspace }}"
 
-          $checkpoint = "data\validation\data_history_gap_report_checkpoint.json"
+          $checkpointFile = "data\validation\data_history_gap_report_checkpoint.json"
 
-          if (Test-Path $checkpoint) {
+          if (Test-Path $checkpointFile) {
 
               Write-Host "Checkpoint : FOUND"
-              Write-Host "Resume     : AVAILABLE"
 
-              $size = (
-                  Get-Item $checkpoint
-              ).Length
+              try {
 
-              Write-Host "Size       : $size bytes"
+                  $checkpoint = Get-Content `
+                      -Path $checkpointFile `
+                      -Raw `
+                      -Encoding UTF8 |
+                      ConvertFrom-Json
+
+                  if ($null -ne $checkpoint.completed) {
+
+                      $completedCount = @(
+                          $checkpoint.completed.PSObject.Properties
+                      ).Count
+
+                      Write-Host "Completed  : $completedCount"
+                      Write-Host "Resume     : AVAILABLE"
+                  }
+                  else {
+
+                      Write-Host "Completed  : UNKNOWN"
+                      Write-Host "Resume     : CHECKPOINT FORMAT REQUIRES PROGRAM VALIDATION"
+                  }
+              }
+              catch {
+
+                  throw "Existing checkpoint could not be parsed: $($_.Exception.Message)"
+              }
           }
           else {
 
               Write-Host "Checkpoint : NOT FOUND"
+              Write-Host "Completed  : 0"
               Write-Host "Resume     : FIRST RUN"
           }
 
@@ -289,15 +366,15 @@ jobs:
 
 
       # ============================================================
-      # 08. Execute full gap report
+      # 08. Run gap report
       # ============================================================
 
-      - name: Run Full KRW Data History Gap Report Clean V001
+      - name: Run Full KRW Data History Gap Report Clean V002
         run: |
           $ErrorActionPreference = "Stop"
 
           Write-Host "============================================================"
-          Write-Host "RUN FULL KRW DATA HISTORY GAP REPORT CLEAN V001"
+          Write-Host "RUN FULL KRW DATA HISTORY GAP REPORT CLEAN V002"
           Write-Host "============================================================"
 
           Set-Location "${{ github.workspace }}"
@@ -305,10 +382,12 @@ jobs:
           $env:PYTHONUTF8 = "1"
           $env:PYTHONIOENCODING = "utf-8"
 
-          py data_history_gap_report.py
+          & py data_history_gap_report.py
 
-          if ($LASTEXITCODE -ne 0) {
-              throw "data_history_gap_report.py failed with exit code $LASTEXITCODE."
+          $exitCode = $LASTEXITCODE
+
+          if ($exitCode -ne 0) {
+              throw "data_history_gap_report.py failed with exit code $exitCode."
           }
 
           Write-Host ""
@@ -316,7 +395,10 @@ jobs:
 
 
       # ============================================================
-      # 09. Verify checkpoint
+      # 09. Checkpoint verification
+      # FIX:
+      # PSObject.Properties must be wrapped with @(...)
+      # before Count is evaluated.
       # ============================================================
 
       - name: Verify completed 870-job checkpoint
@@ -345,9 +427,11 @@ jobs:
               throw "Checkpoint completed section is missing."
           }
 
-          $completedCount = (
+          $completedProperties = @(
               $checkpoint.completed.PSObject.Properties
-          ).Count
+          )
+
+          $completedCount = $completedProperties.Count
 
           Write-Host "Completed jobs : $completedCount"
 
@@ -355,11 +439,12 @@ jobs:
               throw "Expected 870 completed checkpoint jobs. Found: $completedCount"
           }
 
-          Write-Host "[PASS] 870 completed jobs verified."
+          Write-Host ""
+          Write-Host "[PASS] 870 completed checkpoint jobs verified."
 
 
       # ============================================================
-      # 10. Verify output files
+      # 10. Output verification
       # ============================================================
 
       - name: Verify detailed gap report outputs
@@ -373,31 +458,35 @@ jobs:
           Set-Location "${{ github.workspace }}"
 
           $gapReport = "data\reports\history_gap\data_history_gap_report.csv"
-          $summary = "data\reports\history_gap\data_history_gap_summary.csv"
+          $summaryFile = "data\reports\history_gap\data_history_gap_summary.csv"
 
           if (-not (Test-Path $gapReport)) {
-              throw "Detailed gap report CSV not found."
+              throw "Detailed gap report CSV not found: $gapReport"
           }
 
-          if (-not (Test-Path $summary)) {
-              throw "Gap summary CSV not found."
+          if (-not (Test-Path $summaryFile)) {
+              throw "Gap summary CSV not found: $summaryFile"
           }
 
           $summaryRows = @(
-              Import-Csv $summary
+              Import-Csv `
+                  -Path $summaryFile
           )
-
-          Write-Host "Summary rows : $($summaryRows.Count)"
-
-          if ($summaryRows.Count -ne 870) {
-              throw "Expected 870 summary rows. Found: $($summaryRows.Count)"
-          }
 
           $gapRows = @(
-              Import-Csv $gapReport
+              Import-Csv `
+                  -Path $gapReport
           )
 
-          Write-Host "Gap events   : $($gapRows.Count)"
+          $summaryCount = $summaryRows.Count
+          $gapCount = $gapRows.Count
+
+          Write-Host "Summary rows : $summaryCount"
+          Write-Host "Gap events   : $gapCount"
+
+          if ($summaryCount -ne 870) {
+              throw "Expected 870 summary rows. Found: $summaryCount"
+          }
 
           $filesWithGaps = @(
               $summaryRows |
@@ -443,37 +532,67 @@ jobs:
 
           $checkpointFile = "data\validation\data_history_gap_report_checkpoint.json"
 
-          $beforeHash = (
-              Get-FileHash `
-                  -Path $checkpointFile `
-                  -Algorithm SHA256
-          ).Hash
-
-          $output = & py data_history_gap_report.py 2>&1
-
-          $exitCode = $LASTEXITCODE
-
-          $output |
-              ForEach-Object {
-                  Write-Host $_
-              }
-
-          if ($exitCode -ne 0) {
-              throw "Resume execution failed with exit code $exitCode."
+          if (-not (Test-Path $checkpointFile)) {
+              throw "Checkpoint file not found before Resume test."
           }
 
-          $checkpoint = Get-Content `
+          $checkpointBefore = Get-Content `
               -Path $checkpointFile `
               -Raw `
               -Encoding UTF8 |
               ConvertFrom-Json
 
-          $completedCount = (
-              $checkpoint.completed.PSObject.Properties
+          if ($null -eq $checkpointBefore.completed) {
+              throw "Checkpoint completed section missing before Resume test."
+          }
+
+          $completedBefore = @(
+              $checkpointBefore.completed.PSObject.Properties
           ).Count
 
-          if ($completedCount -ne 870) {
-              throw "Resume checkpoint no longer contains 870 jobs."
+          Write-Host "Completed before Resume : $completedBefore"
+
+          if ($completedBefore -ne 870) {
+              throw "Resume test requires 870 completed jobs before execution. Found: $completedBefore"
+          }
+
+          Write-Host ""
+          Write-Host "Running gap report again to verify Resume..."
+          Write-Host ""
+
+          $output = @(
+              & py data_history_gap_report.py 2>&1
+          )
+
+          $exitCode = $LASTEXITCODE
+
+          foreach ($line in $output) {
+              Write-Host "$line"
+          }
+
+          if ($exitCode -ne 0) {
+              throw "Resume execution failed with exit code $exitCode."
+          }
+
+          $checkpointAfter = Get-Content `
+              -Path $checkpointFile `
+              -Raw `
+              -Encoding UTF8 |
+              ConvertFrom-Json
+
+          if ($null -eq $checkpointAfter.completed) {
+              throw "Checkpoint completed section missing after Resume test."
+          }
+
+          $completedAfter = @(
+              $checkpointAfter.completed.PSObject.Properties
+          ).Count
+
+          Write-Host ""
+          Write-Host "Completed after Resume : $completedAfter"
+
+          if ($completedAfter -ne 870) {
+              throw "Resume checkpoint must contain 870 jobs. Found: $completedAfter"
           }
 
           $resumeLines = @(
@@ -483,20 +602,21 @@ jobs:
               }
           )
 
-          Write-Host ""
-          Write-Host "Resume lines   : $($resumeLines.Count)"
-          Write-Host "Completed jobs : $completedCount"
+          $resumeCount = $resumeLines.Count
 
-          if ($resumeLines.Count -ne 870) {
-              throw "Expected 870 resumed jobs. Found: $($resumeLines.Count)"
+          Write-Host "Resume lines           : $resumeCount"
+
+          if ($resumeCount -ne 870) {
+              throw "Expected 870 Resume lines. Found: $resumeCount"
           }
 
           Write-Host ""
+          Write-Host "[PASS] 870 / 870 jobs resumed."
           Write-Host "[PASS] Persistent Resume behavior verified."
 
 
       # ============================================================
-      # 12. Record OHLCV hashes after execution
+      # 12. OHLCV SHA256 AFTER
       # ============================================================
 
       - name: Verify all OHLCV files remained unchanged
@@ -520,11 +640,13 @@ jobs:
 
           foreach ($timeframe in @("h1", "h4", "d1")) {
 
-              $files = Get-ChildItem `
-                  -Path "data\ohlcv\$timeframe" `
-                  -Filter "*.csv" `
-                  -File |
+              $files = @(
+                  Get-ChildItem `
+                      -Path "data\ohlcv\$timeframe" `
+                      -Filter "*.csv" `
+                      -File |
                   Sort-Object Name
+              )
 
               foreach ($file in $files) {
 
@@ -550,35 +672,57 @@ jobs:
                   -Path $afterFile `
                   -Encoding UTF8
 
-          $before = Get-Content `
-              -Path $beforeFile `
-              -Encoding UTF8
+          $recordCount = @($records).Count
 
-          $after = Get-Content `
-              -Path $afterFile `
-              -Encoding UTF8
+          if ($recordCount -ne 870) {
+              throw "Expected 870 AFTER hashes. Found: $recordCount"
+          }
 
-          $difference = Compare-Object `
-              -ReferenceObject $before `
-              -DifferenceObject $after
+          $before = @(
+              Get-Content `
+                  -Path $beforeFile `
+                  -Encoding UTF8
+          )
 
-          if ($difference) {
+          $after = @(
+              Get-Content `
+                  -Path $afterFile `
+                  -Encoding UTF8
+          )
+
+          if ($before.Count -ne 870) {
+              throw "BEFORE hash file must contain 870 entries. Found: $($before.Count)"
+          }
+
+          if ($after.Count -ne 870) {
+              throw "AFTER hash file must contain 870 entries. Found: $($after.Count)"
+          }
+
+          $difference = @(
+              Compare-Object `
+                  -ReferenceObject $before `
+                  -DifferenceObject $after
+          )
+
+          if ($difference.Count -gt 0) {
 
               Write-Host ""
               Write-Host "OHLCV HASH DIFFERENCES:"
+
               $difference |
                   Format-Table
 
               throw "OHLCV source files changed during gap reporting."
           }
 
-          Write-Host "Verified hashes : $($records.Count)"
+          Write-Host "Verified hashes : $recordCount"
+
           Write-Host ""
           Write-Host "[PASS] All 870 OHLCV source files remained unchanged."
 
 
       # ============================================================
-      # 13. Verify Git ignore safety
+      # 13. Runtime ignore verification
       # ============================================================
 
       - name: Verify generated gap data remains ignored
@@ -594,12 +738,14 @@ jobs:
           $requiredIgnoredPaths = @(
               "data/reports/history_gap/data_history_gap_report.csv",
               "data/reports/history_gap/data_history_gap_summary.csv",
-              "data/validation/data_history_gap_report_checkpoint.json"
+              "data/validation/data_history_gap_report_checkpoint.json",
+              "data/validation/gap_report_ohlcv_before.sha256",
+              "data/validation/gap_report_ohlcv_after.sha256"
           )
 
           foreach ($path in $requiredIgnoredPaths) {
 
-              git check-ignore -q $path
+              & git check-ignore -q -- $path
 
               if ($LASTEXITCODE -ne 0) {
                   throw "Generated runtime file is NOT ignored by Git: $path"
@@ -632,6 +778,22 @@ jobs:
                   --untracked-files=all
           )
 
+          if ($changes.Count -eq 0) {
+
+              Write-Host "Git-visible changes : 0"
+              Write-Host ""
+              Write-Host "[PASS] Working tree has no Git-visible runtime changes."
+
+              exit 0
+          }
+
+          Write-Host "Git-visible changes detected:"
+          Write-Host ""
+
+          foreach ($line in $changes) {
+              Write-Host "$line"
+          }
+
           $unsafe = @()
 
           foreach ($line in $changes) {
@@ -649,19 +811,22 @@ jobs:
               $unsafe += $text
           }
 
-          if ($unsafe.Count -gt 0) {
+          $unsafeCount = @($unsafe).Count
+
+          if ($unsafeCount -gt 0) {
 
               Write-Host ""
               Write-Host "Unexpected Git-visible changes:"
+              Write-Host ""
 
-              $unsafe |
-                  ForEach-Object {
-                      Write-Host $_
-                  }
+              foreach ($line in $unsafe) {
+                  Write-Host "$line"
+              }
 
               throw "Gap report created unexpected Git-visible changes."
           }
 
+          Write-Host ""
           Write-Host "[PASS] No unsafe Git-visible runtime changes detected."
 
 
@@ -674,7 +839,7 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           Write-Host "============================================================"
-          Write-Host "FULL KRW DATA HISTORY GAP REPORT CLEAN V001"
+          Write-Host "FULL KRW DATA HISTORY GAP REPORT SUMMARY"
           Write-Host "============================================================"
 
           Set-Location "${{ github.workspace }}"
@@ -683,12 +848,26 @@ jobs:
           $gapFile = "data\reports\history_gap\data_history_gap_report.csv"
           $checkpointFile = "data\validation\data_history_gap_report_checkpoint.json"
 
+          if (-not (Test-Path $summaryFile)) {
+              throw "Summary file missing."
+          }
+
+          if (-not (Test-Path $gapFile)) {
+              throw "Gap report file missing."
+          }
+
+          if (-not (Test-Path $checkpointFile)) {
+              throw "Checkpoint file missing."
+          }
+
           $summary = @(
-              Import-Csv $summaryFile
+              Import-Csv `
+                  -Path $summaryFile
           )
 
           $gaps = @(
-              Import-Csv $gapFile
+              Import-Csv `
+                  -Path $gapFile
           )
 
           $checkpoint = Get-Content `
@@ -697,9 +876,24 @@ jobs:
               -Encoding UTF8 |
               ConvertFrom-Json
 
-          $completedCount = (
+          if ($null -eq $checkpoint.completed) {
+              throw "Checkpoint completed section missing."
+          }
+
+          $completedCount = @(
               $checkpoint.completed.PSObject.Properties
           ).Count
+
+          if ($completedCount -ne 870) {
+              throw "Final checkpoint count must be 870. Found: $completedCount"
+          }
+
+          $summaryCount = $summary.Count
+          $gapCount = $gaps.Count
+
+          if ($summaryCount -ne 870) {
+              throw "Final summary must contain 870 rows. Found: $summaryCount"
+          }
 
           $filesWithGaps = @(
               $summary |
@@ -731,7 +925,7 @@ jobs:
           }
 
           Write-Host "Project          : Upbit Surge Monitor"
-          Write-Host "Version          : Data History Gap Report Clean V001"
+          Write-Host "Version          : Data History Gap Report Clean V002"
           Write-Host "Execution mode   : FULL KRW MARKET"
           Write-Host "Markets          : 290"
           Write-Host "Timeframes       : 3"
@@ -745,14 +939,18 @@ jobs:
 
           Write-Host ""
           Write-Host "Gap findings:"
+          Write-Host "  Summary rows   : $summaryCount"
           Write-Host "  Files w/gaps   : $filesWithGaps"
-          Write-Host "  Gap events     : $($gaps.Count)"
+          Write-Host "  Gap events     : $gapCount"
           Write-Host "  Missing est.   : $missingEstimated"
           Write-Host "  Largest gap    : $largestGap seconds"
 
           Write-Host ""
           Write-Host "Integrity:"
-          Write-Host "  OHLCV files    : UNCHANGED"
+          Write-Host "  OHLCV h1       : 290 VERIFIED"
+          Write-Host "  OHLCV h4       : 290 VERIFIED"
+          Write-Host "  OHLCV d1       : 290 VERIFIED"
+          Write-Host "  OHLCV SHA256   : UNCHANGED"
           Write-Host "  Runtime ignore : VERIFIED"
 
           Write-Host ""
@@ -765,6 +963,7 @@ jobs:
           Write-Host "  Future labels  : DISABLED"
           Write-Host "  Prediction     : DISABLED"
           Write-Host "  Trading        : DISABLED"
+          Write-Host "  Git reset      : DISABLED"
           Write-Host "  Git clean      : DISABLED"
           Write-Host "  Git commit     : DISABLED"
           Write-Host "  Git push       : DISABLED"
@@ -772,12 +971,13 @@ jobs:
           Write-Host ""
           Write-Host "============================================================"
           Write-Host "[RESULT] FULL KRW DATA HISTORY GAP REPORT PASSED"
-          Write-Host "[PASS] 290 markets / 870 jobs verified."
+          Write-Host "[PASS] 290 markets verified."
+          Write-Host "[PASS] 870 / 870 jobs verified."
           Write-Host "[PASS] Persistent Resume verified."
           Write-Host "[PASS] All OHLCV source files remained unchanged."
 
-          if ($gaps.Count -gt 0) {
-              Write-Host "[INFO] Timestamp gaps require classification."
+          if ($gapCount -gt 0) {
+              Write-Host "[INFO] Historical timestamp gaps were detected."
               Write-Host "[NEXT] Classify recoverable gaps before historical repair."
           }
           else {
