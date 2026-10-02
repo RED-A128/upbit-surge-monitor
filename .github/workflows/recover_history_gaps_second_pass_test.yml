@@ -3,7 +3,7 @@
 #
 # .github/workflows/recover_history_gaps_second_pass_test.yml
 #
-# Clean V001
+# Clean V002
 # ============================================================
 #
 # PURPOSE
@@ -18,7 +18,7 @@
 # TEST SCOPE
 #
 #   1. Repository / Python environment validation
-#   2. Required planner output validation
+#   2. Planner output generation / validation
 #   3. Production OHLCV inventory validation
 #   4. Production 870-file SHA256 baseline
 #   5. Isolated test workspace creation
@@ -155,7 +155,7 @@ jobs:
           Write-Host "============================================================"
           Write-Host "UPBIT SURGE MONITOR"
           Write-Host "SECOND-PASS RECOVERY TEST"
-          Write-Host "Clean V001"
+          Write-Host "Clean V002"
           Write-Host "============================================================"
 
           Write-Host ""
@@ -270,10 +270,121 @@ jobs:
 
 
       # ======================================================
-      # 05. REQUIRED FILES
+      # 05. PLANNER SOURCE
       # ======================================================
 
-      - name: 05 - Verify required source files
+      - name: 05 - Verify planner and recovery source files
+
+        run: |
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY PLANNER / RECOVERY SOURCE FILES"
+          Write-Host "============================================================"
+
+          $required = @(
+              "plan_history_gap_retry.py",
+              "recover_history_gaps_second_pass.py"
+          )
+
+          foreach ($file in $required) {
+              if (-not (Test-Path $file)) {
+                  throw "Required source file missing: $file"
+              }
+
+              if ((Get-Item $file).Length -le 0) {
+                  throw "Required source file is empty: $file"
+              }
+
+              Write-Host "[PASS] $file"
+          }
+
+
+      # ======================================================
+      # 06. PLANNER / RECOVERY SYNTAX
+      # ======================================================
+
+      - name: 06 - Python syntax check for planner and recovery
+
+        run: |
+
+          Write-Host "============================================================"
+          Write-Host "PYTHON SYNTAX CHECK"
+          Write-Host "============================================================"
+
+          py -m py_compile plan_history_gap_retry.py
+          if ($LASTEXITCODE -ne 0) {
+              throw "Planner Python syntax validation failed."
+          }
+
+          py -m py_compile recover_history_gaps_second_pass.py
+          if ($LASTEXITCODE -ne 0) {
+              throw "Recovery Python syntax validation failed."
+          }
+
+          Write-Host "[PASS] Planner/recovery syntax valid."
+
+
+      # ======================================================
+      # 07. GENERATE PLANNER OUTPUTS
+      # ======================================================
+
+      - name: 07 - Generate second-pass planner outputs
+
+        run: |
+
+          Write-Host "============================================================"
+          Write-Host "GENERATE SECOND-PASS PLANNER OUTPUTS"
+          Write-Host "============================================================"
+          Write-Host "[SAFETY] This step may replace planner runtime outputs only."
+          Write-Host "[SAFETY] data/ohlcv is not modified by this step."
+
+          $runtimeFiles = @(
+              "data/recovery/history_gap_second_pass_targets.csv",
+              "data/recovery/history_gap_second_pass_plan.json",
+              "data/reports/history_gap_retry_plan/history_gap_retry_plan_summary.csv",
+              "data/reports/history_gap_retry_plan/history_gap_retry_plan_detail.csv",
+              "data/validation/plan_history_gap_retry_checkpoint.json"
+          )
+
+          foreach ($path in $runtimeFiles) {
+              if (Test-Path $path) {
+                  Remove-Item -Path $path -Force
+                  Write-Host "[INFO] Removed stale planner runtime file: $path"
+              }
+          }
+
+          py plan_history_gap_retry.py
+          $exitCode = $LASTEXITCODE
+
+          if ($exitCode -ne 0) {
+              throw "plan_history_gap_retry.py failed with exit code $exitCode."
+          }
+
+          $requiredOutputs = @(
+              "data/recovery/history_gap_second_pass_targets.csv",
+              "data/recovery/history_gap_second_pass_plan.json"
+          )
+
+          foreach ($path in $requiredOutputs) {
+              if (-not (Test-Path $path)) {
+                  throw "Planner output missing after execution: $path"
+              }
+
+              if ((Get-Item $path).Length -le 0) {
+                  throw "Planner output empty after execution: $path"
+              }
+
+              Write-Host "[PASS] Generated: $path"
+          }
+
+          Write-Host "[PASS] Planner outputs generated before recovery test."
+
+
+      # ======================================================
+      # 08. REQUIRED FILES
+      # ======================================================
+
+      - name: 08 - Verify required source files
 
         run: |
 
@@ -313,10 +424,10 @@ jobs:
 
 
       # ======================================================
-      # 06. SYNTAX CHECK
+      # 09. SYNTAX CHECK
       # ======================================================
 
-      - name: 06 - Python syntax check
+      - name: 09 - Python syntax check
 
         run: |
 
@@ -338,10 +449,10 @@ jobs:
 
 
       # ======================================================
-      # 07. PRODUCTION OHLCV INVENTORY
+      # 10. PRODUCTION OHLCV INVENTORY
       # ======================================================
 
-      - name: 07 - Validate production OHLCV inventory
+      - name: 10 - Validate production OHLCV inventory
 
         run: |
 
@@ -462,10 +573,10 @@ jobs:
 
 
       # ======================================================
-      # 08. TARGET FILE VALIDATION
+      # 11. TARGET FILE VALIDATION
       # ======================================================
 
-      - name: 08 - Validate second-pass target contract
+      - name: 11 - Validate second-pass target contract
 
         run: |
 
@@ -649,10 +760,10 @@ jobs:
 
 
       # ======================================================
-      # 09. PRODUCTION SHA256 BASELINE
+      # 12. PRODUCTION SHA256 BASELINE
       # ======================================================
 
-      - name: 09 - Record production 870-file SHA256 baseline
+      - name: 12 - Record production 870-file SHA256 baseline
 
         run: |
 
@@ -785,10 +896,10 @@ jobs:
 
 
       # ======================================================
-      # 10. CLEAN OLD ISOLATED TEST DIRECTORY
+      # 13. CLEAN OLD ISOLATED TEST DIRECTORY
       # ======================================================
 
-      - name: 10 - Prepare isolated test workspace
+      - name: 13 - Prepare isolated test workspace
 
         run: |
 
@@ -826,10 +937,10 @@ jobs:
 
 
       # ======================================================
-      # 11. COPY RECOVERY PROGRAM
+      # 14. COPY RECOVERY PROGRAM
       # ======================================================
 
-      - name: 11 - Copy recovery program into isolated root
+      - name: 14 - Copy recovery program into isolated root
 
         run: |
 
@@ -854,10 +965,10 @@ jobs:
 
 
       # ======================================================
-      # 12. COPY FULL 870-FILE OHLCV DATASET
+      # 15. COPY FULL 870-FILE OHLCV DATASET
       # ======================================================
 
-      - name: 12 - Copy production OHLCV into isolated workspace
+      - name: 15 - Copy production OHLCV into isolated workspace
 
         run: |
 
@@ -899,10 +1010,10 @@ jobs:
 
 
       # ======================================================
-      # 13. COPY PLANNER OUTPUTS
+      # 16. COPY PLANNER OUTPUTS
       # ======================================================
 
-      - name: 13 - Copy planner outputs into isolated workspace
+      - name: 16 - Copy planner outputs into isolated workspace
 
         run: |
 
@@ -933,10 +1044,10 @@ jobs:
 
 
       # ======================================================
-      # 14. VERIFY ISOLATED COPY HASHES
+      # 17. VERIFY ISOLATED COPY HASHES
       # ======================================================
 
-      - name: 14 - Verify isolated copy equals production before test
+      - name: 17 - Verify isolated copy equals production before test
 
         run: |
 
@@ -1100,10 +1211,10 @@ jobs:
 
 
       # ======================================================
-      # 15. RECORD ISOLATED BEFORE SNAPSHOT
+      # 18. RECORD ISOLATED BEFORE SNAPSHOT
       # ======================================================
 
-      - name: 15 - Record isolated OHLCV before snapshot
+      - name: 18 - Record isolated OHLCV before snapshot
 
         run: |
 
@@ -1233,10 +1344,10 @@ jobs:
 
 
       # ======================================================
-      # 16. REAL UPBIT API CONNECTIVITY
+      # 19. REAL UPBIT API CONNECTIVITY
       # ======================================================
 
-      - name: 16 - Test real Upbit API connectivity
+      - name: 19 - Test real Upbit API connectivity
 
         run: |
 
@@ -1348,10 +1459,10 @@ jobs:
 
 
       # ======================================================
-      # 17. FIRST ISOLATED RECOVERY
+      # 20. FIRST ISOLATED RECOVERY
       # ======================================================
 
-      - name: 17 - Execute first isolated second-pass recovery
+      - name: 20 - Execute first isolated second-pass recovery
 
         run: |
 
@@ -1388,10 +1499,10 @@ jobs:
 
 
       # ======================================================
-      # 18. VERIFY RECOVERY OUTPUT FILES
+      # 21. VERIFY RECOVERY OUTPUT FILES
       # ======================================================
 
-      - name: 18 - Verify first recovery outputs
+      - name: 21 - Verify first recovery outputs
 
         run: |
 
@@ -1451,10 +1562,10 @@ jobs:
 
 
       # ======================================================
-      # 19. VALIDATE FIRST RESULT JSON
+      # 22. VALIDATE FIRST RESULT JSON
       # ======================================================
 
-      - name: 19 - Validate first recovery result
+      - name: 22 - Validate first recovery result
 
         run: |
 
@@ -1648,10 +1759,10 @@ jobs:
 
 
       # ======================================================
-      # 20. VERIFY 870-FILE SAFETY
+      # 23. VERIFY 870-FILE SAFETY
       # ======================================================
 
-      - name: 20 - Verify isolated 870-file safety after recovery
+      - name: 23 - Verify isolated 870-file safety after recovery
 
         run: |
 
@@ -1950,10 +2061,10 @@ jobs:
 
 
       # ======================================================
-      # 21. VERIFY EXISTING CANDLE IMMUTABILITY
+      # 24. VERIFY EXISTING CANDLE IMMUTABILITY
       # ======================================================
 
-      - name: 21 - Verify existing candle immutability
+      - name: 24 - Verify existing candle immutability
 
         run: |
 
@@ -2370,10 +2481,10 @@ jobs:
 
 
       # ======================================================
-      # 22. RECORD POST-FIRST-RUN HASH
+      # 25. RECORD POST-FIRST-RUN HASH
       # ======================================================
 
-      - name: 22 - Record isolated state before resume test
+      - name: 25 - Record isolated state before resume test
 
         run: |
 
@@ -2482,10 +2593,10 @@ jobs:
 
 
       # ======================================================
-      # 23. SECOND EXECUTION / RESUME TEST
+      # 26. SECOND EXECUTION / RESUME TEST
       # ======================================================
 
-      - name: 23 - Execute recovery again for Resume test
+      - name: 26 - Execute recovery again for Resume test
 
         run: |
 
@@ -2536,10 +2647,10 @@ jobs:
 
 
       # ======================================================
-      # 24. RESUME IDEMPOTENCY
+      # 27. RESUME IDEMPOTENCY
       # ======================================================
 
-      - name: 24 - Validate Resume idempotency
+      - name: 27 - Validate Resume idempotency
 
         run: |
 
@@ -2699,10 +2810,10 @@ jobs:
 
 
       # ======================================================
-      # 25. DUPLICATE TIMESTAMP CHECK
+      # 28. DUPLICATE TIMESTAMP CHECK
       # ======================================================
 
-      - name: 25 - Verify no duplicate timestamps in 870 isolated files
+      - name: 28 - Verify no duplicate timestamps in 870 isolated files
 
         run: |
 
@@ -2902,10 +3013,10 @@ jobs:
 
 
       # ======================================================
-      # 26. PRODUCTION FINAL SHA256
+      # 29. PRODUCTION FINAL SHA256
       # ======================================================
 
-      - name: 26 - Verify production OHLCV remained unchanged
+      - name: 29 - Verify production OHLCV remained unchanged
 
         run: |
 
@@ -3065,10 +3176,10 @@ jobs:
 
 
       # ======================================================
-      # 27. FINAL CHECKPOINT VALIDATION
+      # 30. FINAL CHECKPOINT VALIDATION
       # ======================================================
 
-      - name: 27 - Validate recovery checkpoint
+      - name: 30 - Validate recovery checkpoint
 
         run: |
 
@@ -3210,10 +3321,10 @@ jobs:
 
 
       # ======================================================
-      # 28. FINAL TEST RESULT
+      # 31. FINAL TEST RESULT
       # ======================================================
 
-      - name: 28 - Final test result
+      - name: 31 - Final test result
 
         run: |
 
@@ -3259,7 +3370,7 @@ jobs:
           Write-Host ""
 
           Write-Host "============================================================"
-          Write-Host "[PASS] Clean V001 TEST COMPLETED"
+          Write-Host "[PASS] Clean V002 TEST COMPLETED"
           Write-Host "============================================================"
           Write-Host ""
           Write-Host "[NEXT]"
@@ -3274,10 +3385,10 @@ jobs:
 
 
       # ======================================================
-      # 29. CLEANUP
+      # 32. CLEANUP
       # ======================================================
 
-      - name: 29 - Cleanup isolated test workspace
+      - name: 32 - Cleanup isolated test workspace
 
         if: always()
 
