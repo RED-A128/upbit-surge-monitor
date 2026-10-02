@@ -1,6 +1,6 @@
 # ============================================================
 # Upbit Surge Monitor
-# Clean V006
+# Clean V007
 # .gitignore
 # ============================================================
 
@@ -176,7 +176,7 @@ _diag/
 # These files are accumulated locally and must NOT be committed
 # to the Git repository.
 #
-# Source code remains tracked.
+# Collector / Backfill / Recovery source code remains tracked.
 #
 # ============================================================
 
@@ -189,7 +189,6 @@ data/ohlcv/
 
 data/collector_status.csv
 data/collector_status_clean_v002.csv
-
 data/collector/
 
 
@@ -202,10 +201,6 @@ data/backfill_status.csv
 
 # ============================================================
 # 16. Feature runtime data
-# ============================================================
-#
-# build_features.py generates runtime feature data.
-#
 # ============================================================
 
 data/features/
@@ -240,10 +235,10 @@ models/
 # 19. Generated reports
 # ============================================================
 #
-# NOTE
+# Generic root-level reports.
 #
-# Runtime report directories that require more explicit
-# documentation are also listed again in later sections.
+# Project-specific reports under data/reports/ are handled
+# separately below.
 #
 # ============================================================
 
@@ -261,48 +256,73 @@ outputs/
 # ============================================================
 # 21. Keep directory placeholders when required
 # ============================================================
-#
-# A future directory can contain a .gitkeep file if we want
-# Git to preserve the empty directory.
-#
-# ============================================================
 
 !**/.gitkeep
 
 
 # ============================================================
-# 22. 256 Detector / Validator runtime data
+# 22. 256 Detector runtime data
 # ============================================================
 
 data/signals/
 data/detect_256_status.csv
+
+
+# ============================================================
+# 23. 256 Validator Clean V003 runtime data
+# ============================================================
 
 data/validate_256_status.csv
 data/validation/validate_256_checkpoint.json
 
 
 # ============================================================
-# 23. Data History Audit / Gap Report runtime data
+# 24. Data History Audit Clean V003 runtime data
 # ============================================================
 
 data/data_history_audit_status.csv
 data/validation/data_history_audit_checkpoint.json
 
+
+# ============================================================
+# 25. Data History Gap Report runtime data
+# ============================================================
+
 data/reports/history_gap/
 data/validation/data_history_gap_report_checkpoint.json
 data/data_history_gap_report_status.csv
-
 data/validation/gap_report_ohlcv_*.sha256
 
 
 # ============================================================
-# 24. History Gap Classification runtime data
+# 26. Historical Gap Recovery runtime data
+# ============================================================
+#
+# Historical recovery checkpoints, reports, plans and status
+# files are runtime state.
+#
+# IMPORTANT:
+#
+# Persistent recovery state remains stored locally so an
+# interrupted recovery can continue from the saved checkpoint.
+#
+# ============================================================
+
+data/recovery/
+data/recover_history_gaps_status.csv
+
+
+# ============================================================
+# 27. History Gap Classifier runtime data
 # ============================================================
 
 data/reports/history_gap_classification/
 data/validation/classify_history_gaps_checkpoint.json
 
-# Classifier test runtime files
+
+# ============================================================
+# 28. History Gap Classifier test runtime files
+# ============================================================
 
 data/validation/classifier_gap_report_before.sha256
 data/validation/classifier_gap_summary_before.sha256
@@ -310,7 +330,16 @@ data/validation/classifier_ohlcv_before.sha256
 
 
 # ============================================================
-# 25. History Gap Classification Review runtime data
+# 29. History Gap Classification Review runtime data
+# ============================================================
+#
+# Some recovery files below are technically already covered by:
+#
+#   data/recovery/
+#
+# They are intentionally listed here as documentation of the
+# exact runtime outputs produced by the classification review.
+#
 # ============================================================
 
 data/recovery/history_gap_recovery_targets.csv
@@ -329,66 +358,80 @@ data/validation/review_ohlcv_before.sha256.json
 
 
 # ============================================================
-# 26. History Gap Recovery / Post-Recovery runtime data
+# 30. Historical Gap Recovery Repair runtime data
 # ============================================================
 #
-# recover_history_gaps.py runtime data
+# Generated by:
 #
-# post_recovery_gap_audit.yml runtime reports
+#   recover_history_gaps.py - Clean V003
+#   recover_history_gaps_repair.yml
 #
-# analyze_post_recovery_gaps.py runtime reports
+# data/recovery/ is already ignored globally above.
 #
 # ============================================================
-
-data/recovery/
-
-data/recover_history_gaps_status.csv
-data/recover_history_gaps_repair_status_v003.csv
-
-data/reports/post_recovery_gap_audit/
-data/reports/post_recovery_analysis/
 
 data/validation/recover_history_gaps_checkpoint.json
-data/validation/recover_history_gaps_*.sha256
+data/validation/recover_history_gaps_ohlcv_before.sha256.json
+data/validation/recover_history_gaps_ohlcv_after.sha256.json
 
-data/validation/post_recovery_gap_*.sha256
-data/validation/post_recovery_*.sha256
+
+# ============================================================
+# 31. Post-Recovery Gap Audit runtime data
+# ============================================================
+
+data/reports/post_recovery_gap/
+data/reports/post_recovery_gap_audit/
+
+data/validation/post_recovery_gap_audit_checkpoint.json
+data/post_recovery_gap_audit_status.csv
+
+data/validation/post_recovery_ohlcv_before.sha256.json
+data/validation/post_recovery_ohlcv_after.sha256.json
+
+
+# ============================================================
+# 32. Post-Recovery Gap Analysis runtime data
+# ============================================================
+#
+# Generated by:
+#
+#   analyze_post_recovery_gaps.py
+#   analyze_post_recovery_gaps_test.yml
+#
+# READ ONLY with respect to OHLCV.
+#
+# ============================================================
+
+data/reports/post_recovery_analysis/
+
+data/recovery/history_gap_second_pass_targets.csv
 
 data/validation/analyze_post_recovery_gaps_checkpoint.json
-data/validation/analyze_post_recovery_gaps_*.sha256
+data/analyze_post_recovery_gaps_status.csv
+
+data/validation/analyze_post_recovery_ohlcv_before.sha256.json
+data/validation/analyze_post_recovery_ohlcv_after.sha256.json
 
 
 # ============================================================
-# 27. History Gap Recovery Audit - Clean V001 runtime data
+# 33. History Gap Recovery Audit runtime data
 # ============================================================
 #
-# audit_history_gap_recovery.py generates:
+# Generated by:
 #
-#   data/reports/history_gap_recovery_audit/
-#       history_gap_recovery_audit_summary.csv
-#       history_gap_recovery_audit_detail.csv
-#       history_gap_recovery_audit_result.json
+#   audit_history_gap_recovery.py - Clean V001
+#   audit_history_gap_recovery_test.yml
 #
-#   data/recovery/
-#       history_gap_recovery_retry_candidates.csv
+# PURPOSE
 #
-#   data/validation/
-#       audit_history_gap_recovery_checkpoint.json
+#   - Audit actual recovery results
+#   - Identify unresolved recovery candidates
+#   - Generate retry candidates
+#   - Persist audit checkpoint
 #
-# audit_history_gap_recovery_test.yml additionally generates:
+# IMPORTANT
 #
-#       audit_history_gap_recovery_ohlcv_before.sha256
-#       audit_history_gap_recovery_ohlcv_after.sha256
-#
-# All files below are generated runtime/audit outputs.
-# They must NOT be committed to the Git repository.
-#
-# IMPORTANT:
-#
-# audit_history_gap_recovery.py source code remains tracked.
-#
-# .github/workflows/audit_history_gap_recovery_test.yml
-# remains tracked.
+#   Audit is READ ONLY with respect to OHLCV.
 #
 # ============================================================
 
@@ -398,8 +441,148 @@ data/recovery/history_gap_recovery_retry_candidates.csv
 
 data/validation/audit_history_gap_recovery_checkpoint.json
 
+data/audit_history_gap_recovery_status.csv
+
 data/validation/audit_history_gap_recovery_ohlcv_before.sha256
 data/validation/audit_history_gap_recovery_ohlcv_after.sha256
+
+data/validation/audit_history_gap_recovery_ohlcv_before.sha256.json
+data/validation/audit_history_gap_recovery_ohlcv_after.sha256.json
+
+
+# ============================================================
+# 34. History Gap Retry Planner runtime data
+#     Clean V001
+# ============================================================
+#
+# Generated by:
+#
+#   plan_history_gap_retry.py - Clean V001
+#   plan_history_gap_retry_test.yml - Clean V001
+#
+#
+# PURPOSE
+#
+#   - Read recovery-audit retry candidates
+#   - Re-check remaining gaps against current OHLCV
+#   - Classify second-pass eligibility
+#   - Generate READY_SECOND_PASS targets
+#   - Persist planner reports/checkpoint/status
+#
+#
+# IMPORTANT
+#
+#   This stage is READ ONLY with respect to OHLCV.
+#
+#   It must NOT:
+#
+#   - modify OHLCV
+#   - delete OHLCV
+#   - download candles
+#   - execute recovery
+#   - build features
+#   - run detectors
+#   - predict
+#   - trade
+#
+#
+# NOTE
+#
+#   data/recovery/ is already ignored globally.
+#
+#   Explicit recovery files are listed here as documentation
+#   of the planner's exact runtime outputs.
+#
+# ============================================================
+
+data/recovery/history_gap_second_pass_targets.csv
+data/recovery/history_gap_second_pass_plan.json
+
+data/reports/history_gap_retry_plan/
+
+data/validation/plan_history_gap_retry_checkpoint.json
+
+data/plan_history_gap_retry_status.csv
+
+data/validation/plan_history_gap_retry_ohlcv_before.sha256
+data/validation/plan_history_gap_retry_ohlcv_after.sha256
+
+data/validation/plan_history_gap_retry_ohlcv_before.sha256.json
+data/validation/plan_history_gap_retry_ohlcv_after.sha256.json
+
+
+# ============================================================
+# 35. Runtime SHA256 / validation safety artifacts
+# ============================================================
+#
+# SHA256 snapshots are generated only to verify that source
+# OHLCV or other protected inputs were not unexpectedly changed.
+#
+# These are runtime safety artifacts, not source files.
+#
+#
+# IMPORTANT
+#
+# Do NOT replace these explicit patterns with:
+#
+#   data/validation/
+#
+# The validation directory may later contain source/reference
+# files that should remain visible to Git.
+#
+# ============================================================
+
+data/validation/*_ohlcv_before.sha256.json
+data/validation/*_ohlcv_after.sha256.json
+
+data/validation/*_ohlcv_before.sha256
+data/validation/*_ohlcv_after.sha256
+
+
+# ============================================================
+# 36. IMPORTANT PROJECT SAFETY NOTES
+# ============================================================
+#
+# DO NOT add broad rules such as:
+#
+#   data/
+#   data/validation/
+#   *.csv
+#   *.json
+#
+# Those rules are intentionally forbidden because they could
+# hide source/reference/configuration files that should remain
+# visible to Git.
+#
+#
+# Runtime outputs must be ignored using:
+#
+#   - explicit runtime directories
+#   - explicit filenames
+#   - narrowly scoped runtime patterns
+#
+#
+# SOURCE CODE MUST REMAIN TRACKED
+#
+# Examples:
+#
+#   collector.py
+#   backfill_history.py
+#   build_features.py
+#   detect_256.py
+#   validate_256.py
+#   recover_history_gaps.py
+#   analyze_post_recovery_gaps.py
+#   audit_history_gap_recovery.py
+#   plan_history_gap_retry.py
+#
+# and:
+#
+#   .github/workflows/*.yml
+#
+# must remain visible to Git.
+#
+# ============================================================
 
 
 # ============================================================
