@@ -1,7 +1,7 @@
 # ============================================================
 # Upbit Surge Monitor
 # plan_history_gap_retry_test.yml
-# Clean V001
+# Clean V002
 # ============================================================
 #
 # PURPOSE
@@ -178,8 +178,6 @@ jobs:
 
       PLANNER_CHECKPOINT_FILE: C:\Users\USER\Documents\upbit-surge-monitor\data\validation\plan_history_gap_retry_checkpoint.json
 
-      PLANNER_STATUS_FILE: C:\Users\USER\Documents\upbit-surge-monitor\data\plan_history_gap_retry_status.csv
-
 
       # --------------------------------------------------------
       # Test SHA256 snapshots
@@ -211,7 +209,7 @@ jobs:
 
           Write-Host "============================================================"
           Write-Host "PLAN HISTORY GAP RETRY TEST"
-          Write-Host "Clean V001"
+          Write-Host "Clean V002"
           Write-Host "============================================================"
 
           Write-Host ""
@@ -1448,6 +1446,15 @@ jobs:
 
       # ========================================================
       # 21. Verify planner runtime files are ignored
+      #
+      # Clean V002:
+      #
+      # plan_history_gap_retry.py Clean V001 does NOT create:
+      #
+      #   data/plan_history_gap_retry_status.csv
+      #
+      # Therefore that nonexistent file is intentionally NOT
+      # treated as a mandatory runtime output.
       # ========================================================
 
       - name: Verify planner runtime files remain ignored
@@ -1471,8 +1478,6 @@ jobs:
               "data/reports/history_gap_retry_plan/history_gap_retry_plan_detail.csv",
 
               "data/validation/plan_history_gap_retry_checkpoint.json",
-
-              "data/plan_history_gap_retry_status.csv",
 
               "data/validation/plan_history_gap_retry_ohlcv_before.sha256",
 
@@ -1625,7 +1630,7 @@ jobs:
           Write-Host ""
 
           Write-Host "Workflow version:"
-          Write-Host "  Clean V001"
+          Write-Host "  Clean V002"
 
           Write-Host ""
 
