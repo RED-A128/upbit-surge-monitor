@@ -1,0 +1,1666 @@
+# ============================================================
+# Upbit Surge Monitor
+# plan_history_gap_retry_test.yml
+# Clean V001
+# ============================================================
+#
+# PURPOSE
+#
+#   Validate:
+#
+#       plan_history_gap_retry.py - Clean V001
+#
+#   against the REAL persistent local project data:
+#
+#       C:\Users\USER\Documents\upbit-surge-monitor\data
+#
+#
+# TEST TARGET
+#
+#   Verify that the planner:
+#
+#   1. Reads the recovery-audit retry candidates.
+#   2. Reads the current 870 OHLCV files.
+#   3. Does NOT modify any OHLCV file.
+#   4. Generates second-pass recovery targets.
+#   5. Generates planner summary/detail reports.
+#   6. Generates a valid planner checkpoint.
+#   7. Supports safe checkpoint / resume.
+#   8. Keeps all runtime outputs ignored by Git.
+#
+#
+# IMPORTANT
+#
+#   GitHub Actions checkout:
+#
+#       C:\Users\USER\actions-runner\_work\
+#           upbit-surge-monitor\
+#           upbit-surge-monitor
+#
+#   Persistent project data:
+#
+#       C:\Users\USER\Documents\
+#           upbit-surge-monitor\
+#           data
+#
+#
+# DATA ACCESS STRATEGY
+#
+#   plan_history_gap_retry.py uses repository-relative paths:
+#
+#       data/ohlcv/
+#       data/recovery/
+#       data/reports/
+#       data/validation/
+#
+#   Therefore this workflow creates a temporary directory
+#   junction:
+#
+#       <runner checkout>\data
+#
+#                   ->
+#
+#       C:\Users\USER\Documents\
+#       upbit-surge-monitor\data
+#
+#
+# SAFETY
+#
+#   - NO OHLCV deletion
+#   - NO OHLCV replacement
+#   - NO API recovery
+#   - NO historical repair
+#   - NO feature build
+#   - NO detector execution
+#   - NO prediction
+#   - NO trading
+#   - NO git reset
+#   - NO git clean
+#   - NO git commit
+#   - NO git push
+#
+#
+# EXPECTED INVENTORY
+#
+#   Markets    : 290
+#   Timeframes : 3
+#
+#       H1 : 290
+#       H4 : 290
+#       D1 : 290
+#
+#   Total OHLCV files : 870
+#
+# ============================================================
+
+
+name: plan_history_gap_retry_test.yml
+
+
+on:
+  workflow_dispatch:
+
+
+permissions:
+  contents: read
+
+
+concurrency:
+  group: plan_history_gap_retry_test
+  cancel-in-progress: false
+
+
+defaults:
+  run:
+    shell: powershell
+
+
+jobs:
+
+  plan_history_gap_retry_test:
+
+    name: plan_history_gap_retry_test.yml
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 90
+
+
+    env:
+
+      # --------------------------------------------------------
+      # Persistent local project
+      # --------------------------------------------------------
+
+      LOCAL_PROJECT_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+
+      LOCAL_DATA_ROOT: C:\Users\USER\Documents\upbit-surge-monitor\data
+
+
+      # --------------------------------------------------------
+      # Expected inventory
+      # --------------------------------------------------------
+
+      EXPECTED_MARKETS: "290"
+
+      EXPECTED_TIMEFRAMES: "3"
+
+      EXPECTED_OHLCV_FILES: "870"
+
+
+      # --------------------------------------------------------
+      # Planner
+      # --------------------------------------------------------
+
+      PLANNER_SCRIPT: plan_history_gap_retry.py
+
+
+      # --------------------------------------------------------
+      # Audit input
+      # --------------------------------------------------------
+
+      RETRY_CANDIDATE_FILE: C:\Users\USER\Documents\upbit-surge-monitor\data\recovery\history_gap_recovery_retry_candidates.csv
+
+      AUDIT_REPORT_DIR: C:\Users\USER\Documents\upbit-surge-monitor\data\reports\history_gap_recovery_audit
+
+
+      # --------------------------------------------------------
+      # Planner outputs
+      # --------------------------------------------------------
+
+      SECOND_PASS_TARGET_FILE: C:\Users\USER\Documents\upbit-surge-monitor\data\recovery\history_gap_second_pass_targets.csv
+
+      SECOND_PASS_PLAN_FILE: C:\Users\USER\Documents\upbit-surge-monitor\data\recovery\history_gap_second_pass_plan.json
+
+      PLAN_REPORT_DIR: C:\Users\USER\Documents\upbit-surge-monitor\data\reports\history_gap_retry_plan
+
+      PLANNER_CHECKPOINT_FILE: C:\Users\USER\Documents\upbit-surge-monitor\data\validation\plan_history_gap_retry_checkpoint.json
+
+      PLANNER_STATUS_FILE: C:\Users\USER\Documents\upbit-surge-monitor\data\plan_history_gap_retry_status.csv
+
+
+      # --------------------------------------------------------
+      # Test SHA256 snapshots
+      # --------------------------------------------------------
+
+      BEFORE_SHA256_FILE: C:\Users\USER\Documents\upbit-surge-monitor\data\validation\plan_history_gap_retry_ohlcv_before.sha256
+
+      AFTER_SHA256_FILE: C:\Users\USER\Documents\upbit-surge-monitor\data\validation\plan_history_gap_retry_ohlcv_after.sha256
+
+
+    steps:
+
+      # ========================================================
+      # 01. Checkout
+      # ========================================================
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+
+      # ========================================================
+      # 02. Show environment
+      # ========================================================
+
+      - name: Show environment
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "PLAN HISTORY GAP RETRY TEST"
+          Write-Host "Clean V001"
+          Write-Host "============================================================"
+
+          Write-Host ""
+
+          Write-Host "Workflow:"
+          Write-Host "  plan_history_gap_retry_test.yml"
+
+          Write-Host ""
+
+          Write-Host "Planner:"
+          Write-Host "  plan_history_gap_retry.py - Clean V001"
+
+          Write-Host ""
+
+          Write-Host "Repository workspace:"
+          Write-Host "  $env:GITHUB_WORKSPACE"
+
+          Write-Host ""
+
+          Write-Host "Persistent project root:"
+          Write-Host "  $env:LOCAL_PROJECT_ROOT"
+
+          Write-Host ""
+
+          Write-Host "Persistent data root:"
+          Write-Host "  $env:LOCAL_DATA_ROOT"
+
+          Write-Host ""
+
+          Write-Host "Expected:"
+          Write-Host "  Markets    : $env:EXPECTED_MARKETS"
+          Write-Host "  Timeframes : $env:EXPECTED_TIMEFRAMES"
+          Write-Host "  OHLCV      : $env:EXPECTED_OHLCV_FILES"
+
+          Write-Host ""
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Python launcher 'py' is unavailable."
+          }
+
+          Write-Host ""
+
+          Write-Host "[PASS] Environment displayed."
+
+
+      # ========================================================
+      # 03. Verify planner source
+      # ========================================================
+
+      - name: Verify planner source
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY PLANNER SOURCE"
+          Write-Host "============================================================"
+
+          $script = Join-Path `
+              $env:GITHUB_WORKSPACE `
+              $env:PLANNER_SCRIPT
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+              throw "Planner source missing: $script"
+          }
+
+          Write-Host ""
+          Write-Host "Planner:"
+          Write-Host "  $script"
+
+          Write-Host ""
+          Write-Host "[PASS] Planner source exists."
+
+
+      # ========================================================
+      # 04. Verify persistent data root
+      # ========================================================
+
+      - name: Verify persistent data root
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY PERSISTENT DATA ROOT"
+          Write-Host "============================================================"
+
+          if (-not (
+              Test-Path `
+                  -LiteralPath $env:LOCAL_DATA_ROOT `
+                  -PathType Container
+          )) {
+              throw "Persistent data root missing: $env:LOCAL_DATA_ROOT"
+          }
+
+          $ohlcvRoot = Join-Path `
+              $env:LOCAL_DATA_ROOT `
+              "ohlcv"
+
+          if (-not (
+              Test-Path `
+                  -LiteralPath $ohlcvRoot `
+                  -PathType Container
+          )) {
+              throw "Persistent OHLCV root missing: $ohlcvRoot"
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Persistent data root exists."
+
+
+      # ========================================================
+      # 05. Verify audit input
+      # ========================================================
+
+      - name: Verify recovery audit inputs
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY RECOVERY AUDIT INPUTS"
+          Write-Host "============================================================"
+
+          $required = @(
+
+              $env:RETRY_CANDIDATE_FILE,
+
+              (Join-Path `
+                  $env:AUDIT_REPORT_DIR `
+                  "history_gap_recovery_audit_summary.csv"),
+
+              (Join-Path `
+                  $env:AUDIT_REPORT_DIR `
+                  "history_gap_recovery_audit_detail.csv"),
+
+              (Join-Path `
+                  $env:AUDIT_REPORT_DIR `
+                  "history_gap_recovery_audit_result.json")
+          )
+
+          foreach ($path in $required) {
+
+              if (-not (
+                  Test-Path `
+                      -LiteralPath $path `
+                      -PathType Leaf
+              )) {
+
+                  throw "Required audit input missing: $path"
+              }
+
+              $file = Get-Item `
+                  -LiteralPath $path
+
+              if ($file.Length -le 0) {
+                  throw "Required audit input is empty: $path"
+              }
+
+              Write-Host "[PASS] $path"
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Recovery audit inputs verified."
+
+
+      # ========================================================
+      # 06. Verify exact OHLCV inventory
+      # ========================================================
+
+      - name: Verify exact OHLCV inventory
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY EXACT OHLCV INVENTORY"
+          Write-Host "============================================================"
+
+          $ohlcvRoot = Join-Path `
+              $env:LOCAL_DATA_ROOT `
+              "ohlcv"
+
+          $timeframes = @(
+              "h1",
+              "h4",
+              "d1"
+          )
+
+          $total = 0
+
+          $marketSets = @{}
+
+          foreach ($tf in $timeframes) {
+
+              $dir = Join-Path `
+                  $ohlcvRoot `
+                  $tf
+
+              if (-not (
+                  Test-Path `
+                      -LiteralPath $dir `
+                      -PathType Container
+              )) {
+                  throw "Missing OHLCV directory: $dir"
+              }
+
+              $files = @(
+                  Get-ChildItem `
+                      -LiteralPath $dir `
+                      -Filter "*.csv" `
+                      -File
+              )
+
+              $count = $files.Count
+
+              Write-Host "$($tf.ToUpper()) files : $count"
+
+              if ($count -ne [int]$env:EXPECTED_MARKETS) {
+
+                  throw "$($tf.ToUpper()) inventory mismatch. expected=$env:EXPECTED_MARKETS found=$count"
+              }
+
+              $total += $count
+
+              $set = @{}
+
+              foreach ($file in $files) {
+
+                  $key = $file.BaseName.ToUpperInvariant()
+
+                  $set[$key] = $true
+              }
+
+              $marketSets[$tf] = $set
+          }
+
+          Write-Host "Total files : $total"
+
+          if ($total -ne [int]$env:EXPECTED_OHLCV_FILES) {
+
+              throw "Total OHLCV inventory mismatch. expected=$env:EXPECTED_OHLCV_FILES found=$total"
+          }
+
+          $reference = $marketSets["h1"]
+
+          foreach ($tf in @("h4", "d1")) {
+
+              $current = $marketSets[$tf]
+
+              if ($current.Count -ne $reference.Count) {
+
+                  throw "Market-set count differs between H1 and $($tf.ToUpper())."
+              }
+
+              foreach ($market in $reference.Keys) {
+
+                  if (-not $current.ContainsKey($market)) {
+
+                      throw "Market missing from $($tf.ToUpper()): $market"
+                  }
+              }
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] 290 markets x 3 timeframes = 870 OHLCV files."
+          Write-Host "[PASS] H1/H4/D1 market sets are identical."
+
+
+      # ========================================================
+      # 07. Remove stale workspace data junction if present
+      # ========================================================
+
+      - name: Remove stale workspace data junction
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "PREPARE WORKSPACE DATA PATH"
+          Write-Host "============================================================"
+
+          $workspaceData = Join-Path `
+              $env:GITHUB_WORKSPACE `
+              "data"
+
+          if (Test-Path -LiteralPath $workspaceData) {
+
+              $item = Get-Item `
+                  -LiteralPath $workspaceData `
+                  -Force
+
+              $isReparsePoint = (
+                  ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) `
+                  -ne 0
+              )
+
+              if (-not $isReparsePoint) {
+
+                  throw "Workspace data path exists but is NOT a junction/reparse point: $workspaceData"
+              }
+
+              cmd /c rmdir "$workspaceData"
+
+              if ($LASTEXITCODE -ne 0) {
+
+                  throw "Unable to remove stale workspace data junction."
+              }
+
+              Write-Host "[PASS] Stale junction removed."
+          }
+          else {
+
+              Write-Host "[PASS] No stale workspace data path."
+          }
+
+
+      # ========================================================
+      # 08. Create temporary data junction
+      # ========================================================
+
+      - name: Create persistent data junction
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "CREATE PERSISTENT DATA JUNCTION"
+          Write-Host "============================================================"
+
+          $workspaceData = Join-Path `
+              $env:GITHUB_WORKSPACE `
+              "data"
+
+          cmd /c mklink /J "$workspaceData" "$env:LOCAL_DATA_ROOT"
+
+          if ($LASTEXITCODE -ne 0) {
+
+              throw "Failed to create data junction."
+          }
+
+          if (-not (
+              Test-Path `
+                  -LiteralPath $workspaceData `
+                  -PathType Container
+          )) {
+
+              throw "Workspace data junction was not created."
+          }
+
+          $testFile = Join-Path `
+              $workspaceData `
+              "recovery\history_gap_recovery_retry_candidates.csv"
+
+          if (-not (
+              Test-Path `
+                  -LiteralPath $testFile `
+                  -PathType Leaf
+          )) {
+
+              throw "Junction does not expose persistent recovery data."
+          }
+
+          Write-Host ""
+          Write-Host "Workspace:"
+          Write-Host "  $workspaceData"
+
+          Write-Host ""
+          Write-Host "Target:"
+          Write-Host "  $env:LOCAL_DATA_ROOT"
+
+          Write-Host ""
+          Write-Host "[PASS] Persistent data junction created."
+
+
+      # ========================================================
+      # 09. Compile planner
+      # ========================================================
+
+      - name: Compile planner
+        working-directory: ${{ github.workspace }}
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "COMPILE PLAN HISTORY GAP RETRY"
+          Write-Host "============================================================"
+
+          py -m py_compile $env:PLANNER_SCRIPT
+
+          if ($LASTEXITCODE -ne 0) {
+
+              throw "Planner Python compilation failed."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Python compilation completed."
+
+
+      # ========================================================
+      # 10. Record BEFORE OHLCV SHA256
+      # ========================================================
+
+      - name: Record BEFORE OHLCV SHA256
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "RECORD BEFORE OHLCV SHA256"
+          Write-Host "============================================================"
+
+          $ohlcvRoot = Join-Path `
+              $env:LOCAL_DATA_ROOT `
+              "ohlcv"
+
+          $outputFile = $env:BEFORE_SHA256_FILE
+
+          $outputDir = Split-Path `
+              -Parent `
+              $outputFile
+
+          New-Item `
+              -ItemType Directory `
+              -Force `
+              -Path $outputDir |
+              Out-Null
+
+          $records = @(
+              Get-ChildItem `
+                  -LiteralPath $ohlcvRoot `
+                  -Recurse `
+                  -Filter "*.csv" `
+                  -File |
+              Sort-Object FullName |
+              ForEach-Object {
+
+                  $relative = $_.FullName.Substring(
+                      $ohlcvRoot.Length
+                  ).TrimStart('\')
+
+                  $hash = (
+                      Get-FileHash `
+                          -LiteralPath $_.FullName `
+                          -Algorithm SHA256
+                  ).Hash.ToLowerInvariant()
+
+                  "$hash`t$relative"
+              }
+          )
+
+          if ($records.Count -ne [int]$env:EXPECTED_OHLCV_FILES) {
+
+              throw "BEFORE SHA256 record count mismatch. expected=$env:EXPECTED_OHLCV_FILES found=$($records.Count)"
+          }
+
+          $records |
+              Set-Content `
+                  -LiteralPath $outputFile `
+                  -Encoding UTF8
+
+          Write-Host "SHA256 records : $($records.Count)"
+
+          Write-Host ""
+          Write-Host "[PASS] BEFORE SHA256 recorded."
+
+
+      # ========================================================
+      # 11. Run planner first pass
+      # ========================================================
+
+      - name: Run plan_history_gap_retry.py first pass
+        working-directory: ${{ github.workspace }}
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "RUN PLAN HISTORY GAP RETRY - FIRST PASS"
+          Write-Host "============================================================"
+
+          py $env:PLANNER_SCRIPT
+
+          if ($LASTEXITCODE -ne 0) {
+
+              throw "plan_history_gap_retry.py failed with exit code $LASTEXITCODE."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Planner first pass completed."
+
+
+      # ========================================================
+      # 12. Verify planner outputs
+      # ========================================================
+
+      - name: Verify planner outputs
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY PLANNER OUTPUTS"
+          Write-Host "============================================================"
+
+          $required = @(
+
+              $env:SECOND_PASS_TARGET_FILE,
+
+              $env:SECOND_PASS_PLAN_FILE,
+
+              (Join-Path `
+                  $env:PLAN_REPORT_DIR `
+                  "history_gap_retry_plan_summary.csv"),
+
+              (Join-Path `
+                  $env:PLAN_REPORT_DIR `
+                  "history_gap_retry_plan_detail.csv"),
+
+              $env:PLANNER_CHECKPOINT_FILE
+          )
+
+          foreach ($path in $required) {
+
+              if (-not (
+                  Test-Path `
+                      -LiteralPath $path `
+                      -PathType Leaf
+              )) {
+
+                  throw "Expected planner output missing: $path"
+              }
+
+              $file = Get-Item `
+                  -LiteralPath $path
+
+              if ($file.Length -le 0) {
+
+                  throw "Planner output is empty: $path"
+              }
+
+              Write-Host "[PASS] $path"
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Planner outputs verified."
+
+
+      # ========================================================
+      # 13. Validate target CSV
+      # ========================================================
+
+      - name: Validate second-pass target CSV
+        working-directory: ${{ github.workspace }}
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VALIDATE SECOND-PASS TARGET CSV"
+          Write-Host "============================================================"
+
+          @'
+          import csv
+          import os
+          import sys
+          from pathlib import Path
+
+          path = Path(
+              os.environ["SECOND_PASS_TARGET_FILE"]
+          )
+
+          if not path.is_file():
+              raise RuntimeError(
+                  f"Target file missing: {path}"
+              )
+
+          with path.open(
+              "r",
+              encoding="utf-8-sig",
+              newline="",
+          ) as handle:
+
+              reader = csv.DictReader(handle)
+
+              fields = list(
+                  reader.fieldnames or []
+              )
+
+              rows = list(reader)
+
+          required = {
+              "timeframe",
+              "market",
+              "gap_start",
+              "gap_end",
+              "expected_missing",
+              "classification",
+              "event_key",
+              "planner_version",
+          }
+
+          missing_fields = (
+              required - set(fields)
+          )
+
+          if missing_fields:
+
+              raise RuntimeError(
+                  "Target CSV missing columns: "
+                  + ", ".join(
+                      sorted(missing_fields)
+                  )
+              )
+
+          seen = set()
+
+          for index, row in enumerate(
+              rows,
+              start=2,
+          ):
+
+              classification = (
+                  row.get(
+                      "classification",
+                      "",
+                  ).strip()
+              )
+
+              if classification != "READY_SECOND_PASS":
+
+                  raise RuntimeError(
+                      f"Row {index} has invalid "
+                      f"classification: "
+                      f"{classification}"
+                  )
+
+              event_key = (
+                  row.get(
+                      "event_key",
+                      "",
+                  ).strip()
+              )
+
+              if not event_key:
+
+                  raise RuntimeError(
+                      f"Row {index} has empty event_key."
+                  )
+
+              if event_key in seen:
+
+                  raise RuntimeError(
+                      f"Duplicate event_key: {event_key}"
+                  )
+
+              seen.add(event_key)
+
+              timeframe = (
+                  row.get(
+                      "timeframe",
+                      "",
+                  ).strip()
+              )
+
+              if timeframe not in {
+                  "h1",
+                  "h4",
+                  "d1",
+              }:
+
+                  raise RuntimeError(
+                      f"Invalid timeframe: {timeframe}"
+                  )
+
+              market = (
+                  row.get(
+                      "market",
+                      "",
+                  ).strip()
+              )
+
+              if not market.startswith("KRW-"):
+
+                  raise RuntimeError(
+                      f"Invalid KRW market: {market}"
+                  )
+
+              expected_missing = int(
+                  row.get(
+                      "expected_missing",
+                      "0",
+                  )
+                  or 0
+              )
+
+              if expected_missing <= 0:
+
+                  raise RuntimeError(
+                      f"Invalid expected_missing "
+                      f"for {event_key}: "
+                      f"{expected_missing}"
+                  )
+
+          print(
+              f"Second-pass targets : {len(rows)}"
+          )
+
+          print(
+              "[PASS] All target rows are "
+              "READY_SECOND_PASS."
+          )
+
+          print(
+              "[PASS] event_key values are unique."
+          )
+
+          sys.exit(0)
+          '@ | py -
+
+          if ($LASTEXITCODE -ne 0) {
+
+              throw "Second-pass target validation failed."
+          }
+
+
+      # ========================================================
+      # 14. Validate plan JSON
+      # ========================================================
+
+      - name: Validate second-pass plan JSON
+        working-directory: ${{ github.workspace }}
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VALIDATE SECOND-PASS PLAN JSON"
+          Write-Host "============================================================"
+
+          @'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          path = Path(
+              os.environ["SECOND_PASS_PLAN_FILE"]
+          )
+
+          with path.open(
+              "r",
+              encoding="utf-8-sig",
+          ) as handle:
+
+              payload = json.load(handle)
+
+          if payload.get("program") != "plan_history_gap_retry.py":
+
+              raise RuntimeError(
+                  "Unexpected planner program."
+              )
+
+          if payload.get("version") != "Clean V001":
+
+              raise RuntimeError(
+                  "Unexpected planner version."
+              )
+
+          if (
+              payload.get("execution_mode")
+              !=
+              "READ_ONLY_SECOND_PASS_PLANNING"
+          ):
+
+              raise RuntimeError(
+                  "Unexpected execution mode."
+              )
+
+          safety = payload.get(
+              "safety",
+              {},
+          )
+
+          unsafe_true = [
+              key
+              for key, value
+              in safety.items()
+              if value is True
+          ]
+
+          if unsafe_true:
+
+              raise RuntimeError(
+                  "Unsafe planner safety flags enabled: "
+                  + ", ".join(unsafe_true)
+              )
+
+          summary = payload.get(
+              "summary",
+              {},
+          )
+
+          print(
+              "Retry candidates    : "
+              f"{summary.get('retry_candidates', 0)}"
+          )
+
+          print(
+              "READY_SECOND_PASS   : "
+              f"{summary.get('ready_second_pass', 0)}"
+          )
+
+          print(
+              "Second-pass targets : "
+              f"{summary.get('second_pass_targets', 0)}"
+          )
+
+          print(
+              "[PASS] Planner JSON validated."
+          )
+
+          sys.exit(0)
+          '@ | py -
+
+          if ($LASTEXITCODE -ne 0) {
+
+              throw "Planner JSON validation failed."
+          }
+
+
+      # ========================================================
+      # 15. Validate checkpoint
+      # ========================================================
+
+      - name: Validate planner checkpoint
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VALIDATE PLANNER CHECKPOINT"
+          Write-Host "============================================================"
+
+          $checkpoint = Get-Content `
+              -LiteralPath $env:PLANNER_CHECKPOINT_FILE `
+              -Raw |
+              ConvertFrom-Json
+
+          if ($checkpoint.program -ne "plan_history_gap_retry.py") {
+
+              throw "Unexpected checkpoint program."
+          }
+
+          if ($checkpoint.version -ne "Clean V001") {
+
+              throw "Unexpected checkpoint version."
+          }
+
+          if ($checkpoint.status -ne "COMPLETED") {
+
+              throw "Checkpoint status is not COMPLETED."
+          }
+
+          if ($checkpoint.completed -ne $true) {
+
+              throw "Checkpoint completed flag is not true."
+          }
+
+          if (
+              [string]::IsNullOrWhiteSpace(
+                  [string]$checkpoint.source_fingerprint
+              )
+          ) {
+
+              throw "Checkpoint source fingerprint missing."
+          }
+
+          if (
+              [string]::IsNullOrWhiteSpace(
+                  [string]$checkpoint.ohlcv_fingerprint
+              )
+          ) {
+
+              throw "Checkpoint OHLCV fingerprint missing."
+          }
+
+          if (
+              [int]$checkpoint.ohlcv_file_count `
+              -ne `
+              [int]$env:EXPECTED_OHLCV_FILES
+          ) {
+
+              throw "Checkpoint OHLCV file count mismatch."
+          }
+
+          Write-Host ""
+          Write-Host "Status:"
+          Write-Host "  $($checkpoint.status)"
+
+          Write-Host ""
+          Write-Host "Second-pass targets:"
+          Write-Host "  $($checkpoint.second_pass_target_count)"
+
+          Write-Host ""
+          Write-Host "[PASS] Planner checkpoint validated."
+
+
+      # ========================================================
+      # 16. Capture first-pass output hashes
+      # ========================================================
+
+      - name: Capture first-pass planner output hashes
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "CAPTURE FIRST-PASS OUTPUT HASHES"
+          Write-Host "============================================================"
+
+          $files = @(
+
+              $env:SECOND_PASS_TARGET_FILE,
+
+              $env:SECOND_PASS_PLAN_FILE,
+
+              (Join-Path `
+                  $env:PLAN_REPORT_DIR `
+                  "history_gap_retry_plan_summary.csv"),
+
+              (Join-Path `
+                  $env:PLAN_REPORT_DIR `
+                  "history_gap_retry_plan_detail.csv"),
+
+              $env:PLANNER_CHECKPOINT_FILE
+          )
+
+          $records = @()
+
+          foreach ($path in $files) {
+
+              $hash = (
+                  Get-FileHash `
+                      -LiteralPath $path `
+                      -Algorithm SHA256
+              ).Hash.ToLowerInvariant()
+
+              $records += "$hash`t$path"
+
+              Write-Host "$hash  $path"
+          }
+
+          $snapshot = Join-Path `
+              $env:RUNNER_TEMP `
+              "plan_history_gap_retry_first_pass.sha256"
+
+          $records |
+              Set-Content `
+                  -LiteralPath $snapshot `
+                  -Encoding UTF8
+
+          Write-Host ""
+          Write-Host "[PASS] First-pass output hashes captured."
+
+
+      # ========================================================
+      # 17. Run planner second time
+      #     Must use valid checkpoint / resume
+      # ========================================================
+
+      - name: Run plan_history_gap_retry.py resume test
+        working-directory: ${{ github.workspace }}
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "RUN PLAN HISTORY GAP RETRY - RESUME TEST"
+          Write-Host "============================================================"
+
+          py $env:PLANNER_SCRIPT
+
+          if ($LASTEXITCODE -ne 0) {
+
+              throw "Planner resume run failed."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Planner second execution completed."
+
+
+      # ========================================================
+      # 18. Verify resume preserved completed outputs
+      # ========================================================
+
+      - name: Verify checkpoint resume preserved outputs
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY CHECKPOINT RESUME"
+          Write-Host "============================================================"
+
+          $snapshot = Join-Path `
+              $env:RUNNER_TEMP `
+              "plan_history_gap_retry_first_pass.sha256"
+
+          if (-not (
+              Test-Path `
+                  -LiteralPath $snapshot `
+                  -PathType Leaf
+          )) {
+
+              throw "First-pass hash snapshot missing."
+          }
+
+          $before = @{}
+
+          foreach ($line in Get-Content -LiteralPath $snapshot) {
+
+              if ([string]::IsNullOrWhiteSpace($line)) {
+                  continue
+              }
+
+              $parts = $line -split "`t", 2
+
+              if ($parts.Count -ne 2) {
+                  throw "Invalid first-pass hash record."
+              }
+
+              $before[$parts[1]] = $parts[0]
+          }
+
+          foreach ($path in $before.Keys) {
+
+              if (-not (
+                  Test-Path `
+                      -LiteralPath $path `
+                      -PathType Leaf
+              )) {
+
+                  throw "Planner output disappeared after resume: $path"
+              }
+
+              $afterHash = (
+                  Get-FileHash `
+                      -LiteralPath $path `
+                      -Algorithm SHA256
+              ).Hash.ToLowerInvariant()
+
+              if ($afterHash -ne $before[$path]) {
+
+                  throw "Completed planner output changed during resume: $path"
+              }
+
+              Write-Host "[PASS] unchanged: $path"
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Valid checkpoint caused safe resume/SKIP behavior."
+
+
+      # ========================================================
+      # 19. Record AFTER OHLCV SHA256
+      # ========================================================
+
+      - name: Record AFTER OHLCV SHA256
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "RECORD AFTER OHLCV SHA256"
+          Write-Host "============================================================"
+
+          $ohlcvRoot = Join-Path `
+              $env:LOCAL_DATA_ROOT `
+              "ohlcv"
+
+          $records = @(
+              Get-ChildItem `
+                  -LiteralPath $ohlcvRoot `
+                  -Recurse `
+                  -Filter "*.csv" `
+                  -File |
+              Sort-Object FullName |
+              ForEach-Object {
+
+                  $relative = $_.FullName.Substring(
+                      $ohlcvRoot.Length
+                  ).TrimStart('\')
+
+                  $hash = (
+                      Get-FileHash `
+                          -LiteralPath $_.FullName `
+                          -Algorithm SHA256
+                  ).Hash.ToLowerInvariant()
+
+                  "$hash`t$relative"
+              }
+          )
+
+          if ($records.Count -ne [int]$env:EXPECTED_OHLCV_FILES) {
+
+              throw "AFTER SHA256 record count mismatch. expected=$env:EXPECTED_OHLCV_FILES found=$($records.Count)"
+          }
+
+          $records |
+              Set-Content `
+                  -LiteralPath $env:AFTER_SHA256_FILE `
+                  -Encoding UTF8
+
+          Write-Host "SHA256 records : $($records.Count)"
+
+          Write-Host ""
+          Write-Host "[PASS] AFTER SHA256 recorded."
+
+
+      # ========================================================
+      # 20. Compare BEFORE / AFTER OHLCV
+      # ========================================================
+
+      - name: Verify all 870 OHLCV files remained unchanged
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY ALL OHLCV FILES REMAINED UNCHANGED"
+          Write-Host "============================================================"
+
+          $before = @(
+              Get-Content `
+                  -LiteralPath $env:BEFORE_SHA256_FILE |
+              Where-Object {
+                  -not [string]::IsNullOrWhiteSpace($_)
+              }
+          )
+
+          $after = @(
+              Get-Content `
+                  -LiteralPath $env:AFTER_SHA256_FILE |
+              Where-Object {
+                  -not [string]::IsNullOrWhiteSpace($_)
+              }
+          )
+
+          if ($before.Count -ne [int]$env:EXPECTED_OHLCV_FILES) {
+
+              throw "BEFORE SHA256 count mismatch."
+          }
+
+          if ($after.Count -ne [int]$env:EXPECTED_OHLCV_FILES) {
+
+              throw "AFTER SHA256 count mismatch."
+          }
+
+          $beforeMap = @{}
+
+          foreach ($line in $before) {
+
+              $parts = $line -split "`t", 2
+
+              if ($parts.Count -ne 2) {
+                  throw "Invalid BEFORE SHA256 record."
+              }
+
+              $beforeMap[$parts[1]] = $parts[0]
+          }
+
+          $afterMap = @{}
+
+          foreach ($line in $after) {
+
+              $parts = $line -split "`t", 2
+
+              if ($parts.Count -ne 2) {
+                  throw "Invalid AFTER SHA256 record."
+              }
+
+              $afterMap[$parts[1]] = $parts[0]
+          }
+
+          $problems = @()
+
+          foreach ($path in $beforeMap.Keys) {
+
+              if (-not $afterMap.ContainsKey($path)) {
+
+                  $problems += "MISSING_AFTER: $path"
+
+                  continue
+              }
+
+              if ($beforeMap[$path] -ne $afterMap[$path]) {
+
+                  $problems += "HASH_CHANGED: $path"
+              }
+          }
+
+          foreach ($path in $afterMap.Keys) {
+
+              if (-not $beforeMap.ContainsKey($path)) {
+
+                  $problems += "NEW_AFTER: $path"
+              }
+          }
+
+          if ($problems.Count -gt 0) {
+
+              Write-Host ""
+
+              Write-Host "OHLCV safety violations:"
+
+              foreach ($problem in $problems) {
+
+                  Write-Host "  $problem"
+              }
+
+              throw "OHLCV changed during retry planning."
+          }
+
+          Write-Host ""
+          Write-Host "Verified files : $($beforeMap.Count)"
+
+          Write-Host ""
+          Write-Host "[PASS] All 870 OHLCV files remained unchanged."
+
+
+      # ========================================================
+      # 21. Verify planner runtime files are ignored
+      # ========================================================
+
+      - name: Verify planner runtime files remain ignored
+        working-directory: ${{ github.workspace }}
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY PLANNER RUNTIME FILES ARE GIT-IGNORED"
+          Write-Host "============================================================"
+
+          $paths = @(
+
+              "data/recovery/history_gap_second_pass_targets.csv",
+
+              "data/recovery/history_gap_second_pass_plan.json",
+
+              "data/reports/history_gap_retry_plan/history_gap_retry_plan_summary.csv",
+
+              "data/reports/history_gap_retry_plan/history_gap_retry_plan_detail.csv",
+
+              "data/validation/plan_history_gap_retry_checkpoint.json",
+
+              "data/plan_history_gap_retry_status.csv",
+
+              "data/validation/plan_history_gap_retry_ohlcv_before.sha256",
+
+              "data/validation/plan_history_gap_retry_ohlcv_after.sha256"
+          )
+
+          foreach ($path in $paths) {
+
+              if (-not (
+                  Test-Path `
+                      -LiteralPath $path `
+                      -PathType Leaf
+              )) {
+
+                  throw "Expected planner runtime file missing: $path"
+              }
+
+              git check-ignore -q -- "$path"
+
+              if ($LASTEXITCODE -ne 0) {
+
+                  throw "Runtime file is NOT ignored by .gitignore: $path"
+              }
+
+              Write-Host "[PASS] ignored: $path"
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Planner runtime outputs remain outside Git tracking."
+
+
+      # ========================================================
+      # 22. Final Git safety
+      # ========================================================
+
+      - name: Verify final Git safety
+        working-directory: ${{ github.workspace }}
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY FINAL GIT SAFETY"
+          Write-Host "============================================================"
+
+          $trackedChanges = @(
+              git status `
+                  --porcelain `
+                  --untracked-files=no
+          )
+
+          if ($LASTEXITCODE -ne 0) {
+
+              throw "git status failed."
+          }
+
+          if ($trackedChanges.Count -gt 0) {
+
+              Write-Host ""
+
+              Write-Host "Tracked Git-visible changes detected:"
+
+              foreach ($change in $trackedChanges) {
+
+                  Write-Host "  $change"
+              }
+
+              throw "Planner modified tracked repository files."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] No tracked Git-visible changes detected."
+
+
+      # ========================================================
+      # 23. Remove temporary data junction
+      # ========================================================
+
+      - name: Remove temporary data junction
+        if: always()
+        run: |
+
+          $ErrorActionPreference = "Continue"
+
+          Write-Host "============================================================"
+          Write-Host "REMOVE TEMPORARY DATA JUNCTION"
+          Write-Host "============================================================"
+
+          $workspaceData = Join-Path `
+              $env:GITHUB_WORKSPACE `
+              "data"
+
+          if (-not (Test-Path -LiteralPath $workspaceData)) {
+
+              Write-Host "[PASS] Workspace data path already absent."
+
+              exit 0
+          }
+
+          $item = Get-Item `
+              -LiteralPath $workspaceData `
+              -Force
+
+          $isReparsePoint = (
+              ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) `
+              -ne 0
+          )
+
+          if (-not $isReparsePoint) {
+
+              Write-Host "[FAIL] Refusing to remove non-junction data path:"
+              Write-Host "       $workspaceData"
+
+              exit 1
+          }
+
+          cmd /c rmdir "$workspaceData"
+
+          if ($LASTEXITCODE -ne 0) {
+
+              Write-Host "[FAIL] Unable to remove temporary data junction."
+
+              exit 1
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Temporary junction removed."
+          Write-Host "[PASS] Persistent target data remains untouched."
+
+
+      # ========================================================
+      # 24. Completed
+      # ========================================================
+
+      - name: plan_history_gap_retry_test.yml completed
+        if: success()
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "PLAN HISTORY GAP RETRY TEST COMPLETED"
+          Write-Host "============================================================"
+
+          Write-Host ""
+
+          Write-Host "Workflow:"
+          Write-Host "  plan_history_gap_retry_test.yml"
+
+          Write-Host ""
+
+          Write-Host "Workflow version:"
+          Write-Host "  Clean V001"
+
+          Write-Host ""
+
+          Write-Host "Planner:"
+          Write-Host "  plan_history_gap_retry.py - Clean V001"
+
+          Write-Host ""
+
+          Write-Host "OHLCV:"
+          Write-Host "  H1    : 290"
+          Write-Host "  H4    : 290"
+          Write-Host "  D1    : 290"
+          Write-Host "  Total : 870"
+
+          Write-Host ""
+
+          Write-Host "Validation:"
+          Write-Host "  Persistent data root : VERIFIED"
+          Write-Host "  Audit inputs         : VERIFIED"
+          Write-Host "  OHLCV inventory      : VERIFIED"
+          Write-Host "  Python compile       : VERIFIED"
+          Write-Host "  Planner execution    : VERIFIED"
+          Write-Host "  Target CSV           : VERIFIED"
+          Write-Host "  Plan JSON            : VERIFIED"
+          Write-Host "  Checkpoint           : VERIFIED"
+          Write-Host "  Resume / re-run      : VERIFIED"
+          Write-Host "  BEFORE SHA256        : VERIFIED"
+          Write-Host "  AFTER SHA256         : VERIFIED"
+          Write-Host "  OHLCV unchanged      : VERIFIED"
+          Write-Host "  Git ignore           : VERIFIED"
+          Write-Host "  Git safety           : VERIFIED"
+
+          Write-Host ""
+
+          Write-Host "[PASS] plan_history_gap_retry.py Clean V001"
+          Write-Host "       validation completed successfully."
+
+          Write-Host "============================================================"
