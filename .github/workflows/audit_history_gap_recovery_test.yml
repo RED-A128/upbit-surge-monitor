@@ -1,7 +1,7 @@
 # ============================================================
 # Upbit Surge Monitor
 # audit_history_gap_recovery_test.yml
-# Clean V002
+# Clean V003
 # ============================================================
 #
 # PURPOSE
@@ -184,7 +184,7 @@ jobs:
 
           Write-Host "============================================================"
           Write-Host "AUDIT HISTORY GAP RECOVERY TEST"
-          Write-Host "Clean V002"
+          Write-Host "Clean V003"
           Write-Host "============================================================"
 
           Write-Host ""
@@ -540,13 +540,7 @@ jobs:
               }
               else {
 
-                  throw @"
-Repository data path already exists as a real directory:
-
-$repoData
-
-For safety this workflow will NOT delete or replace a real directory automatically.
-"@
+                  throw "Repository data path already exists as a real directory: $repoData. For safety this workflow will NOT delete or replace a real directory automatically."
               }
           }
 
@@ -1355,7 +1349,7 @@ For safety this workflow will NOT delete or replace a real directory automatical
           Write-Host ""
 
           Write-Host "Version:"
-          Write-Host "  Clean V002"
+          Write-Host "  Clean V003"
 
           Write-Host ""
 
