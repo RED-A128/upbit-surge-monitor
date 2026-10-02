@@ -1,0 +1,3350 @@
+# ============================================================
+# Upbit Surge Monitor
+#
+# .github/workflows/recover_history_gaps_second_pass_test.yml
+#
+# Clean V001
+# ============================================================
+#
+# PURPOSE
+#
+#   Validate:
+#
+#       recover_history_gaps_second_pass.py
+#
+#   BEFORE allowing real second-pass OHLCV recovery.
+#
+#
+# TEST SCOPE
+#
+#   1. Repository / Python environment validation
+#   2. Required planner output validation
+#   3. Production OHLCV inventory validation
+#   4. Production 870-file SHA256 baseline
+#   5. Isolated test workspace creation
+#   6. Real Upbit API connectivity test
+#   7. Second-pass recovery execution in isolated workspace
+#   8. Existing candle immutability validation
+#   9. Missing-candle insertion validation
+#  10. No OHLCV file deletion validation
+#  11. 870-file inventory preservation validation
+#  12. Resume / checkpoint second execution
+#  13. Resume idempotency validation
+#  14. Production OHLCV SHA256 final comparison
+#  15. Production OHLCV must remain 100% unchanged
+#
+#
+# IMPORTANT
+#
+#   The recovery program is NOT executed against the repository's
+#   production data/ohlcv directory.
+#
+#   A complete isolated copy is created first.
+#
+#   The recovery script itself is copied into the isolated project
+#   root and executed there.
+#
+#   Because recover_history_gaps_second_pass.py resolves PROJECT_ROOT
+#   from __file__, this guarantees that its data/ohlcv writes are
+#   directed to the isolated workspace.
+#
+#
+# SAFETY
+#
+#   Production OHLCV write       : FORBIDDEN
+#   Production OHLCV delete      : FORBIDDEN
+#
+#   Isolated OHLCV write         : ENABLED
+#   Real Upbit API               : ENABLED
+#   Second-pass gap recovery     : ENABLED IN ISOLATED COPY ONLY
+#
+#   Feature build                : DISABLED
+#   256 detector                 : DISABLED
+#   Future labels                : DISABLED
+#   Prediction                   : DISABLED
+#   Trading                      : DISABLED
+#
+#   Git reset                    : DISABLED
+#   Git clean                    : DISABLED
+#   Git commit                   : DISABLED
+#   Git push                     : DISABLED
+#
+# ============================================================
+
+
+name: recover_history_gaps_second_pass_test.yml
+
+
+on:
+
+  workflow_dispatch:
+
+
+permissions:
+
+  contents: read
+
+
+concurrency:
+
+  group: recover-history-gaps-second-pass-test
+
+  cancel-in-progress: false
+
+
+jobs:
+
+  recover-history-gaps-second-pass-test:
+
+    name: recover_history_gaps_second_pass_test.yml
+
+    runs-on:
+
+      - self-hosted
+      - Windows
+      - X64
+
+
+    timeout-minutes: 180
+
+
+    defaults:
+
+      run:
+
+        shell: powershell
+
+
+    env:
+
+      PYTHONUTF8: "1"
+
+      PYTHONIOENCODING: "utf-8"
+
+      PYTHONUNBUFFERED: "1"
+
+      TEST_ROOT: "_second_pass_recovery_test"
+
+      EXPECTED_MARKETS: "290"
+
+      EXPECTED_TIMEFRAMES: "3"
+
+      EXPECTED_OHLCV_FILES: "870"
+
+
+    steps:
+
+
+      # ======================================================
+      # 01. CHECKOUT
+      # ======================================================
+
+      - name: 01 - Checkout repository
+
+        uses: actions/checkout@v4
+
+
+      # ======================================================
+      # 02. BASIC INFORMATION
+      # ======================================================
+
+      - name: 02 - Show test information
+
+        run: |
+
+          Write-Host "============================================================"
+          Write-Host "UPBIT SURGE MONITOR"
+          Write-Host "SECOND-PASS RECOVERY TEST"
+          Write-Host "Clean V001"
+          Write-Host "============================================================"
+
+          Write-Host ""
+
+          Write-Host "Repository:"
+          Write-Host "  $env:GITHUB_REPOSITORY"
+
+          Write-Host ""
+
+          Write-Host "Workspace:"
+          Write-Host "  $env:GITHUB_WORKSPACE"
+
+          Write-Host ""
+
+          Write-Host "Runner:"
+          Write-Host "  $env:RUNNER_NAME"
+
+          Write-Host ""
+
+          Write-Host "Safety mode:"
+          Write-Host "  Production OHLCV write  : FORBIDDEN"
+          Write-Host "  Production OHLCV delete : FORBIDDEN"
+          Write-Host "  Isolated OHLCV write    : ENABLED"
+          Write-Host "  Real Upbit API          : ENABLED"
+
+          Write-Host ""
+
+          Write-Host "Expected:"
+          Write-Host "  Markets      : $env:EXPECTED_MARKETS"
+          Write-Host "  Timeframes   : $env:EXPECTED_TIMEFRAMES"
+          Write-Host "  OHLCV files  : $env:EXPECTED_OHLCV_FILES"
+
+          Write-Host "============================================================"
+
+
+      # ======================================================
+      # 03. PYTHON
+      # ======================================================
+
+      - name: 03 - Verify Python
+
+        run: |
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY PYTHON"
+          Write-Host "============================================================"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+
+              throw "Python launcher 'py' is unavailable."
+
+          }
+
+          Write-Host ""
+
+          Write-Host "[PASS] Python launcher available."
+
+
+      # ======================================================
+      # 04. DEPENDENCIES
+      # ======================================================
+
+      - name: 04 - Install dependencies
+
+        run: |
+
+          Write-Host "============================================================"
+          Write-Host "INSTALL / VERIFY DEPENDENCIES"
+          Write-Host "============================================================"
+
+          if (Test-Path "requirements.txt") {
+
+              py -m pip install -r requirements.txt
+
+              if ($LASTEXITCODE -ne 0) {
+
+                  throw "requirements.txt installation failed."
+
+              }
+
+          }
+          else {
+
+              Write-Host "[INFO] requirements.txt not found."
+              Write-Host "[INFO] Installing requests directly."
+
+              py -m pip install "requests>=2.32,<3"
+
+              if ($LASTEXITCODE -ne 0) {
+
+                  throw "requests installation failed."
+
+              }
+
+          }
+
+          Write-Host ""
+
+          py -c "import requests; print('requests', requests.__version__)"
+
+          if ($LASTEXITCODE -ne 0) {
+
+              throw "Unable to import requests."
+
+          }
+
+          Write-Host ""
+
+          Write-Host "[PASS] Python dependencies available."
+
+
+      # ======================================================
+      # 05. REQUIRED FILES
+      # ======================================================
+
+      - name: 05 - Verify required source files
+
+        run: |
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY REQUIRED FILES"
+          Write-Host "============================================================"
+
+          $required = @(
+
+              "recover_history_gaps_second_pass.py",
+
+              "data/recovery/history_gap_second_pass_targets.csv",
+
+              "data/recovery/history_gap_second_pass_plan.json"
+
+          )
+
+          foreach ($file in $required) {
+
+              if (-not (Test-Path $file)) {
+
+                  throw "Required file missing: $file"
+
+              }
+
+              $item = Get-Item $file
+
+              if ($item.Length -le 0) {
+
+                  throw "Required file is empty: $file"
+
+              }
+
+              Write-Host "[PASS] $file"
+
+          }
+
+
+      # ======================================================
+      # 06. SYNTAX CHECK
+      # ======================================================
+
+      - name: 06 - Python syntax check
+
+        run: |
+
+          Write-Host "============================================================"
+          Write-Host "PYTHON SYNTAX CHECK"
+          Write-Host "============================================================"
+
+          py -m py_compile recover_history_gaps_second_pass.py
+
+          if ($LASTEXITCODE -ne 0) {
+
+              throw "Python syntax validation failed."
+
+          }
+
+          Write-Host ""
+
+          Write-Host "[PASS] Python syntax valid."
+
+
+      # ======================================================
+      # 07. PRODUCTION OHLCV INVENTORY
+      # ======================================================
+
+      - name: 07 - Validate production OHLCV inventory
+
+        run: |
+
+          Write-Host "============================================================"
+          Write-Host "VALIDATE PRODUCTION OHLCV INVENTORY"
+          Write-Host "============================================================"
+
+          @'
+          from pathlib import Path
+          import sys
+
+
+          root = Path("data/ohlcv")
+
+          expected_markets = 290
+
+          expected_total = 870
+
+          timeframes = (
+              "h1",
+              "h4",
+              "d1",
+          )
+
+
+          total = 0
+
+          market_sets = {}
+
+
+          for timeframe in timeframes:
+
+              directory = root / timeframe
+
+              if not directory.is_dir():
+
+                  raise SystemExit(
+                      f"[FAIL] Missing directory: {directory}"
+                  )
+
+              files = sorted(
+                  directory.glob("*.csv")
+              )
+
+              count = len(files)
+
+              total += count
+
+              market_sets[timeframe] = {
+                  path.stem.upper()
+                  for path in files
+              }
+
+              print(
+                  f"{timeframe.upper()} files : {count}"
+              )
+
+              if count != expected_markets:
+
+                  raise SystemExit(
+                      f"[FAIL] {timeframe} expected "
+                      f"{expected_markets}, found {count}"
+                  )
+
+
+          if total != expected_total:
+
+              raise SystemExit(
+                  f"[FAIL] Expected total {expected_total}, "
+                  f"found {total}"
+              )
+
+
+          reference = market_sets["h1"]
+
+
+          for timeframe in (
+              "h4",
+              "d1",
+          ):
+
+              if market_sets[timeframe] != reference:
+
+                  raise SystemExit(
+                      "[FAIL] Market sets differ between "
+                      f"H1 and {timeframe.upper()}."
+                  )
+
+
+          print()
+
+          print(
+              f"Markets : {len(reference)}"
+          )
+
+          print(
+              f"Total   : {total}"
+          )
+
+          print()
+
+          print(
+              "[PASS] Production OHLCV inventory valid."
+          )
+          '@ | Set-Content -Path "_validate_production_inventory.py" -Encoding UTF8
+
+          py _validate_production_inventory.py
+
+          $exitCode = $LASTEXITCODE
+
+          Remove-Item "_validate_production_inventory.py" -Force -ErrorAction SilentlyContinue
+
+          if ($exitCode -ne 0) {
+
+              throw "Production OHLCV inventory validation failed."
+
+          }
+
+
+      # ======================================================
+      # 08. TARGET FILE VALIDATION
+      # ======================================================
+
+      - name: 08 - Validate second-pass target contract
+
+        run: |
+
+          Write-Host "============================================================"
+          Write-Host "VALIDATE SECOND-PASS TARGET CONTRACT"
+          Write-Host "============================================================"
+
+          @'
+          import csv
+          import json
+          from pathlib import Path
+
+
+          target_file = Path(
+              "data/recovery/history_gap_second_pass_targets.csv"
+          )
+
+          plan_file = Path(
+              "data/recovery/history_gap_second_pass_plan.json"
+          )
+
+
+          with target_file.open(
+              "r",
+              encoding="utf-8-sig",
+              newline="",
+          ) as handle:
+
+              reader = csv.DictReader(handle)
+
+              fieldnames = list(
+                  reader.fieldnames
+                  or []
+              )
+
+              rows = list(reader)
+
+
+          print(
+              f"Target rows : {len(rows)}"
+          )
+
+          print(
+              f"Columns     : {len(fieldnames)}"
+          )
+
+
+          normalized = {
+              str(name).strip().lower():
+              name
+              for name in fieldnames
+          }
+
+
+          if "classification" not in normalized:
+
+              raise SystemExit(
+                  "[FAIL] classification column missing."
+              )
+
+
+          classification_column = normalized[
+              "classification"
+          ]
+
+
+          invalid = []
+
+
+          for index, row in enumerate(
+              rows,
+              start=2,
+          ):
+
+              value = str(
+                  row.get(
+                      classification_column,
+                      ""
+                  )
+              ).strip()
+
+              if value != "READY_SECOND_PASS":
+
+                  invalid.append(
+                      (
+                          index,
+                          value,
+                      )
+                  )
+
+
+          if invalid:
+
+              print(
+                  "[FAIL] Unauthorized target classifications:"
+              )
+
+              for item in invalid[:20]:
+
+                  print(item)
+
+              raise SystemExit(1)
+
+
+          with plan_file.open(
+              "r",
+              encoding="utf-8-sig",
+          ) as handle:
+
+              plan = json.load(handle)
+
+
+          if not isinstance(
+              plan,
+              dict,
+          ):
+
+              raise SystemExit(
+                  "[FAIL] Plan JSON root is not object."
+              )
+
+
+          if (
+              str(
+                  plan.get(
+                      "program",
+                      ""
+                  )
+              ).strip()
+              !=
+              "plan_history_gap_retry.py"
+          ):
+
+              raise SystemExit(
+                  "[FAIL] Unexpected planner program."
+              )
+
+
+          if (
+              str(
+                  plan.get(
+                      "version",
+                      ""
+                  )
+              ).strip()
+              !=
+              "Clean V001"
+          ):
+
+              raise SystemExit(
+                  "[FAIL] Unexpected planner version."
+              )
+
+
+          print()
+
+          print(
+              "[PASS] Target contract valid."
+          )
+
+          print(
+              "[PASS] Every target is READY_SECOND_PASS."
+          )
+
+          print(
+              "[PASS] Planner program/version valid."
+          )
+          '@ | Set-Content -Path "_validate_second_pass_targets.py" -Encoding UTF8
+
+          py _validate_second_pass_targets.py
+
+          $exitCode = $LASTEXITCODE
+
+          Remove-Item "_validate_second_pass_targets.py" -Force -ErrorAction SilentlyContinue
+
+          if ($exitCode -ne 0) {
+
+              throw "Second-pass target validation failed."
+
+          }
+
+
+      # ======================================================
+      # 09. PRODUCTION SHA256 BASELINE
+      # ======================================================
+
+      - name: 09 - Record production 870-file SHA256 baseline
+
+        run: |
+
+          Write-Host "============================================================"
+          Write-Host "PRODUCTION OHLCV SHA256 BASELINE"
+          Write-Host "============================================================"
+
+          @'
+          import csv
+          import hashlib
+          from pathlib import Path
+
+
+          root = Path("data/ohlcv")
+
+          output = Path(
+              "_production_ohlcv_before.csv"
+          )
+
+
+          def sha256_file(path):
+
+              digest = hashlib.sha256()
+
+              with path.open("rb") as handle:
+
+                  while True:
+
+                      chunk = handle.read(
+                          1024 * 1024
+                      )
+
+                      if not chunk:
+
+                          break
+
+                      digest.update(chunk)
+
+              return digest.hexdigest()
+
+
+          rows = []
+
+
+          for timeframe in (
+              "h1",
+              "h4",
+              "d1",
+          ):
+
+              directory = (
+                  root
+                  / timeframe
+              )
+
+              for path in sorted(
+                  directory.glob("*.csv")
+              ):
+
+                  rows.append(
+                      {
+                          "timeframe":
+                              timeframe,
+
+                          "market":
+                              path.stem.upper(),
+
+                          "path":
+                              path.as_posix(),
+
+                          "size":
+                              path.stat().st_size,
+
+                          "sha256":
+                              sha256_file(path),
+                      }
+                  )
+
+
+          if len(rows) != 870:
+
+              raise SystemExit(
+                  f"[FAIL] Expected 870 files, "
+                  f"found {len(rows)}"
+              )
+
+
+          with output.open(
+              "w",
+              encoding="utf-8-sig",
+              newline="",
+          ) as handle:
+
+              writer = csv.DictWriter(
+                  handle,
+                  fieldnames=(
+                      "timeframe",
+                      "market",
+                      "path",
+                      "size",
+                      "sha256",
+                  ),
+              )
+
+              writer.writeheader()
+
+              writer.writerows(rows)
+
+
+          print(
+              f"[PASS] SHA256 baseline files : {len(rows)}"
+          )
+
+          print(
+              f"[PASS] Saved : {output}"
+          )
+          '@ | Set-Content -Path "_record_production_hash.py" -Encoding UTF8
+
+          py _record_production_hash.py
+
+          $exitCode = $LASTEXITCODE
+
+          Remove-Item "_record_production_hash.py" -Force -ErrorAction SilentlyContinue
+
+          if ($exitCode -ne 0) {
+
+              throw "Production SHA256 baseline failed."
+
+          }
+
+
+      # ======================================================
+      # 10. CLEAN OLD ISOLATED TEST DIRECTORY
+      # ======================================================
+
+      - name: 10 - Prepare isolated test workspace
+
+        run: |
+
+          Write-Host "============================================================"
+          Write-Host "PREPARE ISOLATED TEST WORKSPACE"
+          Write-Host "============================================================"
+
+          $testRoot = Join-Path $env:GITHUB_WORKSPACE $env:TEST_ROOT
+
+          if (Test-Path $testRoot) {
+
+              Write-Host "[INFO] Removing previous isolated test directory."
+
+              Remove-Item `
+                  -Path $testRoot `
+                  -Recurse `
+                  -Force
+
+          }
+
+          New-Item `
+              -ItemType Directory `
+              -Path $testRoot `
+              -Force | Out-Null
+
+          New-Item `
+              -ItemType Directory `
+              -Path (Join-Path $testRoot "data") `
+              -Force | Out-Null
+
+          Write-Host ""
+
+          Write-Host "[PASS] Isolated root:"
+          Write-Host "       $testRoot"
+
+
+      # ======================================================
+      # 11. COPY RECOVERY PROGRAM
+      # ======================================================
+
+      - name: 11 - Copy recovery program into isolated root
+
+        run: |
+
+          Write-Host "============================================================"
+          Write-Host "COPY RECOVERY PROGRAM"
+          Write-Host "============================================================"
+
+          $testRoot = Join-Path $env:GITHUB_WORKSPACE $env:TEST_ROOT
+
+          Copy-Item `
+              "recover_history_gaps_second_pass.py" `
+              (Join-Path $testRoot "recover_history_gaps_second_pass.py") `
+              -Force
+
+          if (-not (Test-Path (Join-Path $testRoot "recover_history_gaps_second_pass.py"))) {
+
+              throw "Recovery program copy failed."
+
+          }
+
+          Write-Host "[PASS] Recovery program copied."
+
+
+      # ======================================================
+      # 12. COPY FULL 870-FILE OHLCV DATASET
+      # ======================================================
+
+      - name: 12 - Copy production OHLCV into isolated workspace
+
+        run: |
+
+          Write-Host "============================================================"
+          Write-Host "COPY 870 OHLCV FILES TO ISOLATED WORKSPACE"
+          Write-Host "============================================================"
+
+          $testRoot = Join-Path $env:GITHUB_WORKSPACE $env:TEST_ROOT
+
+          $destination = Join-Path $testRoot "data\ohlcv"
+
+          Copy-Item `
+              "data\ohlcv" `
+              $destination `
+              -Recurse `
+              -Force
+
+          $count = (
+              Get-ChildItem `
+                  -Path $destination `
+                  -Filter "*.csv" `
+                  -Recurse `
+                  -File
+          ).Count
+
+          Write-Host ""
+
+          Write-Host "Copied OHLCV files : $count"
+
+          if ($count -ne 870) {
+
+              throw "Isolated OHLCV copy expected 870 files, found $count."
+
+          }
+
+          Write-Host ""
+
+          Write-Host "[PASS] Full OHLCV dataset isolated."
+
+
+      # ======================================================
+      # 13. COPY PLANNER OUTPUTS
+      # ======================================================
+
+      - name: 13 - Copy planner outputs into isolated workspace
+
+        run: |
+
+          Write-Host "============================================================"
+          Write-Host "COPY SECOND-PASS PLANNER OUTPUTS"
+          Write-Host "============================================================"
+
+          $testRoot = Join-Path $env:GITHUB_WORKSPACE $env:TEST_ROOT
+
+          $recoveryDir = Join-Path $testRoot "data\recovery"
+
+          New-Item `
+              -ItemType Directory `
+              -Path $recoveryDir `
+              -Force | Out-Null
+
+          Copy-Item `
+              "data\recovery\history_gap_second_pass_targets.csv" `
+              (Join-Path $recoveryDir "history_gap_second_pass_targets.csv") `
+              -Force
+
+          Copy-Item `
+              "data\recovery\history_gap_second_pass_plan.json" `
+              (Join-Path $recoveryDir "history_gap_second_pass_plan.json") `
+              -Force
+
+          Write-Host "[PASS] Planner outputs copied."
+
+
+      # ======================================================
+      # 14. VERIFY ISOLATED COPY HASHES
+      # ======================================================
+
+      - name: 14 - Verify isolated copy equals production before test
+
+        run: |
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY ISOLATED COPY"
+          Write-Host "============================================================"
+
+          @'
+          import hashlib
+          from pathlib import Path
+
+
+          production = Path(
+              "data/ohlcv"
+          )
+
+          isolated = Path(
+              "_second_pass_recovery_test/data/ohlcv"
+          )
+
+
+          def sha256_file(path):
+
+              digest = hashlib.sha256()
+
+              with path.open("rb") as handle:
+
+                  while True:
+
+                      chunk = handle.read(
+                          1024 * 1024
+                      )
+
+                      if not chunk:
+
+                          break
+
+                      digest.update(chunk)
+
+              return digest.hexdigest()
+
+
+          production_files = {}
+
+
+          isolated_files = {}
+
+
+          for path in production.rglob(
+              "*.csv"
+          ):
+
+              relative = path.relative_to(
+                  production
+              ).as_posix()
+
+              production_files[
+                  relative
+              ] = sha256_file(
+                  path
+              )
+
+
+          for path in isolated.rglob(
+              "*.csv"
+          ):
+
+              relative = path.relative_to(
+                  isolated
+              ).as_posix()
+
+              isolated_files[
+                  relative
+              ] = sha256_file(
+                  path
+              )
+
+
+          if len(production_files) != 870:
+
+              raise SystemExit(
+                  "[FAIL] Production file count is not 870."
+              )
+
+
+          if len(isolated_files) != 870:
+
+              raise SystemExit(
+                  "[FAIL] Isolated file count is not 870."
+              )
+
+
+          if (
+              set(production_files)
+              != set(isolated_files)
+          ):
+
+              raise SystemExit(
+                  "[FAIL] Production/isolated file sets differ."
+              )
+
+
+          mismatches = []
+
+
+          for relative in sorted(
+              production_files
+          ):
+
+              if (
+                  production_files[relative]
+                  !=
+                  isolated_files[relative]
+              ):
+
+                  mismatches.append(
+                      relative
+                  )
+
+
+          if mismatches:
+
+              print(
+                  "[FAIL] Initial SHA256 mismatches:"
+              )
+
+              for item in mismatches[:20]:
+
+                  print(
+                      "  ",
+                      item,
+                  )
+
+              raise SystemExit(1)
+
+
+          print(
+              "[PASS] Production files : 870"
+          )
+
+          print(
+              "[PASS] Isolated files   : 870"
+          )
+
+          print(
+              "[PASS] All 870 SHA256 values identical."
+          )
+          '@ | Set-Content -Path "_verify_isolated_copy.py" -Encoding UTF8
+
+          py _verify_isolated_copy.py
+
+          $exitCode = $LASTEXITCODE
+
+          Remove-Item "_verify_isolated_copy.py" -Force -ErrorAction SilentlyContinue
+
+          if ($exitCode -ne 0) {
+
+              throw "Isolated copy SHA256 validation failed."
+
+          }
+
+
+      # ======================================================
+      # 15. RECORD ISOLATED BEFORE SNAPSHOT
+      # ======================================================
+
+      - name: 15 - Record isolated OHLCV before snapshot
+
+        run: |
+
+          Write-Host "============================================================"
+          Write-Host "RECORD ISOLATED BEFORE SNAPSHOT"
+          Write-Host "============================================================"
+
+          @'
+          import csv
+          import hashlib
+          from pathlib import Path
+
+
+          root = Path(
+              "_second_pass_recovery_test/data/ohlcv"
+          )
+
+          output = Path(
+              "_isolated_before.csv"
+          )
+
+
+          def sha256_file(path):
+
+              digest = hashlib.sha256()
+
+              with path.open("rb") as handle:
+
+                  while True:
+
+                      chunk = handle.read(
+                          1024 * 1024
+                      )
+
+                      if not chunk:
+
+                          break
+
+                      digest.update(chunk)
+
+              return digest.hexdigest()
+
+
+          rows = []
+
+
+          for path in sorted(
+              root.rglob("*.csv")
+          ):
+
+              relative = path.relative_to(
+                  root
+              ).as_posix()
+
+              with path.open(
+                  "r",
+                  encoding="utf-8-sig",
+                  newline="",
+              ) as handle:
+
+                  row_count = max(
+                      0,
+                      sum(
+                          1
+                          for _ in handle
+                      )
+                      - 1
+                  )
+
+              rows.append(
+                  {
+                      "path":
+                          relative,
+
+                      "rows":
+                          row_count,
+
+                      "sha256":
+                          sha256_file(path),
+                  }
+              )
+
+
+          if len(rows) != 870:
+
+              raise SystemExit(
+                  f"[FAIL] Expected 870 files, found {len(rows)}"
+              )
+
+
+          with output.open(
+              "w",
+              encoding="utf-8-sig",
+              newline="",
+          ) as handle:
+
+              writer = csv.DictWriter(
+                  handle,
+                  fieldnames=(
+                      "path",
+                      "rows",
+                      "sha256",
+                  ),
+              )
+
+              writer.writeheader()
+
+              writer.writerows(rows)
+
+
+          print(
+              "[PASS] Isolated BEFORE snapshot recorded."
+          )
+          '@ | Set-Content -Path "_record_isolated_before.py" -Encoding UTF8
+
+          py _record_isolated_before.py
+
+          $exitCode = $LASTEXITCODE
+
+          Remove-Item "_record_isolated_before.py" -Force -ErrorAction SilentlyContinue
+
+          if ($exitCode -ne 0) {
+
+              throw "Isolated before snapshot failed."
+
+          }
+
+
+      # ======================================================
+      # 16. REAL UPBIT API CONNECTIVITY
+      # ======================================================
+
+      - name: 16 - Test real Upbit API connectivity
+
+        run: |
+
+          Write-Host "============================================================"
+          Write-Host "REAL UPBIT API CONNECTIVITY TEST"
+          Write-Host "============================================================"
+
+          @'
+          import requests
+
+
+          url = (
+              "https://api.upbit.com/v1/candles/minutes/60"
+          )
+
+
+          params = {
+              "market":
+                  "KRW-BTC",
+
+              "count":
+                  1,
+          }
+
+
+          response = requests.get(
+              url,
+              params=params,
+              timeout=15,
+              headers={
+                  "Accept":
+                      "application/json",
+
+                  "User-Agent":
+                      "Upbit-Surge-Monitor-Recovery-Test",
+              },
+          )
+
+
+          print(
+              "HTTP status :",
+              response.status_code,
+          )
+
+
+          if response.status_code != 200:
+
+              raise SystemExit(
+                  "[FAIL] Upbit API connectivity failed: "
+                  + response.text[:500]
+              )
+
+
+          payload = response.json()
+
+
+          if (
+              not isinstance(
+                  payload,
+                  list,
+              )
+              or
+              len(payload) < 1
+          ):
+
+              raise SystemExit(
+                  "[FAIL] Unexpected Upbit API response."
+              )
+
+
+          candle = payload[0]
+
+
+          if (
+              "candle_date_time_utc"
+              not in candle
+          ):
+
+              raise SystemExit(
+                  "[FAIL] candle_date_time_utc missing."
+              )
+
+
+          print(
+              "Latest UTC candle :",
+              candle[
+                  "candle_date_time_utc"
+              ],
+          )
+
+          print()
+
+          print(
+              "[PASS] Real Upbit API available."
+          )
+          '@ | Set-Content -Path "_test_upbit_api.py" -Encoding UTF8
+
+          py _test_upbit_api.py
+
+          $exitCode = $LASTEXITCODE
+
+          Remove-Item "_test_upbit_api.py" -Force -ErrorAction SilentlyContinue
+
+          if ($exitCode -ne 0) {
+
+              throw "Real Upbit API test failed."
+
+          }
+
+
+      # ======================================================
+      # 17. FIRST ISOLATED RECOVERY
+      # ======================================================
+
+      - name: 17 - Execute first isolated second-pass recovery
+
+        run: |
+
+          Write-Host "============================================================"
+          Write-Host "FIRST ISOLATED SECOND-PASS RECOVERY"
+          Write-Host "============================================================"
+
+          $testRoot = Join-Path $env:GITHUB_WORKSPACE $env:TEST_ROOT
+
+          Push-Location $testRoot
+
+          try {
+
+              py recover_history_gaps_second_pass.py
+
+              $exitCode = $LASTEXITCODE
+
+          }
+          finally {
+
+              Pop-Location
+
+          }
+
+          if ($exitCode -ne 0) {
+
+              throw "First isolated recovery execution failed with exit code $exitCode."
+
+          }
+
+          Write-Host ""
+
+          Write-Host "[PASS] First isolated recovery execution completed."
+
+
+      # ======================================================
+      # 18. VERIFY RECOVERY OUTPUT FILES
+      # ======================================================
+
+      - name: 18 - Verify first recovery outputs
+
+        run: |
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY FIRST RECOVERY OUTPUTS"
+          Write-Host "============================================================"
+
+          $base = Join-Path `
+              $env:GITHUB_WORKSPACE `
+              "$env:TEST_ROOT\data\reports\history_gap_second_pass_recovery"
+
+          $required = @(
+
+              "history_gap_second_pass_recovery_summary.csv",
+
+              "history_gap_second_pass_recovery_detail.csv",
+
+              "history_gap_second_pass_recovery_result.json",
+
+              "history_gap_second_pass_before_sha256.csv",
+
+              "history_gap_second_pass_after_sha256.csv"
+
+          )
+
+          foreach ($name in $required) {
+
+              $path = Join-Path $base $name
+
+              if (-not (Test-Path $path)) {
+
+                  throw "Recovery output missing: $path"
+
+              }
+
+              if ((Get-Item $path).Length -le 0) {
+
+                  throw "Recovery output empty: $path"
+
+              }
+
+              Write-Host "[PASS] $name"
+
+          }
+
+          $checkpoint = Join-Path `
+              $env:GITHUB_WORKSPACE `
+              "$env:TEST_ROOT\data\validation\recover_history_gaps_second_pass_checkpoint.json"
+
+          if (-not (Test-Path $checkpoint)) {
+
+              throw "Recovery checkpoint missing."
+
+          }
+
+          Write-Host "[PASS] checkpoint"
+
+
+      # ======================================================
+      # 19. VALIDATE FIRST RESULT JSON
+      # ======================================================
+
+      - name: 19 - Validate first recovery result
+
+        run: |
+
+          Write-Host "============================================================"
+          Write-Host "VALIDATE FIRST RECOVERY RESULT"
+          Write-Host "============================================================"
+
+          @'
+          import json
+          from pathlib import Path
+
+
+          result_file = Path(
+              "_second_pass_recovery_test"
+          ) / (
+              "data/reports/"
+              "history_gap_second_pass_recovery/"
+              "history_gap_second_pass_recovery_result.json"
+          )
+
+
+          with result_file.open(
+              "r",
+              encoding="utf-8-sig",
+          ) as handle:
+
+              result = json.load(handle)
+
+
+          if (
+              result.get("program")
+              !=
+              "recover_history_gaps_second_pass.py"
+          ):
+
+              raise SystemExit(
+                  "[FAIL] Unexpected recovery program."
+              )
+
+
+          if (
+              result.get("version")
+              !=
+              "Clean V001"
+          ):
+
+              raise SystemExit(
+                  "[FAIL] Unexpected recovery version."
+              )
+
+
+          summary = result.get(
+              "summary",
+              {},
+          )
+
+
+          print(
+              "Targets               :",
+              summary.get(
+                  "targets"
+              ),
+          )
+
+          print(
+              "Success               :",
+              summary.get(
+                  "success"
+              ),
+          )
+
+          print(
+              "Partial               :",
+              summary.get(
+                  "partial"
+              ),
+          )
+
+          print(
+              "Already recovered     :",
+              summary.get(
+                  "already_recovered"
+              ),
+          )
+
+          print(
+              "No data               :",
+              summary.get(
+                  "no_data"
+              ),
+          )
+
+          print(
+              "Failed                :",
+              summary.get(
+                  "failed"
+              ),
+          )
+
+          print(
+              "Inserted candles      :",
+              summary.get(
+                  "inserted_candles"
+              ),
+          )
+
+          print(
+              "Changed OHLCV files   :",
+              summary.get(
+                  "changed_ohlcv_files"
+              ),
+          )
+
+
+          failed = int(
+              summary.get(
+                  "failed",
+                  0,
+              )
+              or 0
+          )
+
+
+          if failed > 0:
+
+              raise SystemExit(
+                  f"[FAIL] Recovery contains {failed} failed targets."
+              )
+
+
+          safety = result.get(
+              "safety",
+              {},
+          )
+
+
+          if (
+              safety.get(
+                  "ohlcv_delete"
+              )
+              is not False
+          ):
+
+              raise SystemExit(
+                  "[FAIL] OHLCV delete safety flag invalid."
+              )
+
+
+          if (
+              safety.get(
+                  "existing_candle_overwrite"
+              )
+              is not False
+          ):
+
+              raise SystemExit(
+                  "[FAIL] Existing candle overwrite safety flag invalid."
+              )
+
+
+          if (
+              safety.get(
+                  "missing_candle_insert_only"
+              )
+              is not True
+          ):
+
+              raise SystemExit(
+                  "[FAIL] Missing-only insertion safety flag invalid."
+              )
+
+
+          print()
+
+          print(
+              "[PASS] First recovery result valid."
+          )
+          '@ | Set-Content -Path "_validate_first_result.py" -Encoding UTF8
+
+          py _validate_first_result.py
+
+          $exitCode = $LASTEXITCODE
+
+          Remove-Item "_validate_first_result.py" -Force -ErrorAction SilentlyContinue
+
+          if ($exitCode -ne 0) {
+
+              throw "First recovery result validation failed."
+
+          }
+
+
+      # ======================================================
+      # 20. VERIFY 870-FILE SAFETY
+      # ======================================================
+
+      - name: 20 - Verify isolated 870-file safety after recovery
+
+        run: |
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY 870-FILE SAFETY"
+          Write-Host "============================================================"
+
+          @'
+          import csv
+          import hashlib
+          import json
+          from pathlib import Path
+
+
+          root = Path(
+              "_second_pass_recovery_test/data/ohlcv"
+          )
+
+          before_file = Path(
+              "_isolated_before.csv"
+          )
+
+          result_file = Path(
+              "_second_pass_recovery_test"
+          ) / (
+              "data/reports/"
+              "history_gap_second_pass_recovery/"
+              "history_gap_second_pass_recovery_result.json"
+          )
+
+
+          def sha256_file(path):
+
+              digest = hashlib.sha256()
+
+              with path.open("rb") as handle:
+
+                  while True:
+
+                      chunk = handle.read(
+                          1024 * 1024
+                      )
+
+                      if not chunk:
+
+                          break
+
+                      digest.update(chunk)
+
+              return digest.hexdigest()
+
+
+          before = {}
+
+
+          with before_file.open(
+              "r",
+              encoding="utf-8-sig",
+              newline="",
+          ) as handle:
+
+              reader = csv.DictReader(handle)
+
+              for row in reader:
+
+                  before[
+                      row["path"]
+                  ] = {
+                      "rows":
+                          int(
+                              row["rows"]
+                          ),
+
+                      "sha256":
+                          row["sha256"],
+                  }
+
+
+          after = {}
+
+
+          for path in sorted(
+              root.rglob("*.csv")
+          ):
+
+              relative = path.relative_to(
+                  root
+              ).as_posix()
+
+              with path.open(
+                  "r",
+                  encoding="utf-8-sig",
+                  newline="",
+              ) as handle:
+
+                  rows = max(
+                      0,
+                      sum(
+                          1
+                          for _ in handle
+                      )
+                      - 1
+                  )
+
+              after[
+                  relative
+              ] = {
+                  "rows":
+                      rows,
+
+                  "sha256":
+                      sha256_file(path),
+              }
+
+
+          if len(before) != 870:
+
+              raise SystemExit(
+                  "[FAIL] BEFORE inventory is not 870."
+              )
+
+
+          if len(after) != 870:
+
+              raise SystemExit(
+                  "[FAIL] AFTER inventory is not 870."
+              )
+
+
+          if set(before) != set(after):
+
+              removed = sorted(
+                  set(before)
+                  - set(after)
+              )
+
+              added = sorted(
+                  set(after)
+                  - set(before)
+              )
+
+              print(
+                  "Removed:",
+                  removed[:20],
+              )
+
+              print(
+                  "Added:",
+                  added[:20],
+              )
+
+              raise SystemExit(
+                  "[FAIL] OHLCV file set changed."
+              )
+
+
+          changed = []
+
+
+          for relative in sorted(
+              before
+          ):
+
+              before_rows = before[
+                  relative
+              ]["rows"]
+
+              after_rows = after[
+                  relative
+              ]["rows"]
+
+              if after_rows < before_rows:
+
+                  raise SystemExit(
+                      "[FAIL] OHLCV row count decreased: "
+                      f"{relative} "
+                      f"{before_rows} -> {after_rows}"
+                  )
+
+              if (
+                  before[
+                      relative
+                  ]["sha256"]
+                  !=
+                  after[
+                      relative
+                  ]["sha256"]
+              ):
+
+                  changed.append(
+                      relative
+                  )
+
+
+          with result_file.open(
+              "r",
+              encoding="utf-8-sig",
+          ) as handle:
+
+              result = json.load(handle)
+
+
+          authorized = set()
+
+
+          for item in result.get(
+              "changed_files",
+              [],
+          ):
+
+              timeframe = str(
+                  item.get(
+                      "timeframe",
+                      ""
+                  )
+              ).strip()
+
+              market = str(
+                  item.get(
+                      "market",
+                      ""
+                  )
+              ).strip()
+
+              if timeframe and market:
+
+                  authorized.add(
+                      f"{timeframe}/{market}.csv"
+                  )
+
+
+          unexpected = (
+              set(changed)
+              - authorized
+          )
+
+
+          if unexpected:
+
+              print(
+                  "[FAIL] Unexpected changed files:"
+              )
+
+              for item in sorted(
+                  unexpected
+              )[:50]:
+
+                  print(
+                      "  ",
+                      item,
+                  )
+
+              raise SystemExit(1)
+
+
+          print(
+              "OHLCV files          : 870"
+          )
+
+          print(
+              "Changed files        :",
+              len(changed),
+          )
+
+          print(
+              "Authorized changes   :",
+              len(authorized),
+          )
+
+          print()
+
+          print(
+              "[PASS] No OHLCV file deleted."
+          )
+
+          print(
+              "[PASS] No OHLCV file count decreased."
+          )
+
+          print(
+              "[PASS] Only authorized recovery files changed."
+          )
+          '@ | Set-Content -Path "_validate_870_safety.py" -Encoding UTF8
+
+          py _validate_870_safety.py
+
+          $exitCode = $LASTEXITCODE
+
+          Remove-Item "_validate_870_safety.py" -Force -ErrorAction SilentlyContinue
+
+          if ($exitCode -ne 0) {
+
+              throw "870-file safety validation failed."
+
+          }
+
+
+      # ======================================================
+      # 21. VERIFY EXISTING CANDLE IMMUTABILITY
+      # ======================================================
+
+      - name: 21 - Verify existing candle immutability
+
+        run: |
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY EXISTING CANDLE IMMUTABILITY"
+          Write-Host "============================================================"
+
+          @'
+          import csv
+          import json
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+
+          production_root = Path(
+              "data/ohlcv"
+          )
+
+          isolated_root = Path(
+              "_second_pass_recovery_test/data/ohlcv"
+          )
+
+          result_file = Path(
+              "_second_pass_recovery_test"
+          ) / (
+              "data/reports/"
+              "history_gap_second_pass_recovery/"
+              "history_gap_second_pass_recovery_result.json"
+          )
+
+
+          timestamp_aliases = (
+              "candle_date_time_utc",
+              "timestamp",
+              "datetime",
+              "date_time",
+              "time",
+              "utc_time",
+          )
+
+
+          def clean(value):
+
+              if value is None:
+
+                  return ""
+
+              return str(value).strip()
+
+
+          def normalize(value):
+
+              text = clean(value).lower()
+
+              result = []
+
+              previous = False
+
+              for char in text:
+
+                  if char.isalnum():
+
+                      result.append(char)
+
+                      previous = False
+
+                  else:
+
+                      if not previous:
+
+                          result.append("_")
+
+                          previous = True
+
+              return "".join(
+                  result
+              ).strip("_")
+
+
+          def detect_timestamp(fieldnames):
+
+              mapping = {
+                  normalize(name):
+                  name
+                  for name in fieldnames
+              }
+
+              for alias in timestamp_aliases:
+
+                  key = normalize(alias)
+
+                  if key in mapping:
+
+                      return mapping[key]
+
+              raise RuntimeError(
+                  "Timestamp column not found."
+              )
+
+
+          def parse_datetime(value):
+
+              text = clean(value)
+
+              if not text:
+
+                  return None
+
+              if text.isdigit():
+
+                  number = int(text)
+
+                  if number > 10_000_000_000:
+
+                      return datetime.fromtimestamp(
+                          number / 1000.0,
+                          tz=timezone.utc,
+                      )
+
+                  return datetime.fromtimestamp(
+                      number,
+                      tz=timezone.utc,
+                  )
+
+              text = text.replace(
+                  "Z",
+                  "+00:00",
+              )
+
+              try:
+
+                  dt = datetime.fromisoformat(
+                      text
+                  )
+
+                  if dt.tzinfo is None:
+
+                      dt = dt.replace(
+                          tzinfo=timezone.utc
+                      )
+
+                  return dt.astimezone(
+                      timezone.utc
+                  )
+
+              except Exception:
+
+                  pass
+
+              try:
+
+                  dt = datetime.fromisoformat(
+                      text.replace(
+                          " ",
+                          "T",
+                      )
+                  )
+
+                  if dt.tzinfo is None:
+
+                      dt = dt.replace(
+                          tzinfo=timezone.utc
+                      )
+
+                  return dt.astimezone(
+                      timezone.utc
+                  )
+
+              except Exception:
+
+                  return None
+
+
+          def load_csv(path):
+
+              with path.open(
+                  "r",
+                  encoding="utf-8-sig",
+                  newline="",
+              ) as handle:
+
+                  reader = csv.DictReader(
+                      handle
+                  )
+
+                  fields = list(
+                      reader.fieldnames
+                      or []
+                  )
+
+                  rows = [
+                      {
+                          str(k):
+                          clean(v)
+                          for k, v
+                          in row.items()
+                          if k is not None
+                      }
+                      for row in reader
+                  ]
+
+              timestamp_column = (
+                  detect_timestamp(
+                      fields
+                  )
+              )
+
+              mapping = {}
+
+
+              for row in rows:
+
+                  dt = parse_datetime(
+                      row.get(
+                          timestamp_column,
+                          ""
+                      )
+                  )
+
+                  if dt is None:
+
+                      raise RuntimeError(
+                          f"Invalid timestamp: {path}"
+                      )
+
+                  key = int(
+                      dt.timestamp()
+                  )
+
+                  if key in mapping:
+
+                      raise RuntimeError(
+                          f"Duplicate timestamp: {path}"
+                      )
+
+                  mapping[key] = row
+
+
+              return (
+                  fields,
+                  mapping,
+              )
+
+
+          with result_file.open(
+              "r",
+              encoding="utf-8-sig",
+          ) as handle:
+
+              result = json.load(handle)
+
+
+          changed = result.get(
+              "changed_files",
+              [],
+          )
+
+
+          checked_files = 0
+
+          checked_existing_rows = 0
+
+
+          for item in changed:
+
+              timeframe = str(
+                  item.get(
+                      "timeframe",
+                      ""
+                  )
+              ).strip()
+
+              market = str(
+                  item.get(
+                      "market",
+                      ""
+                  )
+              ).strip()
+
+
+              before_path = (
+                  production_root
+                  / timeframe
+                  / f"{market}.csv"
+              )
+
+              after_path = (
+                  isolated_root
+                  / timeframe
+                  / f"{market}.csv"
+              )
+
+
+              if not before_path.is_file():
+
+                  raise SystemExit(
+                      "[FAIL] Production comparison file missing: "
+                      f"{before_path}"
+                  )
+
+
+              if not after_path.is_file():
+
+                  raise SystemExit(
+                      "[FAIL] Isolated comparison file missing: "
+                      f"{after_path}"
+                  )
+
+
+              before_fields, before_map = (
+                  load_csv(
+                      before_path
+                  )
+              )
+
+              after_fields, after_map = (
+                  load_csv(
+                      after_path
+                  )
+              )
+
+
+              if before_fields != after_fields:
+
+                  raise SystemExit(
+                      "[FAIL] Header changed: "
+                      f"{timeframe}/{market}"
+                  )
+
+
+              if not set(
+                  before_map
+              ).issubset(
+                  set(after_map)
+              ):
+
+                  raise SystemExit(
+                      "[FAIL] Existing timestamp disappeared: "
+                      f"{timeframe}/{market}"
+                  )
+
+
+              for timestamp in before_map:
+
+                  before_row = before_map[
+                      timestamp
+                  ]
+
+                  after_row = after_map[
+                      timestamp
+                  ]
+
+
+                  for field in before_fields:
+
+                      if (
+                          clean(
+                              before_row.get(
+                                  field,
+                                  ""
+                              )
+                          )
+                          !=
+                          clean(
+                              after_row.get(
+                                  field,
+                                  ""
+                              )
+                          )
+                      ):
+
+                          raise SystemExit(
+                              "[FAIL] Existing candle changed: "
+                              f"{timeframe}/{market} "
+                              f"timestamp={timestamp} "
+                              f"field={field}"
+                          )
+
+
+                  checked_existing_rows += 1
+
+
+              checked_files += 1
+
+
+          print(
+              "Changed files checked :",
+              checked_files,
+          )
+
+          print(
+              "Existing rows checked :",
+              checked_existing_rows,
+          )
+
+          print()
+
+          print(
+              "[PASS] Every pre-existing candle remained unchanged."
+          )
+          '@ | Set-Content -Path "_verify_existing_candles.py" -Encoding UTF8
+
+          py _verify_existing_candles.py
+
+          $exitCode = $LASTEXITCODE
+
+          Remove-Item "_verify_existing_candles.py" -Force -ErrorAction SilentlyContinue
+
+          if ($exitCode -ne 0) {
+
+              throw "Existing candle immutability validation failed."
+
+          }
+
+
+      # ======================================================
+      # 22. RECORD POST-FIRST-RUN HASH
+      # ======================================================
+
+      - name: 22 - Record isolated state before resume test
+
+        run: |
+
+          Write-Host "============================================================"
+          Write-Host "RECORD STATE BEFORE RESUME TEST"
+          Write-Host "============================================================"
+
+          @'
+          import csv
+          import hashlib
+          from pathlib import Path
+
+
+          root = Path(
+              "_second_pass_recovery_test/data/ohlcv"
+          )
+
+          output = Path(
+              "_isolated_before_resume.csv"
+          )
+
+
+          def sha256_file(path):
+
+              digest = hashlib.sha256()
+
+              with path.open("rb") as handle:
+
+                  while True:
+
+                      chunk = handle.read(
+                          1024 * 1024
+                      )
+
+                      if not chunk:
+
+                          break
+
+                      digest.update(chunk)
+
+              return digest.hexdigest()
+
+
+          rows = []
+
+
+          for path in sorted(
+              root.rglob("*.csv")
+          ):
+
+              rows.append(
+                  {
+                      "path":
+                          path.relative_to(
+                              root
+                          ).as_posix(),
+
+                      "sha256":
+                          sha256_file(path),
+                  }
+              )
+
+
+          if len(rows) != 870:
+
+              raise SystemExit(
+                  "[FAIL] Resume baseline expected 870 files."
+              )
+
+
+          with output.open(
+              "w",
+              encoding="utf-8-sig",
+              newline="",
+          ) as handle:
+
+              writer = csv.DictWriter(
+                  handle,
+                  fieldnames=(
+                      "path",
+                      "sha256",
+                  ),
+              )
+
+              writer.writeheader()
+
+              writer.writerows(rows)
+
+
+          print(
+              "[PASS] Resume baseline recorded."
+          )
+          '@ | Set-Content -Path "_record_resume_baseline.py" -Encoding UTF8
+
+          py _record_resume_baseline.py
+
+          $exitCode = $LASTEXITCODE
+
+          Remove-Item "_record_resume_baseline.py" -Force -ErrorAction SilentlyContinue
+
+          if ($exitCode -ne 0) {
+
+              throw "Resume baseline failed."
+
+          }
+
+
+      # ======================================================
+      # 23. SECOND EXECUTION / RESUME TEST
+      # ======================================================
+
+      - name: 23 - Execute recovery again for Resume test
+
+        run: |
+
+          Write-Host "============================================================"
+          Write-Host "SECOND EXECUTION / RESUME TEST"
+          Write-Host "============================================================"
+
+          Write-Host ""
+
+          Write-Host "The same isolated recovery is executed again."
+
+          Write-Host ""
+
+          Write-Host "Expected behavior:"
+          Write-Host "  - Actual OHLCV is re-read"
+          Write-Host "  - Completed gaps are not reinserted"
+          Write-Host "  - Existing candles remain unchanged"
+          Write-Host "  - No duplicate timestamps are created"
+
+          Write-Host ""
+
+          $testRoot = Join-Path $env:GITHUB_WORKSPACE $env:TEST_ROOT
+
+          Push-Location $testRoot
+
+          try {
+
+              py recover_history_gaps_second_pass.py
+
+              $exitCode = $LASTEXITCODE
+
+          }
+          finally {
+
+              Pop-Location
+
+          }
+
+          if ($exitCode -ne 0) {
+
+              throw "Resume execution failed with exit code $exitCode."
+
+          }
+
+          Write-Host ""
+
+          Write-Host "[PASS] Resume execution completed."
+
+
+      # ======================================================
+      # 24. RESUME IDEMPOTENCY
+      # ======================================================
+
+      - name: 24 - Validate Resume idempotency
+
+        run: |
+
+          Write-Host "============================================================"
+          Write-Host "VALIDATE RESUME IDEMPOTENCY"
+          Write-Host "============================================================"
+
+          @'
+          import csv
+          import hashlib
+          from pathlib import Path
+
+
+          root = Path(
+              "_second_pass_recovery_test/data/ohlcv"
+          )
+
+          baseline_file = Path(
+              "_isolated_before_resume.csv"
+          )
+
+
+          def sha256_file(path):
+
+              digest = hashlib.sha256()
+
+              with path.open("rb") as handle:
+
+                  while True:
+
+                      chunk = handle.read(
+                          1024 * 1024
+                      )
+
+                      if not chunk:
+
+                          break
+
+                      digest.update(chunk)
+
+              return digest.hexdigest()
+
+
+          baseline = {}
+
+
+          with baseline_file.open(
+              "r",
+              encoding="utf-8-sig",
+              newline="",
+          ) as handle:
+
+              reader = csv.DictReader(handle)
+
+              for row in reader:
+
+                  baseline[
+                      row["path"]
+                  ] = row[
+                      "sha256"
+                  ]
+
+
+          current = {}
+
+
+          for path in sorted(
+              root.rglob("*.csv")
+          ):
+
+              relative = path.relative_to(
+                  root
+              ).as_posix()
+
+              current[
+                  relative
+              ] = sha256_file(
+                  path
+              )
+
+
+          if len(baseline) != 870:
+
+              raise SystemExit(
+                  "[FAIL] Resume baseline is not 870 files."
+              )
+
+
+          if len(current) != 870:
+
+              raise SystemExit(
+                  "[FAIL] Resume current inventory is not 870 files."
+              )
+
+
+          if set(baseline) != set(current):
+
+              raise SystemExit(
+                  "[FAIL] File set changed during resume."
+              )
+
+
+          changed = []
+
+
+          for relative in sorted(
+              baseline
+          ):
+
+              if (
+                  baseline[relative]
+                  !=
+                  current[relative]
+              ):
+
+                  changed.append(
+                      relative
+                  )
+
+
+          if changed:
+
+              print(
+                  "[FAIL] Resume changed OHLCV files:"
+              )
+
+              for item in changed[:50]:
+
+                  print(
+                      "  ",
+                      item,
+                  )
+
+              raise SystemExit(1)
+
+
+          print(
+              "[PASS] Resume changed 0 OHLCV files."
+          )
+
+          print(
+              "[PASS] Resume is idempotent for completed recovery state."
+          )
+          '@ | Set-Content -Path "_validate_resume.py" -Encoding UTF8
+
+          py _validate_resume.py
+
+          $exitCode = $LASTEXITCODE
+
+          Remove-Item "_validate_resume.py" -Force -ErrorAction SilentlyContinue
+
+          if ($exitCode -ne 0) {
+
+              throw "Resume idempotency validation failed."
+
+          }
+
+
+      # ======================================================
+      # 25. DUPLICATE TIMESTAMP CHECK
+      # ======================================================
+
+      - name: 25 - Verify no duplicate timestamps in 870 isolated files
+
+        run: |
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY DUPLICATE TIMESTAMPS"
+          Write-Host "============================================================"
+
+          @'
+          import csv
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+
+          root = Path(
+              "_second_pass_recovery_test/data/ohlcv"
+          )
+
+
+          aliases = (
+              "candle_date_time_utc",
+              "timestamp",
+              "datetime",
+              "date_time",
+              "time",
+              "utc_time",
+          )
+
+
+          def clean(value):
+
+              if value is None:
+
+                  return ""
+
+              return str(value).strip()
+
+
+          def normalize(value):
+
+              text = clean(value).lower()
+
+              result = []
+
+              previous = False
+
+              for char in text:
+
+                  if char.isalnum():
+
+                      result.append(char)
+
+                      previous = False
+
+                  else:
+
+                      if not previous:
+
+                          result.append("_")
+
+                          previous = True
+
+              return "".join(
+                  result
+              ).strip("_")
+
+
+          checked_files = 0
+
+          checked_rows = 0
+
+
+          for path in sorted(
+              root.rglob("*.csv")
+          ):
+
+              with path.open(
+                  "r",
+                  encoding="utf-8-sig",
+                  newline="",
+              ) as handle:
+
+                  reader = csv.DictReader(handle)
+
+                  fields = list(
+                      reader.fieldnames
+                      or []
+                  )
+
+                  mapping = {
+                      normalize(name):
+                      name
+                      for name in fields
+                  }
+
+                  timestamp_column = None
+
+
+                  for alias in aliases:
+
+                      key = normalize(alias)
+
+                      if key in mapping:
+
+                          timestamp_column = mapping[
+                              key
+                          ]
+
+                          break
+
+
+                  if timestamp_column is None:
+
+                      raise SystemExit(
+                          "[FAIL] Timestamp column missing: "
+                          f"{path}"
+                      )
+
+
+                  seen = set()
+
+
+                  for row_number, row in enumerate(
+                      reader,
+                      start=2,
+                  ):
+
+                      value = clean(
+                          row.get(
+                              timestamp_column,
+                              ""
+                          )
+                      )
+
+                      if not value:
+
+                          raise SystemExit(
+                              "[FAIL] Empty timestamp: "
+                              f"{path}:{row_number}"
+                          )
+
+
+                      if value in seen:
+
+                          raise SystemExit(
+                              "[FAIL] Duplicate timestamp: "
+                              f"{path}:{row_number} "
+                              f"{value}"
+                          )
+
+
+                      seen.add(
+                          value
+                      )
+
+                      checked_rows += 1
+
+
+              checked_files += 1
+
+
+          if checked_files != 870:
+
+              raise SystemExit(
+                  f"[FAIL] Expected 870 files, "
+                  f"checked {checked_files}"
+              )
+
+
+          print(
+              "Files checked :",
+              checked_files,
+          )
+
+          print(
+              "Rows checked  :",
+              checked_rows,
+          )
+
+          print()
+
+          print(
+              "[PASS] No duplicate timestamps detected."
+          )
+          '@ | Set-Content -Path "_validate_duplicate_timestamps.py" -Encoding UTF8
+
+          py _validate_duplicate_timestamps.py
+
+          $exitCode = $LASTEXITCODE
+
+          Remove-Item "_validate_duplicate_timestamps.py" -Force -ErrorAction SilentlyContinue
+
+          if ($exitCode -ne 0) {
+
+              throw "Duplicate timestamp validation failed."
+
+          }
+
+
+      # ======================================================
+      # 26. PRODUCTION FINAL SHA256
+      # ======================================================
+
+      - name: 26 - Verify production OHLCV remained unchanged
+
+        run: |
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY PRODUCTION OHLCV REMAINED UNCHANGED"
+          Write-Host "============================================================"
+
+          @'
+          import csv
+          import hashlib
+          from pathlib import Path
+
+
+          root = Path(
+              "data/ohlcv"
+          )
+
+          baseline_file = Path(
+              "_production_ohlcv_before.csv"
+          )
+
+
+          def sha256_file(path):
+
+              digest = hashlib.sha256()
+
+              with path.open("rb") as handle:
+
+                  while True:
+
+                      chunk = handle.read(
+                          1024 * 1024
+                      )
+
+                      if not chunk:
+
+                          break
+
+                      digest.update(chunk)
+
+              return digest.hexdigest()
+
+
+          before = {}
+
+
+          with baseline_file.open(
+              "r",
+              encoding="utf-8-sig",
+              newline="",
+          ) as handle:
+
+              reader = csv.DictReader(handle)
+
+              for row in reader:
+
+                  before[
+                      row["path"]
+                  ] = row[
+                      "sha256"
+                  ]
+
+
+          after = {}
+
+
+          for path in sorted(
+              root.rglob("*.csv")
+          ):
+
+              after[
+                  path.as_posix()
+              ] = sha256_file(
+                  path
+              )
+
+
+          if len(before) != 870:
+
+              raise SystemExit(
+                  "[FAIL] Production BEFORE count is not 870."
+              )
+
+
+          if len(after) != 870:
+
+              raise SystemExit(
+                  "[FAIL] Production AFTER count is not 870."
+              )
+
+
+          if set(before) != set(after):
+
+              raise SystemExit(
+                  "[FAIL] Production OHLCV file set changed."
+              )
+
+
+          changed = []
+
+
+          for path in sorted(
+              before
+          ):
+
+              if (
+                  before[path]
+                  !=
+                  after[path]
+              ):
+
+                  changed.append(
+                      path
+                  )
+
+
+          if changed:
+
+              print(
+                  "[FAIL] PRODUCTION OHLCV WAS MODIFIED:"
+              )
+
+              for item in changed[:100]:
+
+                  print(
+                      "  ",
+                      item,
+                  )
+
+              raise SystemExit(1)
+
+
+          print(
+              "[PASS] Production OHLCV files : 870"
+          )
+
+          print(
+              "[PASS] Production changed files : 0"
+          )
+
+          print(
+              "[PASS] Every production SHA256 is unchanged."
+          )
+          '@ | Set-Content -Path "_verify_production_final.py" -Encoding UTF8
+
+          py _verify_production_final.py
+
+          $exitCode = $LASTEXITCODE
+
+          Remove-Item "_verify_production_final.py" -Force -ErrorAction SilentlyContinue
+
+          if ($exitCode -ne 0) {
+
+              throw "CRITICAL: Production OHLCV integrity validation failed."
+
+          }
+
+
+      # ======================================================
+      # 27. FINAL CHECKPOINT VALIDATION
+      # ======================================================
+
+      - name: 27 - Validate recovery checkpoint
+
+        run: |
+
+          Write-Host "============================================================"
+          Write-Host "VALIDATE RECOVERY CHECKPOINT"
+          Write-Host "============================================================"
+
+          @'
+          import json
+          from pathlib import Path
+
+
+          checkpoint_file = Path(
+              "_second_pass_recovery_test"
+          ) / (
+              "data/validation/"
+              "recover_history_gaps_second_pass_checkpoint.json"
+          )
+
+
+          with checkpoint_file.open(
+              "r",
+              encoding="utf-8-sig",
+          ) as handle:
+
+              checkpoint = json.load(handle)
+
+
+          if (
+              checkpoint.get(
+                  "program"
+              )
+              !=
+              "recover_history_gaps_second_pass.py"
+          ):
+
+              raise SystemExit(
+                  "[FAIL] Checkpoint program mismatch."
+              )
+
+
+          if (
+              checkpoint.get(
+                  "version"
+              )
+              !=
+              "Clean V001"
+          ):
+
+              raise SystemExit(
+                  "[FAIL] Checkpoint version mismatch."
+              )
+
+
+          if (
+              checkpoint.get(
+                  "status"
+              )
+              !=
+              "COMPLETED"
+          ):
+
+              raise SystemExit(
+                  "[FAIL] Checkpoint status is not COMPLETED."
+              )
+
+
+          if (
+              checkpoint.get(
+                  "completed"
+              )
+              is not True
+          ):
+
+              raise SystemExit(
+                  "[FAIL] Checkpoint completed flag is not true."
+              )
+
+
+          summary = checkpoint.get(
+              "summary",
+              {},
+          )
+
+
+          failed = int(
+              summary.get(
+                  "failed",
+                  0,
+              )
+              or 0
+          )
+
+
+          if failed > 0:
+
+              raise SystemExit(
+                  f"[FAIL] Checkpoint contains failed={failed}"
+              )
+
+
+          print(
+              "Checkpoint status :",
+              checkpoint.get(
+                  "status"
+              ),
+          )
+
+          print(
+              "Target total      :",
+              checkpoint.get(
+                  "target_total"
+              ),
+          )
+
+          print(
+              "Failed            :",
+              failed,
+          )
+
+          print()
+
+          print(
+              "[PASS] Recovery checkpoint valid."
+          )
+          '@ | Set-Content -Path "_validate_checkpoint.py" -Encoding UTF8
+
+          py _validate_checkpoint.py
+
+          $exitCode = $LASTEXITCODE
+
+          Remove-Item "_validate_checkpoint.py" -Force -ErrorAction SilentlyContinue
+
+          if ($exitCode -ne 0) {
+
+              throw "Checkpoint validation failed."
+
+          }
+
+
+      # ======================================================
+      # 28. FINAL TEST RESULT
+      # ======================================================
+
+      - name: 28 - Final test result
+
+        run: |
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "SECOND-PASS RECOVERY TEST RESULT"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          Write-Host "[PASS] recover_history_gaps_second_pass.py syntax"
+          Write-Host "[PASS] Planner target contract"
+          Write-Host "[PASS] Production OHLCV inventory = 870"
+          Write-Host "[PASS] Full isolated OHLCV copy = 870"
+          Write-Host "[PASS] Initial production/copy SHA256 match"
+          Write-Host "[PASS] Real Upbit API connectivity"
+          Write-Host "[PASS] Recovery executed only in isolated workspace"
+          Write-Host "[PASS] Existing candle immutability"
+          Write-Host "[PASS] No OHLCV file deletion"
+          Write-Host "[PASS] No OHLCV row-count decrease"
+          Write-Host "[PASS] Only authorized target files changed"
+          Write-Host "[PASS] Resume / checkpoint execution"
+          Write-Host "[PASS] Resume idempotency"
+          Write-Host "[PASS] No duplicate timestamps"
+          Write-Host "[PASS] Production OHLCV changed files = 0"
+          Write-Host "[PASS] Production 870 SHA256 preserved"
+          Write-Host ""
+
+          Write-Host "Safety:"
+          Write-Host ""
+          Write-Host "  Production OHLCV write  : FORBIDDEN"
+          Write-Host "  Production OHLCV delete : FORBIDDEN"
+          Write-Host "  Test-copy OHLCV write   : ENABLED"
+          Write-Host "  Real Upbit API          : ENABLED"
+          Write-Host "  Feature build           : DISABLED"
+          Write-Host "  256 Detector            : DISABLED"
+          Write-Host "  Future labels           : DISABLED"
+          Write-Host "  Prediction              : DISABLED"
+          Write-Host "  Trading                 : DISABLED"
+          Write-Host "  Git reset               : DISABLED"
+          Write-Host "  Git clean               : DISABLED"
+          Write-Host "  Git commit              : DISABLED"
+          Write-Host "  Git push                : DISABLED"
+          Write-Host ""
+
+          Write-Host "============================================================"
+          Write-Host "[PASS] Clean V001 TEST COMPLETED"
+          Write-Host "============================================================"
+          Write-Host ""
+          Write-Host "[NEXT]"
+          Write-Host "Review this workflow result."
+          Write-Host ""
+          Write-Host "Only after every step is green:"
+          Write-Host ""
+          Write-Host "  -> create actual second-pass recovery workflow"
+          Write-Host ""
+          Write-Host "DO NOT execute production recovery before this test passes."
+          Write-Host "============================================================"
+
+
+      # ======================================================
+      # 29. CLEANUP
+      # ======================================================
+
+      - name: 29 - Cleanup isolated test workspace
+
+        if: always()
+
+        run: |
+
+          Write-Host "============================================================"
+          Write-Host "CLEANUP ISOLATED TEST WORKSPACE"
+          Write-Host "============================================================"
+
+          $testRoot = Join-Path $env:GITHUB_WORKSPACE $env:TEST_ROOT
+
+          if (Test-Path $testRoot) {
+
+              Remove-Item `
+                  -Path $testRoot `
+                  -Recurse `
+                  -Force
+
+              Write-Host "[PASS] Isolated test directory removed."
+
+          }
+          else {
+
+              Write-Host "[INFO] Isolated test directory already absent."
+
+          }
+
+          Remove-Item `
+              "_production_ohlcv_before.csv" `
+              -Force `
+              -ErrorAction SilentlyContinue
+
+          Remove-Item `
+              "_isolated_before.csv" `
+              -Force `
+              -ErrorAction SilentlyContinue
+
+          Remove-Item `
+              "_isolated_before_resume.csv" `
+              -Force `
+              -ErrorAction SilentlyContinue
+
+          Remove-Item `
+              "_validate_*.py" `
+              -Force `
+              -ErrorAction SilentlyContinue
+
+          Remove-Item `
+              "_record_*.py" `
+              -Force `
+              -ErrorAction SilentlyContinue
+
+          Remove-Item `
+              "_verify_*.py" `
+              -Force `
+              -ErrorAction SilentlyContinue
+
+          Remove-Item `
+              "_test_upbit_api.py" `
+              -Force `
+              -ErrorAction SilentlyContinue
+
+          Write-Host ""
+
+          Write-Host "[PASS] Test cleanup completed."
+
+
+# ============================================================
+# END
+# ============================================================
