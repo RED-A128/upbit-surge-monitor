@@ -1,0 +1,1087 @@
+# ============================================================
+# Upbit Surge Monitor
+# audit_history_gap_recovery_test.yml
+# Clean V001
+# ============================================================
+#
+# PURPOSE
+# ------------------------------------------------------------
+# Test:
+#
+#   audit_history_gap_recovery.py - Clean V001
+#
+# This workflow verifies that the recovery auditor:
+#
+#   1. Runs successfully on the self-hosted Windows runner.
+#   2. Sees the expected 870 OHLCV files.
+#   3. Produces the required audit outputs.
+#   4. Produces a valid result JSON.
+#   5. Keeps all destructive / repair operations disabled.
+#   6. Does not modify any OHLCV source file.
+#   7. Does not delete any OHLCV source file.
+#   8. Does not add any OHLCV source file.
+#
+# IMPORTANT
+# ------------------------------------------------------------
+# This workflow does NOT:
+#
+#   - repair gaps
+#   - call the Upbit API
+#   - build features
+#   - run detectors
+#   - trade
+#   - git reset
+#   - git clean
+#   - git commit
+#   - git push
+#
+# ============================================================
+
+name: audit_history_gap_recovery_test.yml
+
+
+# ============================================================
+# 1. TRIGGER
+# ============================================================
+
+on:
+  workflow_dispatch:
+
+
+# ============================================================
+# 2. PERMISSIONS
+# ============================================================
+
+permissions:
+  contents: read
+
+
+# ============================================================
+# 3. CONCURRENCY
+# ============================================================
+#
+# Do not allow two copies of this audit test to run at the
+# same time on the same repository.
+#
+# cancel-in-progress is intentionally false.
+#
+# ============================================================
+
+concurrency:
+  group: audit-history-gap-recovery-test
+  cancel-in-progress: false
+
+
+# ============================================================
+# 4. JOBS
+# ============================================================
+
+jobs:
+
+  audit-history-gap-recovery-test:
+
+    # --------------------------------------------------------
+    # Self-hosted Windows runner
+    # --------------------------------------------------------
+
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+
+    timeout-minutes: 120
+
+
+    # ========================================================
+    # 5. STEPS
+    # ========================================================
+
+    steps:
+
+      # ======================================================
+      # STEP 1
+      # Checkout repository
+      # ======================================================
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+
+      # ======================================================
+      # STEP 2
+      # Show Python version
+      # ======================================================
+
+      - name: Show Python version
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "PYTHON VERSION"
+          Write-Host "============================================================"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Python launcher 'py' is not available."
+          }
+
+
+      # ======================================================
+      # STEP 3
+      # Verify audit script
+      # ======================================================
+
+      - name: Verify audit script exists
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY AUDIT SCRIPT"
+          Write-Host "============================================================"
+
+          $script = "audit_history_gap_recovery.py"
+
+          if (-not (Test-Path $script)) {
+              throw "Missing required script: $script"
+          }
+
+          Write-Host "[PASS] Found:"
+          Write-Host "       $script"
+
+
+      # ======================================================
+      # STEP 4
+      # Verify OHLCV inventory before audit
+      # ======================================================
+
+      - name: Verify OHLCV inventory before audit
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY OHLCV INVENTORY BEFORE AUDIT"
+          Write-Host "============================================================"
+
+          $h1Dir = "data\ohlcv\h1"
+          $h4Dir = "data\ohlcv\h4"
+          $d1Dir = "data\ohlcv\d1"
+
+          foreach ($dir in @($h1Dir, $h4Dir, $d1Dir)) {
+              if (-not (Test-Path $dir)) {
+                  throw "Missing OHLCV directory: $dir"
+              }
+          }
+
+          $h1 = @(
+              Get-ChildItem `
+                  -Path $h1Dir `
+                  -Filter "*.csv" `
+                  -File
+          )
+
+          $h4 = @(
+              Get-ChildItem `
+                  -Path $h4Dir `
+                  -Filter "*.csv" `
+                  -File
+          )
+
+          $d1 = @(
+              Get-ChildItem `
+                  -Path $d1Dir `
+                  -Filter "*.csv" `
+                  -File
+          )
+
+          $h1Count = $h1.Count
+          $h4Count = $h4.Count
+          $d1Count = $d1.Count
+
+          $total = (
+              $h1Count +
+              $h4Count +
+              $d1Count
+          )
+
+          Write-Host "H1 files : $h1Count"
+          Write-Host "H4 files : $h4Count"
+          Write-Host "D1 files : $d1Count"
+          Write-Host "Total    : $total"
+
+          if ($h1Count -ne 290) {
+              throw "Unexpected H1 file count: $h1Count"
+          }
+
+          if ($h4Count -ne 290) {
+              throw "Unexpected H4 file count: $h4Count"
+          }
+
+          if ($d1Count -ne 290) {
+              throw "Unexpected D1 file count: $d1Count"
+          }
+
+          if ($total -ne 870) {
+              throw "Unexpected total OHLCV file count: $total"
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] OHLCV inventory = 870 files."
+
+
+      # ======================================================
+      # STEP 5
+      # Create BEFORE OHLCV SHA256 manifest
+      # ======================================================
+      #
+      # The manifest itself is stored outside data/ohlcv.
+      #
+      # Every OHLCV CSV is represented by:
+      #
+      #   relative path
+      #   file size
+      #   SHA256
+      #
+      # ======================================================
+
+      - name: Create BEFORE OHLCV SHA256 manifest
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "CREATE BEFORE OHLCV SHA256 MANIFEST"
+          Write-Host "============================================================"
+
+          $validationDir = "data\validation"
+
+          New-Item `
+              -ItemType Directory `
+              -Force `
+              -Path $validationDir `
+              | Out-Null
+
+          $manifest = Join-Path `
+              $validationDir `
+              "audit_history_gap_recovery_ohlcv_before.sha256"
+
+          if (Test-Path $manifest) {
+              Remove-Item `
+                  -Force `
+                  $manifest
+          }
+
+          $root = (
+              Resolve-Path "data\ohlcv"
+          ).Path
+
+          $files = @(
+              Get-ChildItem `
+                  -Path $root `
+                  -Recurse `
+                  -Filter "*.csv" `
+                  -File `
+              | Sort-Object FullName
+          )
+
+          if ($files.Count -ne 870) {
+              throw "Cannot create BEFORE manifest. Expected 870 OHLCV files, found $($files.Count)."
+          }
+
+          $lines = foreach ($file in $files) {
+
+              $relative = (
+                  $file.FullName
+                  .Substring($root.Length)
+                  .TrimStart('\')
+                  .Replace('\', '/')
+              )
+
+              $hash = (
+                  Get-FileHash `
+                      -Path $file.FullName `
+                      -Algorithm SHA256
+              ).Hash.ToLowerInvariant()
+
+              "$relative|$($file.Length)|$hash"
+          }
+
+          [System.IO.File]::WriteAllLines(
+              (Join-Path (Get-Location) $manifest),
+              $lines,
+              [System.Text.UTF8Encoding]::new($false)
+          )
+
+          $manifestLines = @(
+              Get-Content $manifest
+          )
+
+          if ($manifestLines.Count -ne 870) {
+              throw "BEFORE manifest line count mismatch: $($manifestLines.Count)"
+          }
+
+          Write-Host "Manifest : $manifest"
+          Write-Host "Entries  : $($manifestLines.Count)"
+
+          Write-Host ""
+          Write-Host "[PASS] BEFORE OHLCV SHA256 manifest created."
+
+
+      # ======================================================
+      # STEP 6
+      # Remove only previous AUDIT outputs
+      # ======================================================
+      #
+      # IMPORTANT:
+      #
+      # We intentionally do NOT remove:
+      #
+      #   - OHLCV
+      #   - recovery source files
+      #   - PRE report
+      #   - POST report
+      #   - recovery checkpoints
+      #
+      # Only outputs owned by this audit program are cleared.
+      #
+      # The audit checkpoint is intentionally preserved so the
+      # script's resume/fingerprint logic remains testable.
+      #
+      # ======================================================
+
+      - name: Remove previous audit output files
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "REMOVE PREVIOUS AUDIT OUTPUT FILES"
+          Write-Host "============================================================"
+
+          $paths = @(
+              "data\reports\history_gap_recovery_audit\history_gap_recovery_audit_summary.csv",
+              "data\reports\history_gap_recovery_audit\history_gap_recovery_audit_detail.csv",
+              "data\reports\history_gap_recovery_audit\history_gap_recovery_audit_result.json",
+              "data\recovery\history_gap_recovery_retry_candidates.csv"
+          )
+
+          foreach ($path in $paths) {
+
+              if (Test-Path $path) {
+
+                  Remove-Item `
+                      -Force `
+                      $path
+
+                  Write-Host "[REMOVED] $path"
+
+              }
+              else {
+
+                  Write-Host "[NOT FOUND] $path"
+
+              }
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Previous audit-owned result files cleared."
+
+
+      # ======================================================
+      # STEP 7
+      # Run recovery audit
+      # ======================================================
+
+      - name: Run audit_history_gap_recovery.py
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "RUN HISTORY GAP RECOVERY AUDIT"
+          Write-Host "============================================================"
+
+          py audit_history_gap_recovery.py
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "audit_history_gap_recovery.py failed with exit code $LASTEXITCODE."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] audit_history_gap_recovery.py completed."
+
+
+      # ======================================================
+      # STEP 8
+      # Verify required output files
+      # ======================================================
+
+      - name: Verify audit output files
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY AUDIT OUTPUT FILES"
+          Write-Host "============================================================"
+
+          $required = @(
+              "data\reports\history_gap_recovery_audit\history_gap_recovery_audit_summary.csv",
+              "data\reports\history_gap_recovery_audit\history_gap_recovery_audit_detail.csv",
+              "data\reports\history_gap_recovery_audit\history_gap_recovery_audit_result.json",
+              "data\recovery\history_gap_recovery_retry_candidates.csv",
+              "data\validation\audit_history_gap_recovery_checkpoint.json"
+          )
+
+          foreach ($path in $required) {
+
+              if (-not (Test-Path $path)) {
+                  throw "Missing required audit output: $path"
+              }
+
+              $item = Get-Item $path
+
+              if ($item.Length -le 0) {
+                  throw "Audit output is empty: $path"
+              }
+
+              Write-Host "[PASS] $path"
+              Write-Host "       bytes=$($item.Length)"
+          }
+
+
+      # ======================================================
+      # STEP 9
+      # Validate audit result JSON
+      # ======================================================
+
+      - name: Validate audit result JSON
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VALIDATE AUDIT RESULT JSON"
+          Write-Host "============================================================"
+
+          $resultPath = "data\reports\history_gap_recovery_audit\history_gap_recovery_audit_result.json"
+
+          if (-not (Test-Path $resultPath)) {
+              throw "Missing result JSON: $resultPath"
+          }
+
+          $result = (
+              Get-Content `
+                  -Raw `
+                  -Path $resultPath
+              | ConvertFrom-Json
+          )
+
+          if ($null -eq $result) {
+              throw "Unable to parse audit result JSON."
+          }
+
+          Write-Host "Program        : $($result.program)"
+          Write-Host "Version        : $($result.version)"
+          Write-Host "Execution mode : $($result.execution_mode)"
+
+          if (
+              $result.program `
+              -ne "audit_history_gap_recovery.py"
+          ) {
+              throw "Unexpected program value: $($result.program)"
+          }
+
+          if (
+              $result.version `
+              -ne "Clean V001"
+          ) {
+              throw "Unexpected version value: $($result.version)"
+          }
+
+          if (
+              $result.execution_mode `
+              -ne "READ_ONLY_RECOVERY_AUDIT"
+          ) {
+              throw "Unexpected execution mode: $($result.execution_mode)"
+          }
+
+          if ($null -eq $result.ohlcv_inventory) {
+              throw "Missing ohlcv_inventory section."
+          }
+
+          $h1 = [int]$result.ohlcv_inventory.h1
+          $h4 = [int]$result.ohlcv_inventory.h4
+          $d1 = [int]$result.ohlcv_inventory.d1
+          $total = [int]$result.ohlcv_inventory.total
+
+          Write-Host ""
+          Write-Host "H1    : $h1"
+          Write-Host "H4    : $h4"
+          Write-Host "D1    : $d1"
+          Write-Host "Total : $total"
+
+          if ($h1 -ne 290) {
+              throw "Result JSON H1 count mismatch: $h1"
+          }
+
+          if ($h4 -ne 290) {
+              throw "Result JSON H4 count mismatch: $h4"
+          }
+
+          if ($d1 -ne 290) {
+              throw "Result JSON D1 count mismatch: $d1"
+          }
+
+          if ($total -ne 870) {
+              throw "Result JSON total OHLCV count mismatch: $total"
+          }
+
+          if ($null -eq $result.recovery) {
+              throw "Missing recovery section."
+          }
+
+          if ($null -eq $result.evidence) {
+              throw "Missing evidence section."
+          }
+
+          if ($null -eq $result.pre_post_report) {
+              throw "Missing pre_post_report section."
+          }
+
+          if ($null -eq $result.decision) {
+              throw "Missing decision section."
+          }
+
+          if ($null -eq $result.safety) {
+              throw "Missing safety section."
+          }
+
+          Write-Host ""
+          Write-Host "Recovery target jobs       : $($result.recovery.target_jobs)"
+          Write-Host "Attempted jobs             : $($result.recovery.attempted_jobs)"
+          Write-Host "Verified recovered jobs    : $($result.recovery.verified_recovered_jobs)"
+          Write-Host "Partially recovered jobs   : $($result.recovery.partially_recovered_jobs)"
+          Write-Host "Unchanged jobs             : $($result.recovery.unchanged_jobs)"
+          Write-Host "Not attempted jobs         : $($result.recovery.not_attempted_jobs)"
+          Write-Host "API not found jobs         : $($result.recovery.api_not_found_jobs)"
+          Write-Host "Attempted not written jobs : $($result.recovery.attempted_not_written_jobs)"
+          Write-Host "Insufficient evidence      : $($result.recovery.insufficient_evidence_jobs)"
+
+          Write-Host ""
+          Write-Host "Retry candidates           : $($result.decision.retry_candidates)"
+          Write-Host "Manual review              : $($result.decision.manual_review)"
+
+          Write-Host ""
+          Write-Host "PRE/POST SHA256 equal      : $($result.pre_post_report.pre_post_sha256_equal)"
+          Write-Host "POST report suspect        : $($result.pre_post_report.post_report_suspect)"
+
+          Write-Host ""
+          Write-Host "[PASS] Audit result JSON structure is valid."
+
+
+      # ======================================================
+      # STEP 10
+      # Verify safety flags
+      # ======================================================
+
+      - name: Verify all safety flags are disabled
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY AUDIT SAFETY FLAGS"
+          Write-Host "============================================================"
+
+          $resultPath = "data\reports\history_gap_recovery_audit\history_gap_recovery_audit_result.json"
+
+          $result = (
+              Get-Content `
+                  -Raw `
+                  -Path $resultPath
+              | ConvertFrom-Json
+          )
+
+          $requiredFalse = @(
+              "ohlcv_write",
+              "ohlcv_delete",
+              "api_download",
+              "gap_repair",
+              "feature_build",
+              "detector_256",
+              "future_labels",
+              "prediction",
+              "trading",
+              "git_reset",
+              "git_clean",
+              "git_commit",
+              "git_push"
+          )
+
+          foreach ($name in $requiredFalse) {
+
+              $property = (
+                  $result.safety.PSObject.Properties[$name]
+              )
+
+              if ($null -eq $property) {
+                  throw "Missing safety flag: $name"
+              }
+
+              $value = [bool]$property.Value
+
+              Write-Host "$name = $value"
+
+              if ($value -ne $false) {
+                  throw "Unsafe audit configuration detected: $name=$value"
+              }
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] All audit safety flags are disabled."
+
+
+      # ======================================================
+      # STEP 11
+      # Validate audit checkpoint
+      # ======================================================
+
+      - name: Validate audit checkpoint
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VALIDATE AUDIT CHECKPOINT"
+          Write-Host "============================================================"
+
+          $checkpointPath = "data\validation\audit_history_gap_recovery_checkpoint.json"
+
+          if (-not (Test-Path $checkpointPath)) {
+              throw "Missing audit checkpoint: $checkpointPath"
+          }
+
+          $checkpoint = (
+              Get-Content `
+                  -Raw `
+                  -Path $checkpointPath
+              | ConvertFrom-Json
+          )
+
+          if ($null -eq $checkpoint) {
+              throw "Unable to parse audit checkpoint."
+          }
+
+          if (
+              $checkpoint.program `
+              -ne "audit_history_gap_recovery.py"
+          ) {
+              throw "Unexpected checkpoint program: $($checkpoint.program)"
+          }
+
+          if (
+              $checkpoint.version `
+              -ne "Clean V001"
+          ) {
+              throw "Unexpected checkpoint version: $($checkpoint.version)"
+          }
+
+          if (
+              $checkpoint.execution_mode `
+              -ne "READ_ONLY_RECOVERY_AUDIT"
+          ) {
+              throw "Unexpected checkpoint execution mode: $($checkpoint.execution_mode)"
+          }
+
+          if (
+              [string]::IsNullOrWhiteSpace(
+                  [string]$checkpoint.input_fingerprint
+              )
+          ) {
+              throw "Checkpoint input_fingerprint is missing."
+          }
+
+          if ($checkpoint.complete -ne $true) {
+              throw "Audit checkpoint is not marked complete."
+          }
+
+          $processedCount = (
+              [int]$checkpoint.processed_job_count
+          )
+
+          $processedJobs = @(
+              $checkpoint.processed_jobs
+          )
+
+          Write-Host "Complete            : $($checkpoint.complete)"
+          Write-Host "Processed job count : $processedCount"
+          Write-Host "Processed jobs      : $($processedJobs.Count)"
+
+          if (
+              $processedCount `
+              -ne $processedJobs.Count
+          ) {
+              throw "Checkpoint processed job count mismatch."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Audit checkpoint is structurally valid."
+
+
+      # ======================================================
+      # STEP 12
+      # Validate detail / retry CSV headers
+      # ======================================================
+
+      - name: Validate audit CSV outputs
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VALIDATE AUDIT CSV OUTPUTS"
+          Write-Host "============================================================"
+
+          $detailPath = "data\reports\history_gap_recovery_audit\history_gap_recovery_audit_detail.csv"
+          $retryPath = "data\recovery\history_gap_recovery_retry_candidates.csv"
+          $summaryPath = "data\reports\history_gap_recovery_audit\history_gap_recovery_audit_summary.csv"
+
+          $detail = @(
+              Import-Csv $detailPath
+          )
+
+          $retry = @(
+              Import-Csv $retryPath
+          )
+
+          $summary = @(
+              Import-Csv $summaryPath
+          )
+
+          Write-Host "Detail rows : $($detail.Count)"
+          Write-Host "Retry rows  : $($retry.Count)"
+          Write-Host "Summary rows: $($summary.Count)"
+
+          if ($summary.Count -le 0) {
+              throw "Audit summary CSV contains no rows."
+          }
+
+          $detailHeader = (
+              Get-Content `
+                  -Path $detailPath `
+                  -TotalCount 1
+          )
+
+          $requiredDetailColumns = @(
+              "market",
+              "timeframe",
+              "classification",
+              "retry_candidate",
+              "manual_review",
+              "targeted",
+              "attempted",
+              "api_found",
+              "written",
+              "verified"
+          )
+
+          foreach ($column in $requiredDetailColumns) {
+
+              if (
+                  $detailHeader `
+                  -notmatch "(^|,)$column(,|$)"
+              ) {
+                  throw "Missing detail CSV column: $column"
+              }
+          }
+
+          $retryHeader = (
+              Get-Content `
+                  -Path $retryPath `
+                  -TotalCount 1
+          )
+
+          foreach ($column in $requiredDetailColumns) {
+
+              if (
+                  $retryHeader `
+                  -notmatch "(^|,)$column(,|$)"
+              ) {
+                  throw "Missing retry CSV column: $column"
+              }
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Audit CSV outputs are structurally valid."
+
+
+      # ======================================================
+      # STEP 13
+      # Create AFTER OHLCV SHA256 manifest
+      # ======================================================
+
+      - name: Create AFTER OHLCV SHA256 manifest
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "CREATE AFTER OHLCV SHA256 MANIFEST"
+          Write-Host "============================================================"
+
+          $validationDir = "data\validation"
+
+          $manifest = Join-Path `
+              $validationDir `
+              "audit_history_gap_recovery_ohlcv_after.sha256"
+
+          if (Test-Path $manifest) {
+              Remove-Item `
+                  -Force `
+                  $manifest
+          }
+
+          $root = (
+              Resolve-Path "data\ohlcv"
+          ).Path
+
+          $files = @(
+              Get-ChildItem `
+                  -Path $root `
+                  -Recurse `
+                  -Filter "*.csv" `
+                  -File `
+              | Sort-Object FullName
+          )
+
+          if ($files.Count -ne 870) {
+              throw "Cannot create AFTER manifest. Expected 870 OHLCV files, found $($files.Count)."
+          }
+
+          $lines = foreach ($file in $files) {
+
+              $relative = (
+                  $file.FullName
+                  .Substring($root.Length)
+                  .TrimStart('\')
+                  .Replace('\', '/')
+              )
+
+              $hash = (
+                  Get-FileHash `
+                      -Path $file.FullName `
+                      -Algorithm SHA256
+              ).Hash.ToLowerInvariant()
+
+              "$relative|$($file.Length)|$hash"
+          }
+
+          [System.IO.File]::WriteAllLines(
+              (Join-Path (Get-Location) $manifest),
+              $lines,
+              [System.Text.UTF8Encoding]::new($false)
+          )
+
+          $manifestLines = @(
+              Get-Content $manifest
+          )
+
+          if ($manifestLines.Count -ne 870) {
+              throw "AFTER manifest line count mismatch: $($manifestLines.Count)"
+          }
+
+          Write-Host "Manifest : $manifest"
+          Write-Host "Entries  : $($manifestLines.Count)"
+
+          Write-Host ""
+          Write-Host "[PASS] AFTER OHLCV SHA256 manifest created."
+
+
+      # ======================================================
+      # STEP 14
+      # Verify OHLCV remained unchanged
+      # ======================================================
+      #
+      # This is the most important safety test.
+      #
+      # BEFORE and AFTER manifests must match exactly.
+      #
+      # ======================================================
+
+      - name: Verify all OHLCV files remained unchanged
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY OHLCV FILES REMAINED UNCHANGED"
+          Write-Host "============================================================"
+
+          $beforePath = "data\validation\audit_history_gap_recovery_ohlcv_before.sha256"
+          $afterPath = "data\validation\audit_history_gap_recovery_ohlcv_after.sha256"
+
+          if (-not (Test-Path $beforePath)) {
+              throw "Missing BEFORE manifest."
+          }
+
+          if (-not (Test-Path $afterPath)) {
+              throw "Missing AFTER manifest."
+          }
+
+          $before = @(
+              Get-Content $beforePath
+          )
+
+          $after = @(
+              Get-Content $afterPath
+          )
+
+          Write-Host "BEFORE entries : $($before.Count)"
+          Write-Host "AFTER entries  : $($after.Count)"
+
+          if ($before.Count -ne 870) {
+              throw "BEFORE manifest does not contain 870 entries."
+          }
+
+          if ($after.Count -ne 870) {
+              throw "AFTER manifest does not contain 870 entries."
+          }
+
+          $difference = @(
+              Compare-Object `
+                  -ReferenceObject $before `
+                  -DifferenceObject $after
+          )
+
+          if ($difference.Count -gt 0) {
+
+              Write-Host ""
+              Write-Host "OHLCV MANIFEST DIFFERENCES:"
+              Write-Host ""
+
+              $difference |
+                  Format-Table |
+                  Out-String |
+                  Write-Host
+
+              throw "OHLCV files changed during READ ONLY audit."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] All 870 OHLCV files remained byte-for-byte unchanged."
+
+
+      # ======================================================
+      # STEP 15
+      # Verify final OHLCV inventory
+      # ======================================================
+
+      - name: Verify final OHLCV inventory
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY FINAL OHLCV INVENTORY"
+          Write-Host "============================================================"
+
+          $h1 = @(
+              Get-ChildItem `
+                  -Path "data\ohlcv\h1" `
+                  -Filter "*.csv" `
+                  -File
+          )
+
+          $h4 = @(
+              Get-ChildItem `
+                  -Path "data\ohlcv\h4" `
+                  -Filter "*.csv" `
+                  -File
+          )
+
+          $d1 = @(
+              Get-ChildItem `
+                  -Path "data\ohlcv\d1" `
+                  -Filter "*.csv" `
+                  -File
+          )
+
+          $total = (
+              $h1.Count +
+              $h4.Count +
+              $d1.Count
+          )
+
+          Write-Host "H1 files : $($h1.Count)"
+          Write-Host "H4 files : $($h4.Count)"
+          Write-Host "D1 files : $($d1.Count)"
+          Write-Host "Total    : $total"
+
+          if ($h1.Count -ne 290) {
+              throw "Final H1 count mismatch."
+          }
+
+          if ($h4.Count -ne 290) {
+              throw "Final H4 count mismatch."
+          }
+
+          if ($d1.Count -ne 290) {
+              throw "Final D1 count mismatch."
+          }
+
+          if ($total -ne 870) {
+              throw "Final total OHLCV count mismatch."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Final OHLCV inventory remains 870 files."
+
+
+      # ======================================================
+      # STEP 16
+      # Final test summary
+      # ======================================================
+
+      - name: Final test summary
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "UPBIT SURGE MONITOR"
+          Write-Host "HISTORY GAP RECOVERY AUDIT TEST"
+          Write-Host "Clean V001"
+          Write-Host "============================================================"
+
+          Write-Host ""
+          Write-Host "[PASS] audit_history_gap_recovery.py executed successfully."
+          Write-Host "[PASS] Audit result JSON validated."
+          Write-Host "[PASS] Audit checkpoint validated."
+          Write-Host "[PASS] Audit CSV outputs validated."
+          Write-Host "[PASS] All safety flags are disabled."
+          Write-Host "[PASS] OHLCV inventory remained 870 files."
+          Write-Host "[PASS] OHLCV SHA256 BEFORE/AFTER manifests are identical."
+
+          Write-Host ""
+          Write-Host "Safety:"
+          Write-Host "  OHLCV write      : DISABLED"
+          Write-Host "  OHLCV delete     : DISABLED"
+          Write-Host "  API download     : DISABLED"
+          Write-Host "  Gap repair       : DISABLED"
+          Write-Host "  Feature build    : DISABLED"
+          Write-Host "  256 Detector     : DISABLED"
+          Write-Host "  Prediction       : DISABLED"
+          Write-Host "  Trading          : DISABLED"
+          Write-Host "  Git reset        : DISABLED"
+          Write-Host "  Git clean        : DISABLED"
+          Write-Host "  Git commit       : DISABLED"
+          Write-Host "  Git push         : DISABLED"
+
+          Write-Host ""
+          Write-Host "[SUCCESS] audit_history_gap_recovery_test.yml completed."
+          Write-Host "============================================================"
