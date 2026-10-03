@@ -3,7 +3,7 @@
 #
 # .github/workflows/recover_history_gaps_second_pass_test.yml
 #
-# Clean V004
+# Clean V005
 # ============================================================
 #
 # PURPOSE
@@ -105,7 +105,10 @@ jobs:
       PYTHONUNBUFFERED: "1"
       TEST_ROOT: "_second_pass_recovery_test"
       LOCAL_PROJECT_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+      LOCAL_DATA_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor\data'
       LOCAL_PRODUCTION_OHLCV: 'C:\Users\USER\Documents\upbit-surge-monitor\data\ohlcv'
+      LOCAL_AUDIT_REPORT_DIR: 'C:\Users\USER\Documents\upbit-surge-monitor\data\reports\history_gap_recovery_audit'
+      LOCAL_RETRY_CANDIDATE_FILE: 'C:\Users\USER\Documents\upbit-surge-monitor\data\recovery\history_gap_recovery_retry_candidates.csv'
       EXPECTED_MARKETS: "290"
       EXPECTED_TIMEFRAMES: "3"
       EXPECTED_OHLCV_FILES: "870"
@@ -123,7 +126,7 @@ jobs:
           Write-Host "============================================================"
           Write-Host "UPBIT SURGE MONITOR"
           Write-Host "SECOND-PASS RECOVERY TEST"
-          Write-Host "Clean V004"
+          Write-Host "Clean V005"
           Write-Host "============================================================"
           Write-Host ""
           Write-Host "Repository:"
@@ -719,7 +722,94 @@ jobs:
       # ======================================================
       # 09. GENERATE PLANNER OUTPUTS
       # ======================================================
-      - name: 09 - Generate second-pass planner outputs
+      # ======================================================
+      # 09. VALIDATE PERSISTENT AUDIT INPUTS
+      # ======================================================
+      - name: 09 - Validate persistent audit inputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VALIDATE PERSISTENT AUDIT INPUTS"
+          Write-Host "============================================================"
+
+          $required = @(
+              $env:LOCAL_RETRY_CANDIDATE_FILE,
+              (Join-Path $env:LOCAL_AUDIT_REPORT_DIR "history_gap_recovery_audit_summary.csv"),
+              (Join-Path $env:LOCAL_AUDIT_REPORT_DIR "history_gap_recovery_audit_detail.csv"),
+              (Join-Path $env:LOCAL_AUDIT_REPORT_DIR "history_gap_recovery_audit_result.json")
+          )
+
+          foreach ($path in $required) {
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                  throw "Required persistent audit input missing: $path"
+              }
+              $item = Get-Item -LiteralPath $path
+              if ($item.Length -le 0) {
+                  throw "Required persistent audit input is empty: $path"
+              }
+              Write-Host "[PASS] $path ($($item.Length) bytes)"
+          }
+
+          py -c "import csv,sys; p=sys.argv[1]; rows=list(csv.DictReader(open(p,encoding='utf-8-sig',newline=''))); assert rows, 'retry candidate CSV has no data rows'; print('[PASS] retry candidate rows:',len(rows))" "$env:LOCAL_RETRY_CANDIDATE_FILE"
+          if ($LASTEXITCODE -ne 0) {
+              throw "Retry candidate CSV validation failed."
+          }
+
+          $jsonPath = Join-Path $env:LOCAL_AUDIT_REPORT_DIR "history_gap_recovery_audit_result.json"
+          py -c "import json,sys; json.load(open(sys.argv[1],encoding='utf-8-sig')); print('[PASS] audit result JSON parsed')" "$jsonPath"
+          if ($LASTEXITCODE -ne 0) {
+              throw "Audit result JSON validation failed."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] All four persistent planner audit inputs are present and readable."
+
+      # ======================================================
+      # 10. SYNC PERSISTENT AUDIT INPUTS INTO WORKSPACE
+      # ======================================================
+      - name: 10 - Safely synchronize persistent audit inputs into workspace
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "SYNC PERSISTENT AUDIT INPUTS INTO WORKSPACE"
+          Write-Host "============================================================"
+
+          $workspaceRecovery = Join-Path $env:GITHUB_WORKSPACE "data\recovery"
+          $workspaceAudit = Join-Path $env:GITHUB_WORKSPACE "data\reports\history_gap_recovery_audit"
+
+          New-Item -ItemType Directory -Force -Path $workspaceRecovery | Out-Null
+          New-Item -ItemType Directory -Force -Path $workspaceAudit | Out-Null
+
+          $pairs = @(
+              @($env:LOCAL_RETRY_CANDIDATE_FILE, (Join-Path $workspaceRecovery "history_gap_recovery_retry_candidates.csv")),
+              @((Join-Path $env:LOCAL_AUDIT_REPORT_DIR "history_gap_recovery_audit_summary.csv"), (Join-Path $workspaceAudit "history_gap_recovery_audit_summary.csv")),
+              @((Join-Path $env:LOCAL_AUDIT_REPORT_DIR "history_gap_recovery_audit_detail.csv"), (Join-Path $workspaceAudit "history_gap_recovery_audit_detail.csv")),
+              @((Join-Path $env:LOCAL_AUDIT_REPORT_DIR "history_gap_recovery_audit_result.json"), (Join-Path $workspaceAudit "history_gap_recovery_audit_result.json"))
+          )
+
+          foreach ($pair in $pairs) {
+              $src = $pair[0]
+              $dst = $pair[1]
+              Copy-Item -LiteralPath $src -Destination $dst -Force
+
+              $srcHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $src).Hash
+              $dstHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $dst).Hash
+
+              if ($srcHash -ne $dstHash) {
+                  throw "Audit input SHA256 mismatch after synchronization: $dst"
+              }
+              Write-Host "[PASS] SHA256 identical: $dst"
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Persistent audit inputs synchronized into current workspace."
+
+      # ======================================================
+      # 11. GENERATE SECOND-PASS PLANNER OUTPUTS
+      # ======================================================
+      - name: 11 - Generate second-pass planner outputs
         run: |
           Write-Host "============================================================"
           Write-Host "GENERATE SECOND-PASS PLANNER OUTPUTS"
@@ -3556,14 +3646,14 @@ jobs:
           Write-Host ""
           Write-Host "[PASS] No unexpected Git-visible changes."
       # ======================================================
-      # 41. FINAL CLEAN V004 SAFETY REPORT
+      # 41. FINAL CLEAN V005 SAFETY REPORT
       # ======================================================
-      - name: 41 - Final Clean V004 safety report
+      - name: 41 - Final Clean V005 safety report
         run: |
           Write-Host ""
           Write-Host "============================================================"
           Write-Host "RECOVER HISTORY GAPS SECOND PASS TEST"
-          Write-Host "CLEAN V004 - FINAL SAFETY REPORT"
+          Write-Host "CLEAN V005 - FINAL SAFETY REPORT"
           Write-Host "============================================================"
           Write-Host ""
           Write-Host "[PASS] Python environment verified."
@@ -3608,7 +3698,7 @@ jobs:
           Write-Host "  recovery writes permitted"
           Write-Host ""
           Write-Host "============================================================"
-          Write-Host "CLEAN V004 TEST PASSED"
+          Write-Host "CLEAN V005 TEST PASSED"
           Write-Host "============================================================"
           Write-Host ""
           Write-Host "IMPORTANT:"
@@ -3621,7 +3711,7 @@ jobs:
       # ======================================================
       # 42. UPLOAD TEST EVIDENCE
       # ======================================================
-      - name: 42 - Upload Clean V004 test evidence
+      - name: 42 - Upload Clean V005 test evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -3646,7 +3736,7 @@ jobs:
           Write-Host ""
           Write-Host "============================================================"
           Write-Host "recover_history_gaps_second_pass_test.yml"
-          Write-Host "Clean V004"
+          Write-Host "Clean V005"
           Write-Host "SUCCESS"
           Write-Host "============================================================"
           Write-Host ""
