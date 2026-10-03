@@ -860,6 +860,7 @@ jobs:
 
       # ======================================================
       # 10. SYNC PERSISTENT AUDIT INPUTS INTO WORKSPACE
+      # Clean V007
       # ======================================================
 
       - name: 10 - Safely synchronize persistent audit inputs into workspace
@@ -868,113 +869,130 @@ jobs:
 
           Write-Host "============================================================"
           Write-Host "SYNC PERSISTENT AUDIT INPUTS INTO WORKSPACE"
+          Write-Host "Clean V007"
           Write-Host "============================================================"
 
-          $workspaceRecovery = Join-Path `
-              $env:GITHUB_WORKSPACE `
-              "data\recovery"
+          $workspaceRecovery = Join-Path $env:GITHUB_WORKSPACE "data\recovery"
+          $workspaceAudit = Join-Path $env:GITHUB_WORKSPACE "data\reports\history_gap_recovery_audit"
 
-          $workspaceAudit = Join-Path `
-              $env:GITHUB_WORKSPACE `
-              "data\reports\history_gap_recovery_audit"
-
-          New-Item `
-              -ItemType Directory `
-              -Force `
-              -Path $workspaceRecovery `
-              | Out-Null
-
-          New-Item `
-              -ItemType Directory `
-              -Force `
-              -Path $workspaceAudit `
-              | Out-Null
+          New-Item -ItemType Directory -Force -Path $workspaceRecovery | Out-Null
+          New-Item -ItemType Directory -Force -Path $workspaceAudit | Out-Null
 
           $pairs = @(
-
-              @(
-                  $env:LOCAL_RETRY_CANDIDATE_FILE,
-                  (
-                      Join-Path `
-                          $workspaceRecovery `
-                          "history_gap_recovery_retry_candidates.csv"
-                  )
-              ),
-
-              @(
-                  (
-                      Join-Path `
-                          $env:LOCAL_AUDIT_REPORT_DIR `
-                          "history_gap_recovery_audit_summary.csv"
-                  ),
-                  (
-                      Join-Path `
-                          $workspaceAudit `
-                          "history_gap_recovery_audit_summary.csv"
-                  )
-              ),
-
-              @(
-                  (
-                      Join-Path `
-                          $env:LOCAL_AUDIT_REPORT_DIR `
-                          "history_gap_recovery_audit_detail.csv"
-                  ),
-                  (
-                      Join-Path `
-                          $workspaceAudit `
-                          "history_gap_recovery_audit_detail.csv"
-                  )
-              ),
-
-              @(
-                  (
-                      Join-Path `
-                          $env:LOCAL_AUDIT_REPORT_DIR `
-                          "history_gap_recovery_audit_result.json"
-                  ),
-                  (
-                      Join-Path `
-                          $workspaceAudit `
-                          "history_gap_recovery_audit_result.json"
-                  )
-              )
+              @{
+                  Source = $env:LOCAL_RETRY_CANDIDATE_FILE
+                  Destination = Join-Path $workspaceRecovery "history_gap_recovery_retry_candidates.csv"
+              },
+              @{
+                  Source = Join-Path $env:LOCAL_AUDIT_REPORT_DIR "history_gap_recovery_audit_summary.csv"
+                  Destination = Join-Path $workspaceAudit "history_gap_recovery_audit_summary.csv"
+              },
+              @{
+                  Source = Join-Path $env:LOCAL_AUDIT_REPORT_DIR "history_gap_recovery_audit_detail.csv"
+                  Destination = Join-Path $workspaceAudit "history_gap_recovery_audit_detail.csv"
+              },
+              @{
+                  Source = Join-Path $env:LOCAL_AUDIT_REPORT_DIR "history_gap_recovery_audit_result.json"
+                  Destination = Join-Path $workspaceAudit "history_gap_recovery_audit_result.json"
+              }
           )
+
+          if ($pairs.Count -ne 4) {
+              throw "Expected exactly 4 persistent audit input pairs, found $($pairs.Count)."
+          }
 
           foreach ($pair in $pairs) {
 
-              $src = $pair[0]
-              $dst = $pair[1]
+              $src = $pair.Source
+              $dst = $pair.Destination
 
-              Copy-Item `
-                  -LiteralPath $src `
-                  -Destination $dst `
-                  -Force
+              if ([string]::IsNullOrWhiteSpace($src)) {
+                  throw "Audit input source path is empty."
+              }
 
-              $srcHash = (
-                  Get-FileHash `
-                      -Algorithm SHA256 `
-                      -LiteralPath $src
-              ).Hash
+              if ([string]::IsNullOrWhiteSpace($dst)) {
+                  throw "Audit input destination path is empty."
+              }
 
-              $dstHash = (
-                  Get-FileHash `
-                      -Algorithm SHA256 `
-                      -LiteralPath $dst
-              ).Hash
+              if (-not (Test-Path -LiteralPath $src -PathType Leaf)) {
+                  throw "Audit input source missing before synchronization: $src"
+              }
 
-              if (
-                  $srcHash
-                  -ne
-                  $dstHash
-              ) {
+              $sourceItem = Get-Item -LiteralPath $src
+
+              if ($sourceItem.Length -le 0) {
+                  throw "Audit input source is empty before synchronization: $src"
+              }
+
+              $destinationDirectory = Split-Path -Parent $dst
+
+              if (-not (Test-Path -LiteralPath $destinationDirectory -PathType Container)) {
+                  New-Item -ItemType Directory -Force -Path $destinationDirectory | Out-Null
+              }
+
+              Copy-Item -LiteralPath $src -Destination $dst -Force
+
+              if (-not (Test-Path -LiteralPath $dst -PathType Leaf)) {
+                  throw "Audit input destination missing after synchronization: $dst"
+              }
+
+              $destinationItem = Get-Item -LiteralPath $dst
+
+              if ($destinationItem.Length -ne $sourceItem.Length) {
+                  throw "Audit input size mismatch after synchronization: $dst"
+              }
+
+              $srcHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $src).Hash
+              $dstHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $dst).Hash
+
+              if ($srcHash -ne $dstHash) {
                   throw "Audit input SHA256 mismatch after synchronization: $dst"
               }
 
+              Write-Host "[PASS] synchronized: $dst"
+              Write-Host "[PASS] size identical: $($sourceItem.Length) bytes"
               Write-Host "[PASS] SHA256 identical: $dst"
           }
 
+          $workspaceRetryCandidate = Join-Path $workspaceRecovery "history_gap_recovery_retry_candidates.csv"
+          $workspaceAuditSummary = Join-Path $workspaceAudit "history_gap_recovery_audit_summary.csv"
+          $workspaceAuditDetail = Join-Path $workspaceAudit "history_gap_recovery_audit_detail.csv"
+          $workspaceAuditResult = Join-Path $workspaceAudit "history_gap_recovery_audit_result.json"
+
+          $requiredWorkspaceInputs = @(
+              $workspaceRetryCandidate,
+              $workspaceAuditSummary,
+              $workspaceAuditDetail,
+              $workspaceAuditResult
+          )
+
+          foreach ($path in $requiredWorkspaceInputs) {
+
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                  throw "Required workspace audit input missing after synchronization: $path"
+              }
+
+              if ((Get-Item -LiteralPath $path).Length -le 0) {
+                  throw "Required workspace audit input empty after synchronization: $path"
+              }
+          }
+
+          py -c "import csv,sys; p=sys.argv[1]; f=open(p,encoding='utf-8-sig',newline=''); r=csv.DictReader(f); fields=list(r.fieldnames or []); rows=list(r); f.close(); assert fields, 'retry candidate CSV header is missing'; print('[PASS] workspace retry candidate CSV parsed'); print('[INFO] retry candidate columns:',len(fields)); print('[INFO] retry candidate rows:',len(rows)); print('[INFO] zero retry candidates is a valid audit result' if len(rows)==0 else '[PASS] retry candidates available')" "$workspaceRetryCandidate"
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Workspace retry candidate CSV validation failed."
+          }
+
+          py -c "import json,sys; p=sys.argv[1]; data=json.load(open(p,encoding='utf-8-sig')); assert isinstance(data,dict), 'audit result JSON root must be object'; print('[PASS] workspace audit result JSON parsed')" "$workspaceAuditResult"
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Workspace audit result JSON validation failed."
+          }
+
           Write-Host ""
+          Write-Host "[PASS] 4/4 persistent audit inputs synchronized."
+          Write-Host "[PASS] 4/4 source/destination SHA256 values identical."
+          Write-Host "[PASS] Retry candidate zero-row result remains valid."
           Write-Host "[PASS] Persistent audit inputs synchronized into current workspace."
 
 
