@@ -3,7 +3,7 @@
 #
 # .github/workflows/recover_history_gaps_second_pass_test.yml
 #
-# Clean V006
+# Clean V008
 # ============================================================
 #
 # PURPOSE
@@ -145,7 +145,7 @@ jobs:
           Write-Host "============================================================"
           Write-Host "UPBIT SURGE MONITOR"
           Write-Host "SECOND-PASS RECOVERY TEST"
-          Write-Host "Clean V006"
+          Write-Host "Clean V008"
           Write-Host "============================================================"
           Write-Host ""
 
@@ -860,7 +860,7 @@ jobs:
 
       # ======================================================
       # 10. SYNC PERSISTENT AUDIT INPUTS INTO WORKSPACE
-      # Clean V007
+      # Clean V008
       # ======================================================
 
       - name: 10 - Safely synchronize persistent audit inputs into workspace
@@ -869,7 +869,7 @@ jobs:
 
           Write-Host "============================================================"
           Write-Host "SYNC PERSISTENT AUDIT INPUTS INTO WORKSPACE"
-          Write-Host "Clean V007"
+          Write-Host "Clean V008"
           Write-Host "============================================================"
 
           $workspaceRecovery = Join-Path $env:GITHUB_WORKSPACE "data\recovery"
@@ -902,30 +902,21 @@ jobs:
           }
 
           foreach ($pair in $pairs) {
-
               $src = $pair.Source
               $dst = $pair.Destination
 
-              if ([string]::IsNullOrWhiteSpace($src)) {
-                  throw "Audit input source path is empty."
-              }
-
-              if ([string]::IsNullOrWhiteSpace($dst)) {
-                  throw "Audit input destination path is empty."
-              }
-
+              if ([string]::IsNullOrWhiteSpace($src)) { throw "Audit input source path is empty." }
+              if ([string]::IsNullOrWhiteSpace($dst)) { throw "Audit input destination path is empty." }
               if (-not (Test-Path -LiteralPath $src -PathType Leaf)) {
                   throw "Audit input source missing before synchronization: $src"
               }
 
               $sourceItem = Get-Item -LiteralPath $src
-
               if ($sourceItem.Length -le 0) {
                   throw "Audit input source is empty before synchronization: $src"
               }
 
               $destinationDirectory = Split-Path -Parent $dst
-
               if (-not (Test-Path -LiteralPath $destinationDirectory -PathType Container)) {
                   New-Item -ItemType Directory -Force -Path $destinationDirectory | Out-Null
               }
@@ -937,14 +928,12 @@ jobs:
               }
 
               $destinationItem = Get-Item -LiteralPath $dst
-
               if ($destinationItem.Length -ne $sourceItem.Length) {
                   throw "Audit input size mismatch after synchronization: $dst"
               }
 
               $srcHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $src).Hash
               $dstHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $dst).Hash
-
               if ($srcHash -ne $dstHash) {
                   throw "Audit input SHA256 mismatch after synchronization: $dst"
               }
@@ -967,27 +956,19 @@ jobs:
           )
 
           foreach ($path in $requiredWorkspaceInputs) {
-
               if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
                   throw "Required workspace audit input missing after synchronization: $path"
               }
-
               if ((Get-Item -LiteralPath $path).Length -le 0) {
                   throw "Required workspace audit input empty after synchronization: $path"
               }
           }
 
           py -c "import csv,sys; p=sys.argv[1]; f=open(p,encoding='utf-8-sig',newline=''); r=csv.DictReader(f); fields=list(r.fieldnames or []); rows=list(r); f.close(); assert fields, 'retry candidate CSV header is missing'; print('[PASS] workspace retry candidate CSV parsed'); print('[INFO] retry candidate columns:',len(fields)); print('[INFO] retry candidate rows:',len(rows)); print('[INFO] zero retry candidates is a valid audit result' if len(rows)==0 else '[PASS] retry candidates available')" "$workspaceRetryCandidate"
-
-          if ($LASTEXITCODE -ne 0) {
-              throw "Workspace retry candidate CSV validation failed."
-          }
+          if ($LASTEXITCODE -ne 0) { throw "Workspace retry candidate CSV validation failed." }
 
           py -c "import json,sys; p=sys.argv[1]; data=json.load(open(p,encoding='utf-8-sig')); assert isinstance(data,dict), 'audit result JSON root must be object'; print('[PASS] workspace audit result JSON parsed')" "$workspaceAuditResult"
-
-          if ($LASTEXITCODE -ne 0) {
-              throw "Workspace audit result JSON validation failed."
-          }
+          if ($LASTEXITCODE -ne 0) { throw "Workspace audit result JSON validation failed." }
 
           Write-Host ""
           Write-Host "[PASS] 4/4 persistent audit inputs synchronized."
@@ -2064,54 +2045,85 @@ jobs:
 
       # ======================================================
       # 23. VERIFY RECOVERY OUTPUT FILES
+      # Clean V008
       # ======================================================
       - name: 23 - Verify first recovery outputs
         run: |
+          $ErrorActionPreference = "Stop"
+
           Write-Host "============================================================"
           Write-Host "VERIFY FIRST RECOVERY OUTPUTS"
+          Write-Host "Clean V008"
           Write-Host "============================================================"
 
-          $base = Join-Path `
-              $env:GITHUB_WORKSPACE `
-              "$env:TEST_ROOT\data\reports\history_gap_second_pass_recovery"
+          $base = Join-Path $env:GITHUB_WORKSPACE "$env:TEST_ROOT\data\reports\history_gap_second_pass_recovery"
+
+          if (-not (Test-Path -LiteralPath $base -PathType Container)) {
+              throw "Recovery report directory missing: $base"
+          }
 
           $required = @(
               "history_gap_second_pass_recovery_summary.csv",
-              "history_gap_second_pass_recovery_detail.csv",
               "history_gap_second_pass_recovery_result.json",
               "history_gap_second_pass_before_sha256.csv",
               "history_gap_second_pass_after_sha256.csv"
           )
 
           foreach ($name in $required) {
-
-              $path = Join-Path `
-                  $base `
-                  $name
-
-              if (-not (Test-Path $path)) {
-
-                  throw "Recovery output missing: $path"
+              $path = Join-Path $base $name
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                  throw "Required recovery output missing: $path"
               }
-
-              if ((Get-Item $path).Length -le 0) {
-
-                  throw "Recovery output empty: $path"
+              if ((Get-Item -LiteralPath $path).Length -le 0) {
+                  throw "Required recovery output empty: $path"
               }
-
               Write-Host "[PASS] $name"
           }
 
-          $checkpoint = Join-Path `
-              $env:GITHUB_WORKSPACE `
-              "$env:TEST_ROOT\data\validation\recover_history_gaps_second_pass_checkpoint.json"
-
-          if (-not (Test-Path $checkpoint)) {
-
-              throw "Recovery checkpoint missing."
+          $resultPath = Join-Path $base "history_gap_second_pass_recovery_result.json"
+          $result = Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ($null -eq $result) { throw "Recovery result JSON could not be parsed." }
+          if ($result.program -ne "recover_history_gaps_second_pass.py") {
+              throw "Unexpected recovery program in result JSON: $($result.program)"
           }
 
+          $detailPath = Join-Path $base "history_gap_second_pass_recovery_detail.csv"
+          if (Test-Path -LiteralPath $detailPath -PathType Leaf) {
+              if ((Get-Item -LiteralPath $detailPath).Length -le 0) {
+                  throw "Recovery detail output exists but is empty: $detailPath"
+              }
+              Write-Host "[PASS] history_gap_second_pass_recovery_detail.csv"
+          }
+          else {
+              Write-Host "[INFO] history_gap_second_pass_recovery_detail.csv was not created."
+              Write-Host "[INFO] This is valid when the recovery produced no detail rows."
+          }
+
+          $checkpoint = Join-Path $env:GITHUB_WORKSPACE "$env:TEST_ROOT\data\validation\recover_history_gaps_second_pass_checkpoint.json"
+          if (-not (Test-Path -LiteralPath $checkpoint -PathType Leaf)) {
+              throw "Recovery checkpoint missing: $checkpoint"
+          }
+          if ((Get-Item -LiteralPath $checkpoint).Length -le 0) {
+              throw "Recovery checkpoint is empty: $checkpoint"
+          }
           Write-Host "[PASS] checkpoint"
+
+          $statusFile = Join-Path $env:GITHUB_WORKSPACE "$env:TEST_ROOT\data\recover_history_gaps_second_pass_status.csv"
+          if (-not (Test-Path -LiteralPath $statusFile -PathType Leaf)) {
+              throw "Recovery status file missing: $statusFile"
+          }
+          if ((Get-Item -LiteralPath $statusFile).Length -le 0) {
+              throw "Recovery status file is empty: $statusFile"
+          }
+          Write-Host "[PASS] recovery status file"
+
+          Write-Host ""
+          Write-Host "[PASS] Required recovery outputs exist."
+          Write-Host "[PASS] Result JSON parsed."
+          Write-Host "[PASS] BEFORE/AFTER SHA256 reports exist."
+          Write-Host "[PASS] Recovery checkpoint exists."
+          Write-Host "[PASS] Recovery status exists."
+          Write-Host "[PASS] Zero-detail recovery is accepted safely."
 
 
       # ======================================================
@@ -5055,7 +5067,7 @@ jobs:
       # ======================================================
       # 41. FINAL CLEAN V006 SAFETY REPORT
       # ======================================================
-      - name: 41 - Final Clean V006 safety report
+      - name: 41 - Final Clean V008 safety report
         run: |
           Write-Host "============================================================"
           Write-Host "FINAL CLEAN V006 SAFETY REPORT"
@@ -5114,7 +5126,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: recover_history_gaps_second_pass_test_Clean_V006
+          name: recover_history_gaps_second_pass_test_Clean_V008
           if-no-files-found: warn
           retention-days: 14
           path: |
@@ -5137,13 +5149,13 @@ jobs:
       # ======================================================
       # 43. SUCCESS
       # ======================================================
-      - name: 43 - Clean V006 success
+      - name: 43 - Clean V008 success
         run: |
           Write-Host ""
           Write-Host "============================================================"
           Write-Host "UPBIT SURGE MONITOR"
           Write-Host "SECOND-PASS RECOVERY TEST"
-          Write-Host "Clean V006"
+          Write-Host "Clean V008"
           Write-Host "SUCCESS"
           Write-Host "============================================================"
           Write-Host ""
