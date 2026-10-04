@@ -3,49 +3,44 @@
 #
 # .github/workflows/recover_history_gaps_second_pass.yml
 #
-# Clean V002
+# Clean V003
 # ============================================================
 #
 # PURPOSE
 #
 #   Execute REAL production second-pass historical gap recovery.
 #
-#   Production project:
+# PRODUCTION ROOT
 #
-#     C:\Users\USER\Documents\upbit-surge-monitor
+#   C:\Users\USER\Documents\upbit-surge-monitor
 #
-#   Production OHLCV:
+# PRODUCTION OHLCV
 #
-#     C:\Users\USER\Documents\upbit-surge-monitor\data\ohlcv
-#
-#
-# CLEAN V002 FIX
-#
-#   Clean V001 incorrectly executed:
-#
-#     GITHUB_WORKSPACE\plan_history_gap_retry.py
-#
-#   plan_history_gap_retry.py determines PROJECT_ROOT from
-#   Path(__file__).resolve().parent.
-#
-#   Therefore the planner searched:
-#
-#     actions-runner\_work\...\data\ohlcv
-#
-#   instead of:
-#
-#     C:\Users\USER\Documents\upbit-surge-monitor\data\ohlcv
+#   C:\Users\USER\Documents\upbit-surge-monitor\data\ohlcv
 #
 #
-#   Clean V002:
+# CLEAN V003 FIX
 #
-#     1. Verifies production Python programs exist.
-#     2. Verifies workspace and production program SHA256 match.
-#     3. Executes the Python programs FROM production root.
-#     4. Uses the production copies of:
+#   Clean V002 expected these source files to already exist
+#   inside LOCAL_PROJECT_ROOT:
 #
-#          plan_history_gap_retry.py
-#          recover_history_gaps_second_pass.py
+#     plan_history_gap_retry.py
+#     recover_history_gaps_second_pass.py
+#
+#   That assumption was incorrect.
+#
+#   Clean V003:
+#
+#     1. Checkout latest GitHub source.
+#     2. Validate workspace Python source.
+#     3. Safely synchronize ONLY the two required Python
+#        programs into LOCAL_PROJECT_ROOT.
+#     4. Verify workspace <-> production SHA256.
+#     5. Never synchronize data/.
+#     6. Never overwrite/delete production OHLCV during sync.
+#     7. Execute planner from LOCAL_PROJECT_ROOT.
+#     8. Execute recovery from LOCAL_PROJECT_ROOT.
+#     9. Verify existing candles remain unchanged.
 #
 #
 # SAFETY CONTRACT
@@ -143,7 +138,7 @@ jobs:
           Write-Host "============================================================"
           Write-Host "UPBIT SURGE MONITOR"
           Write-Host "PRODUCTION SECOND-PASS RECOVERY"
-          Write-Host "Clean V002"
+          Write-Host "Clean V003"
           Write-Host "============================================================"
           Write-Host ""
 
@@ -166,15 +161,21 @@ jobs:
 
           Write-Host ""
           Write-Host "------------------------------------------------------------"
-          Write-Host "CLEAN V002 PATH FIX"
+          Write-Host "CLEAN V003 SOURCE SYNCHRONIZATION"
           Write-Host "------------------------------------------------------------"
 
-          Write-Host "Planner will execute from:"
-          Write-Host "  $env:LOCAL_PROJECT_ROOT\plan_history_gap_retry.py"
+          Write-Host "GitHub source:"
+          Write-Host "  plan_history_gap_retry.py"
+          Write-Host "  recover_history_gaps_second_pass.py"
 
           Write-Host ""
-          Write-Host "Recovery will execute from:"
+          Write-Host "Production execution copies:"
+          Write-Host "  $env:LOCAL_PROJECT_ROOT\plan_history_gap_retry.py"
           Write-Host "  $env:LOCAL_PROJECT_ROOT\recover_history_gaps_second_pass.py"
+
+          Write-Host ""
+          Write-Host "Only these two Python programs may be synchronized."
+          Write-Host "Production data/ is NEVER synchronized from workspace."
 
           Write-Host ""
           Write-Host "------------------------------------------------------------"
@@ -255,12 +256,16 @@ jobs:
 
 
       # ======================================================
-      # 05. VERIFY WORKSPACE SOURCE PROGRAMS
+      # 05. VERIFY WORKSPACE SOURCE
       # ======================================================
 
       - name: 05 - Verify workspace source programs
         run: |
           $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY WORKSPACE SOURCE PROGRAMS"
+          Write-Host "============================================================"
 
           $required = @(
               "plan_history_gap_retry.py",
@@ -281,19 +286,27 @@ jobs:
                   throw "Workspace source program empty: $path"
               }
 
-              Write-Host "[PASS] Workspace source: $path"
+              Write-Host "[PASS] $path"
           }
 
-          py -m py_compile plan_history_gap_retry.py
+          Push-Location $env:GITHUB_WORKSPACE
 
-          if ($LASTEXITCODE -ne 0) {
-              throw "Planner Python syntax validation failed."
+          try {
+
+              py -m py_compile ".\plan_history_gap_retry.py"
+
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Planner Python syntax validation failed."
+              }
+
+              py -m py_compile ".\recover_history_gaps_second_pass.py"
+
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Recovery Python syntax validation failed."
+              }
           }
-
-          py -m py_compile recover_history_gaps_second_pass.py
-
-          if ($LASTEXITCODE -ne 0) {
-              throw "Recovery Python syntax validation failed."
+          finally {
+              Pop-Location
           }
 
           Write-Host ""
@@ -301,15 +314,266 @@ jobs:
 
 
       # ======================================================
-      # 06. VERIFY PRODUCTION SOURCE PROGRAMS
+      # 06. VERIFY PRODUCTION ROOT BEFORE SOURCE SYNC
       # ======================================================
 
-      - name: 06 - Verify production source programs and SHA256
+      - name: 06 - Verify production root before source synchronization
         run: |
           $ErrorActionPreference = "Stop"
 
           Write-Host "============================================================"
-          Write-Host "VERIFY PRODUCTION PROGRAMS"
+          Write-Host "VERIFY PRODUCTION ROOT"
+          Write-Host "============================================================"
+
+          if (-not (Test-Path -LiteralPath $env:LOCAL_PROJECT_ROOT -PathType Container)) {
+              throw "Production project root missing: $env:LOCAL_PROJECT_ROOT"
+          }
+
+          if (-not (Test-Path -LiteralPath $env:LOCAL_DATA_ROOT -PathType Container)) {
+              throw "Production data root missing: $env:LOCAL_DATA_ROOT"
+          }
+
+          if (-not (Test-Path -LiteralPath $env:LOCAL_PRODUCTION_OHLCV -PathType Container)) {
+              throw "Production OHLCV root missing: $env:LOCAL_PRODUCTION_OHLCV"
+          }
+
+          foreach ($timeframe in @("h1", "h4", "d1")) {
+
+              $path = Join-Path `
+                  $env:LOCAL_PRODUCTION_OHLCV `
+                  $timeframe
+
+              if (-not (Test-Path -LiteralPath $path -PathType Container)) {
+                  throw "Production OHLCV timeframe missing: $path"
+              }
+
+              Write-Host "[PASS] $path"
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Production root valid."
+          Write-Host "[PASS] Production data root valid."
+          Write-Host "[PASS] Production OHLCV root valid."
+
+
+      # ======================================================
+      # 07. RECORD OHLCV BEFORE SOURCE SYNC
+      #
+      # Source synchronization must NEVER modify OHLCV.
+      # ======================================================
+
+      - name: 07 - Record production OHLCV SHA256 before source synchronization
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          @'
+          import csv
+          import hashlib
+          import os
+          from pathlib import Path
+
+
+          root = Path(os.environ["LOCAL_PRODUCTION_OHLCV"])
+          expected_markets = int(os.environ["EXPECTED_MARKETS"])
+          expected_total = int(os.environ["EXPECTED_OHLCV_FILES"])
+
+          timeframes = ("h1", "h4", "d1")
+
+
+          def sha256_file(path):
+              digest = hashlib.sha256()
+
+              with path.open("rb") as handle:
+                  while True:
+                      chunk = handle.read(1024 * 1024)
+
+                      if not chunk:
+                          break
+
+                      digest.update(chunk)
+
+              return digest.hexdigest()
+
+
+          rows = []
+          market_sets = {}
+
+
+          for timeframe in timeframes:
+
+              directory = root / timeframe
+
+              if not directory.is_dir():
+                  raise SystemExit(
+                      f"[FAIL] Missing production OHLCV directory: {directory}"
+                  )
+
+              files = sorted(directory.glob("*.csv"))
+
+              print(f"{timeframe}: {len(files)} files")
+
+              if len(files) != expected_markets:
+                  raise SystemExit(
+                      f"[FAIL] {timeframe}: expected "
+                      f"{expected_markets}, found {len(files)}"
+                  )
+
+              market_sets[timeframe] = {
+                  path.stem.upper()
+                  for path in files
+              }
+
+              for path in files:
+
+                  rows.append(
+                      {
+                          "relative_path":
+                              path.relative_to(root).as_posix(),
+
+                          "size":
+                              path.stat().st_size,
+
+                          "sha256":
+                              sha256_file(path),
+                      }
+                  )
+
+
+          if len(rows) != expected_total:
+              raise SystemExit(
+                  f"[FAIL] Expected {expected_total} files, "
+                  f"found {len(rows)}"
+              )
+
+
+          reference = market_sets["h1"]
+
+          for timeframe in ("h4", "d1"):
+
+              if market_sets[timeframe] != reference:
+                  raise SystemExit(
+                      f"[FAIL] Market set mismatch: {timeframe}"
+                  )
+
+
+          output = Path("_source_sync_before_ohlcv_sha256.csv")
+
+          with output.open(
+              "w",
+              encoding="utf-8-sig",
+              newline="",
+          ) as handle:
+
+              writer = csv.DictWriter(
+                  handle,
+                  fieldnames=(
+                      "relative_path",
+                      "size",
+                      "sha256",
+                  ),
+              )
+
+              writer.writeheader()
+              writer.writerows(rows)
+
+
+          print()
+          print("[PASS] Production OHLCV inventory = 870.")
+          print("[PASS] Source-sync BEFORE SHA256 = 870/870.")
+          '@ | Set-Content `
+              -LiteralPath "_source_sync_before.py" `
+              -Encoding UTF8
+
+          py _source_sync_before.py
+
+          $exitCode = $LASTEXITCODE
+
+          Remove-Item `
+              -LiteralPath "_source_sync_before.py" `
+              -Force `
+              -ErrorAction SilentlyContinue
+
+          if ($exitCode -ne 0) {
+              throw "Source synchronization BEFORE snapshot failed."
+          }
+
+
+      # ======================================================
+      # 08. SYNCHRONIZE ONLY REQUIRED PYTHON PROGRAMS
+      #
+      # IMPORTANT:
+      #
+      #   DO NOT copy directories.
+      #   DO NOT copy data/.
+      #   DO NOT use robocopy /MIR.
+      #   DO NOT remove production files.
+      #
+      # ======================================================
+
+      - name: 08 - Safely synchronize production execution programs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "SAFE SOURCE SYNCHRONIZATION"
+          Write-Host "Clean V003"
+          Write-Host "============================================================"
+
+          $programs = @(
+              "plan_history_gap_retry.py",
+              "recover_history_gaps_second_pass.py"
+          )
+
+          foreach ($file in $programs) {
+
+              $source = Join-Path `
+                  $env:GITHUB_WORKSPACE `
+                  $file
+
+              $destination = Join-Path `
+                  $env:LOCAL_PROJECT_ROOT `
+                  $file
+
+              if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+                  throw "Workspace source missing: $source"
+              }
+
+              Write-Host ""
+              Write-Host "Synchronizing:"
+              Write-Host "  FROM: $source"
+              Write-Host "  TO  : $destination"
+
+              Copy-Item `
+                  -LiteralPath $source `
+                  -Destination $destination `
+                  -Force
+
+              if (-not (Test-Path -LiteralPath $destination -PathType Leaf)) {
+                  throw "Production execution copy missing after sync: $destination"
+              }
+
+              if ((Get-Item -LiteralPath $destination).Length -le 0) {
+                  throw "Production execution copy empty after sync: $destination"
+              }
+
+              Write-Host "[PASS] Source synchronized."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Only required Python programs synchronized."
+          Write-Host "[PASS] data/ was not copied."
+
+
+      # ======================================================
+      # 09. VERIFY SOURCE SHA256
+      # ======================================================
+
+      - name: 09 - Verify workspace and production source SHA256
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "VERIFY SOURCE SHA256"
           Write-Host "============================================================"
 
           $programs = @(
@@ -327,16 +591,6 @@ jobs:
                   $env:LOCAL_PROJECT_ROOT `
                   $file
 
-              if (-not (Test-Path -LiteralPath $productionPath -PathType Leaf)) {
-
-                  throw "Production source program missing: $productionPath"
-              }
-
-              if ((Get-Item -LiteralPath $productionPath).Length -le 0) {
-
-                  throw "Production source program empty: $productionPath"
-              }
-
               $workspaceHash = (
                   Get-FileHash `
                       -LiteralPath $workspacePath `
@@ -350,98 +604,169 @@ jobs:
               ).Hash
 
               Write-Host ""
-              Write-Host "Program:"
-              Write-Host "  $file"
-
-              Write-Host "Workspace SHA256:"
-              Write-Host "  $workspaceHash"
-
-              Write-Host "Production SHA256:"
-              Write-Host "  $productionHash"
+              Write-Host "$file"
+              Write-Host "Workspace  : $workspaceHash"
+              Write-Host "Production : $productionHash"
 
               if ($workspaceHash -ne $productionHash) {
-
-                  throw "Workspace/production program SHA256 mismatch: $file"
+                  throw "Workspace/production SHA256 mismatch: $file"
               }
 
-              Write-Host "[PASS] Workspace/production SHA256 identical."
+              Write-Host "[PASS] SHA256 identical."
           }
 
           Write-Host ""
-          Write-Host "[PASS] Production programs are synchronized."
+          Write-Host "[PASS] Production execution source = GitHub source."
 
 
       # ======================================================
-      # 07. VERIFY PRODUCTION ROOT CONTRACT
+      # 10. VERIFY OHLCV UNCHANGED BY SOURCE SYNC
       # ======================================================
 
-      - name: 07 - Verify production root contract
+      - name: 10 - Verify source synchronization did not modify OHLCV
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          @'
+          import csv
+          import hashlib
+          import os
+          from pathlib import Path
+
+
+          root = Path(os.environ["LOCAL_PRODUCTION_OHLCV"])
+          baseline = Path("_source_sync_before_ohlcv_sha256.csv")
+
+
+          def sha256_file(path):
+              digest = hashlib.sha256()
+
+              with path.open("rb") as handle:
+                  while True:
+                      chunk = handle.read(1024 * 1024)
+
+                      if not chunk:
+                          break
+
+                      digest.update(chunk)
+
+              return digest.hexdigest()
+
+
+          with baseline.open(
+              "r",
+              encoding="utf-8-sig",
+              newline="",
+          ) as handle:
+
+              rows = list(csv.DictReader(handle))
+
+
+          if len(rows) != 870:
+              raise SystemExit(
+                  f"[FAIL] Source-sync baseline expected 870, "
+                  f"found {len(rows)}"
+              )
+
+
+          checked = 0
+
+
+          for row in rows:
+
+              relative = row["relative_path"]
+              expected_hash = row["sha256"]
+
+              path = root / Path(relative)
+
+              if not path.is_file():
+                  raise SystemExit(
+                      f"[FAIL] OHLCV disappeared during source sync: {relative}"
+                  )
+
+              current_hash = sha256_file(path)
+
+              if current_hash != expected_hash:
+                  raise SystemExit(
+                      f"[FAIL] OHLCV changed during source sync: {relative}"
+                  )
+
+              checked += 1
+
+
+          current_files = list(root.glob("*/*.csv"))
+
+          if len(current_files) != 870:
+              raise SystemExit(
+                  f"[FAIL] OHLCV inventory changed during source sync: "
+                  f"{len(current_files)}"
+              )
+
+
+          print("Verified:", checked)
+          print()
+          print("[PASS] Source synchronization changed zero OHLCV files.")
+          print("[PASS] OHLCV SHA256 unchanged = 870/870.")
+          '@ | Set-Content `
+              -LiteralPath "_verify_source_sync_ohlcv.py" `
+              -Encoding UTF8
+
+          py _verify_source_sync_ohlcv.py
+
+          $exitCode = $LASTEXITCODE
+
+          Remove-Item `
+              -LiteralPath "_verify_source_sync_ohlcv.py" `
+              -Force `
+              -ErrorAction SilentlyContinue
+
+          if ($exitCode -ne 0) {
+              throw "Source synchronization OHLCV safety validation failed."
+          }
+
+
+      # ======================================================
+      # 11. VERIFY PRODUCTION PYTHON SYNTAX
+      # ======================================================
+
+      - name: 11 - Verify synchronized production Python syntax
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Push-Location $env:LOCAL_PROJECT_ROOT
+
+          try {
+
+              py -m py_compile ".\plan_history_gap_retry.py"
+
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Production planner syntax validation failed."
+              }
+
+              py -m py_compile ".\recover_history_gaps_second_pass.py"
+
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Production recovery syntax validation failed."
+              }
+          }
+          finally {
+              Pop-Location
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Production Python syntax valid."
+
+
+      # ======================================================
+      # 12. VALIDATE PERSISTENT AUDIT INPUTS
+      # ======================================================
+
+      - name: 12 - Validate persistent production audit inputs
         run: |
           $ErrorActionPreference = "Stop"
 
           Write-Host "============================================================"
-          Write-Host "VERIFY PRODUCTION ROOT CONTRACT"
-          Write-Host "============================================================"
-
-          if (-not (Test-Path -LiteralPath $env:LOCAL_PROJECT_ROOT -PathType Container)) {
-
-              throw "Production project root missing: $env:LOCAL_PROJECT_ROOT"
-          }
-
-          if (-not (Test-Path -LiteralPath $env:LOCAL_DATA_ROOT -PathType Container)) {
-
-              throw "Production data root missing: $env:LOCAL_DATA_ROOT"
-          }
-
-          if (-not (Test-Path -LiteralPath $env:LOCAL_PRODUCTION_OHLCV -PathType Container)) {
-
-              throw "Production OHLCV root missing: $env:LOCAL_PRODUCTION_OHLCV"
-          }
-
-          foreach ($timeframe in @("h1", "h4", "d1")) {
-
-              $path = Join-Path `
-                  $env:LOCAL_PRODUCTION_OHLCV `
-                  $timeframe
-
-              if (-not (Test-Path -LiteralPath $path -PathType Container)) {
-
-                  throw "Production OHLCV timeframe missing: $path"
-              }
-
-              Write-Host "[PASS] $path"
-          }
-
-          $planner = Join-Path `
-              $env:LOCAL_PROJECT_ROOT `
-              "plan_history_gap_retry.py"
-
-          $recovery = Join-Path `
-              $env:LOCAL_PROJECT_ROOT `
-              "recover_history_gaps_second_pass.py"
-
-          Write-Host ""
-          Write-Host "Planner:"
-          Write-Host "  $planner"
-
-          Write-Host ""
-          Write-Host "Recovery:"
-          Write-Host "  $recovery"
-
-          Write-Host ""
-          Write-Host "[PASS] Production root contract valid."
-
-
-      # ======================================================
-      # 08. VALIDATE PRODUCTION INPUTS
-      # ======================================================
-
-      - name: 08 - Validate persistent production inputs
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          Write-Host "============================================================"
-          Write-Host "VALIDATE PRODUCTION INPUTS"
+          Write-Host "VALIDATE PERSISTENT AUDIT INPUTS"
           Write-Host "============================================================"
 
           $required = @(
@@ -454,13 +779,11 @@ jobs:
           foreach ($path in $required) {
 
               if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-
-                  throw "Required production input missing: $path"
+                  throw "Required production audit input missing: $path"
               }
 
               if ((Get-Item -LiteralPath $path).Length -le 0) {
-
-                  throw "Required production input empty: $path"
+                  throw "Required production audit input empty: $path"
               }
 
               Write-Host "[PASS] $path"
@@ -470,22 +793,21 @@ jobs:
               $env:LOCAL_AUDIT_REPORT_DIR `
               "history_gap_recovery_audit_result.json"
 
-          py -c "import json,sys; p=sys.argv[1]; d=json.load(open(p,encoding='utf-8-sig')); assert isinstance(d,dict); print('[PASS] Audit JSON parsed')" "$auditJson"
+          py -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8-sig')); assert isinstance(d,dict); print('[PASS] Audit JSON parsed')" "$auditJson"
 
           if ($LASTEXITCODE -ne 0) {
-
               throw "Audit JSON validation failed."
           }
 
           Write-Host ""
-          Write-Host "[PASS] Production inputs valid."
+          Write-Host "[PASS] Persistent production audit inputs valid."
 
 
       # ======================================================
-      # 09. BEFORE SNAPSHOT
+      # 13. PRODUCTION BEFORE SNAPSHOT
       # ======================================================
 
-      - name: 09 - Validate 870 production OHLCV files and record BEFORE snapshot
+      - name: 13 - Record production OHLCV BEFORE recovery snapshot
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -496,23 +818,11 @@ jobs:
           from pathlib import Path
 
 
-          root = Path(
-              os.environ["LOCAL_PRODUCTION_OHLCV"]
-          )
+          root = Path(os.environ["LOCAL_PRODUCTION_OHLCV"])
+          expected_markets = int(os.environ["EXPECTED_MARKETS"])
+          expected_total = int(os.environ["EXPECTED_OHLCV_FILES"])
 
-          expected_markets = int(
-              os.environ["EXPECTED_MARKETS"]
-          )
-
-          expected_total = int(
-              os.environ["EXPECTED_OHLCV_FILES"]
-          )
-
-          timeframes = (
-              "h1",
-              "h4",
-              "d1",
-          )
+          timeframes = ("h1", "h4", "d1")
 
 
           def sha256_file(path):
@@ -523,9 +833,7 @@ jobs:
 
                   while True:
 
-                      chunk = handle.read(
-                          1024 * 1024
-                      )
+                      chunk = handle.read(1024 * 1024)
 
                       if not chunk:
                           break
@@ -536,37 +844,26 @@ jobs:
 
 
           records = []
-
           market_sets = {}
 
 
           for timeframe in timeframes:
 
-              directory = (
-                  root
-                  / timeframe
-              )
+              directory = root / timeframe
 
               if not directory.is_dir():
-
                   raise SystemExit(
                       f"[FAIL] Missing production directory: {directory}"
                   )
 
-              files = sorted(
-                  directory.glob("*.csv")
-              )
+              files = sorted(directory.glob("*.csv"))
 
-              print(
-                  f"{timeframe}: {len(files)} files"
-              )
+              print(f"{timeframe}: {len(files)} files")
 
               if len(files) != expected_markets:
-
                   raise SystemExit(
                       f"[FAIL] {timeframe} expected "
-                      f"{expected_markets}, "
-                      f"found {len(files)}"
+                      f"{expected_markets}, found {len(files)}"
                   )
 
               market_sets[timeframe] = {
@@ -584,11 +881,7 @@ jobs:
 
                       row_count = max(
                           0,
-                          sum(
-                              1
-                              for _ in handle
-                          )
-                          - 1,
+                          sum(1 for _ in handle) - 1,
                       )
 
                   records.append(
@@ -600,9 +893,7 @@ jobs:
                               path.stem,
 
                           "relative_path":
-                              path.relative_to(
-                                  root
-                              ).as_posix(),
+                              path.relative_to(root).as_posix(),
 
                           "rows":
                               row_count,
@@ -617,7 +908,6 @@ jobs:
 
 
           if len(records) != expected_total:
-
               raise SystemExit(
                   f"[FAIL] Expected {expected_total} OHLCV files, "
                   f"found {len(records)}"
@@ -626,22 +916,15 @@ jobs:
 
           reference = market_sets["h1"]
 
-
-          for timeframe in (
-              "h4",
-              "d1",
-          ):
+          for timeframe in ("h4", "d1"):
 
               if market_sets[timeframe] != reference:
-
                   raise SystemExit(
                       f"[FAIL] Market set mismatch: {timeframe}"
                   )
 
 
-          output = Path(
-              "_production_before_snapshot.csv"
-          )
+          output = Path("_production_before_snapshot.csv")
 
 
           with output.open(
@@ -663,30 +946,15 @@ jobs:
               )
 
               writer.writeheader()
-
-              writer.writerows(
-                  records
-              )
+              writer.writerows(records)
 
 
           print()
-          print(
-              "Markets     :",
-              len(reference),
-          )
-          print(
-              "OHLCV files :",
-              len(records),
-          )
+          print("Markets     :", len(reference))
+          print("OHLCV files :", len(records))
           print()
-
-          print(
-              "[PASS] Production inventory = 870."
-          )
-
-          print(
-              "[PASS] BEFORE SHA256 recorded = 870/870."
-          )
+          print("[PASS] Production inventory = 870.")
+          print("[PASS] BEFORE SHA256 recorded = 870/870.")
           '@ | Set-Content `
               -LiteralPath "_production_before_snapshot.py" `
               -Encoding UTF8
@@ -701,16 +969,15 @@ jobs:
               -ErrorAction SilentlyContinue
 
           if ($exitCode -ne 0) {
-
               throw "Production BEFORE snapshot failed."
           }
 
 
       # ======================================================
-      # 10. FULL BEFORE BACKUP
+      # 14. FULL BEFORE BACKUP
       # ======================================================
 
-      - name: 10 - Create verified full BEFORE backup
+      - name: 14 - Create verified full production BEFORE backup
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -770,7 +1037,6 @@ jobs:
 
 
           if ($backupCount -ne 870) {
-
               throw "Production BEFORE backup expected 870 files, found $backupCount"
           }
 
@@ -780,10 +1046,10 @@ jobs:
 
 
       # ======================================================
-      # 11. VERIFY BACKUP SHA256
+      # 15. VERIFY BACKUP SHA256
       # ======================================================
 
-      - name: 11 - Verify full BEFORE backup SHA256
+      - name: 15 - Verify full production BEFORE backup SHA256
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -794,22 +1060,14 @@ jobs:
           from pathlib import Path
 
 
-          production = Path(
-              os.environ["LOCAL_PRODUCTION_OHLCV"]
-          )
+          production = Path(os.environ["LOCAL_PRODUCTION_OHLCV"])
 
           backup = (
-              Path(
-                  os.environ["GITHUB_WORKSPACE"]
-              )
-              / os.environ[
-                  "PRODUCTION_BACKUP_ROOT"
-              ]
+              Path(os.environ["GITHUB_WORKSPACE"])
+              / os.environ["PRODUCTION_BACKUP_ROOT"]
           )
 
-          baseline = Path(
-              "_production_before_snapshot.csv"
-          )
+          baseline = Path("_production_before_snapshot.csv")
 
 
           def sha256_file(path):
@@ -820,9 +1078,7 @@ jobs:
 
                   while True:
 
-                      chunk = handle.read(
-                          1024 * 1024
-                      )
+                      chunk = handle.read(1024 * 1024)
 
                       if not chunk:
                           break
@@ -838,13 +1094,10 @@ jobs:
               newline="",
           ) as handle:
 
-              rows = list(
-                  csv.DictReader(handle)
-              )
+              rows = list(csv.DictReader(handle))
 
 
           if len(rows) != 870:
-
               raise SystemExit(
                   "[FAIL] BEFORE baseline is not 870."
               )
@@ -855,76 +1108,41 @@ jobs:
 
           for row in rows:
 
-              relative = row[
-                  "relative_path"
-              ]
+              relative = row["relative_path"]
+              expected_hash = row["sha256"]
 
-              expected_hash = row[
-                  "sha256"
-              ]
-
-
-              production_path = (
-                  production
-                  / Path(relative)
-              )
-
-              backup_path = (
-                  backup
-                  / Path(relative)
-              )
-
+              production_path = production / Path(relative)
+              backup_path = backup / Path(relative)
 
               if not production_path.is_file():
-
                   raise SystemExit(
                       f"[FAIL] Production file missing: {relative}"
                   )
 
-
               if not backup_path.is_file():
-
                   raise SystemExit(
                       f"[FAIL] Backup file missing: {relative}"
                   )
 
-
-              production_hash = sha256_file(
-                  production_path
-              )
-
-              backup_hash = sha256_file(
-                  backup_path
-              )
-
+              production_hash = sha256_file(production_path)
+              backup_hash = sha256_file(backup_path)
 
               if production_hash != expected_hash:
-
                   raise SystemExit(
                       f"[FAIL] Production changed during backup: {relative}"
                   )
 
-
               if backup_hash != expected_hash:
-
                   raise SystemExit(
                       f"[FAIL] Backup SHA256 mismatch: {relative}"
                   )
 
-
               checked += 1
 
 
-          print(
-              "SHA256 verified:",
-              checked,
-          )
-
+          print("SHA256 verified:", checked)
           print()
-
-          print(
-              "[PASS] Production -> backup SHA256 = 870/870."
-          )
+          print("[PASS] Production -> backup SHA256 = 870/870.")
           '@ | Set-Content `
               -LiteralPath "_verify_production_backup.py" `
               -Encoding UTF8
@@ -939,44 +1157,60 @@ jobs:
               -ErrorAction SilentlyContinue
 
           if ($exitCode -ne 0) {
-
               throw "Production backup SHA256 validation failed."
           }
 
 
       # ======================================================
-      # 12. GENERATE PRODUCTION PLAN
+      # 16. GENERATE PRODUCTION SECOND-PASS PLAN
       #
-      # Clean V002 critical fix:
+      # CRITICAL:
       #
-      # DO NOT execute GITHUB_WORKSPACE copy.
+      # Execute synchronized copy from LOCAL_PROJECT_ROOT.
       #
-      # plan_history_gap_retry.py determines PROJECT_ROOT
-      # from __file__.
+      # This ensures:
       #
-      # Therefore execute the PRODUCTION copy.
+      #   Path(__file__).resolve().parent
+      #
+      # resolves to:
+      #
+      #   C:\Users\USER\Documents\upbit-surge-monitor
+      #
       # ======================================================
 
-      - name: 12 - Generate production second-pass plan
+      - name: 16 - Generate production second-pass plan
         run: |
           $ErrorActionPreference = "Stop"
 
           Write-Host "============================================================"
           Write-Host "GENERATE PRODUCTION SECOND-PASS PLAN"
-          Write-Host "Clean V002 PATH FIX"
+          Write-Host "Clean V003"
           Write-Host "============================================================"
 
           $planner = Join-Path `
               $env:LOCAL_PROJECT_ROOT `
               "plan_history_gap_retry.py"
 
+          if (-not (Test-Path -LiteralPath $planner -PathType Leaf)) {
+              throw "Production planner missing immediately before execution: $planner"
+          }
+
           Write-Host ""
           Write-Host "Executing:"
           Write-Host "  $planner"
+
+          Write-Host ""
+          Write-Host "Expected data root:"
+          Write-Host "  $env:LOCAL_PROJECT_ROOT\data"
+
+          Write-Host ""
+          Write-Host "Expected OHLCV root:"
+          Write-Host "  $env:LOCAL_PROJECT_ROOT\data\ohlcv"
+
           Write-Host ""
 
-          Push-Location `
-              $env:LOCAL_PROJECT_ROOT
+
+          Push-Location $env:LOCAL_PROJECT_ROOT
 
           try {
 
@@ -991,7 +1225,6 @@ jobs:
 
 
           if ($exitCode -ne 0) {
-
               throw "Production second-pass planner failed with exit code $exitCode."
           }
 
@@ -1008,16 +1241,12 @@ jobs:
           foreach ($path in @($targets, $plan)) {
 
               if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-
                   throw "Planner output missing: $path"
               }
 
-
               if ((Get-Item -LiteralPath $path).Length -le 0) {
-
                   throw "Planner output empty: $path"
               }
-
 
               Write-Host "[PASS] $path"
           }
@@ -1028,10 +1257,10 @@ jobs:
 
 
       # ======================================================
-      # 13. VALIDATE TARGET CONTRACT
+      # 17. VALIDATE TARGET CONTRACT
       # ======================================================
 
-      - name: 13 - Validate production second-pass target contract
+      - name: 17 - Validate production second-pass target contract
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -1054,13 +1283,8 @@ jobs:
           from pathlib import Path
 
 
-          target_file = Path(
-              os.environ["TARGET_FILE"]
-          )
-
-          plan_file = Path(
-              os.environ["PLAN_FILE"]
-          )
+          target_file = Path(os.environ["TARGET_FILE"])
+          plan_file = Path(os.environ["PLAN_FILE"])
 
 
           with target_file.open(
@@ -1069,46 +1293,30 @@ jobs:
               newline="",
           ) as handle:
 
-              reader = csv.DictReader(
-                  handle
-              )
+              reader = csv.DictReader(handle)
 
-              fields = list(
-                  reader.fieldnames
-                  or []
-              )
-
-              rows = list(
-                  reader
-              )
+              fields = list(reader.fieldnames or [])
+              rows = list(reader)
 
 
           normalized = {
-              str(name).strip().lower():
-                  name
+              str(name).strip().lower(): name
               for name in fields
           }
 
 
           if "classification" not in normalized:
-
               raise SystemExit(
                   "[FAIL] classification column missing."
               )
 
 
-          classification_column = normalized[
-              "classification"
-          ]
-
+          classification_column = normalized["classification"]
 
           invalid = []
 
 
-          for index, row in enumerate(
-              rows,
-              start=2,
-          ):
+          for index, row in enumerate(rows, start=2):
 
               value = str(
                   row.get(
@@ -1116,7 +1324,6 @@ jobs:
                       "",
                   )
               ).strip()
-
 
               if value != "READY_SECOND_PASS":
 
@@ -1130,15 +1337,10 @@ jobs:
 
           if invalid:
 
-              print(
-                  "[FAIL] Unauthorized target classifications:"
-              )
+              print("[FAIL] Unauthorized target classifications:")
 
               for item in invalid[:50]:
-
-                  print(
-                      item
-                  )
+                  print(item)
 
               raise SystemExit(1)
 
@@ -1148,71 +1350,40 @@ jobs:
               encoding="utf-8-sig",
           ) as handle:
 
-              plan = json.load(
-                  handle
-              )
+              plan = json.load(handle)
 
 
-          if not isinstance(
-              plan,
-              dict,
-          ):
-
+          if not isinstance(plan, dict):
               raise SystemExit(
                   "[FAIL] Plan JSON root is not object."
               )
 
 
           if (
-              str(
-                  plan.get(
-                      "program",
-                      "",
-                  )
-              ).strip()
+              str(plan.get("program", "")).strip()
               !=
               "plan_history_gap_retry.py"
           ):
-
               raise SystemExit(
                   "[FAIL] Unexpected planner program."
               )
 
 
           if (
-              str(
-                  plan.get(
-                      "version",
-                      "",
-                  )
-              ).strip()
+              str(plan.get("version", "")).strip()
               !=
               "Clean V001"
           ):
-
               raise SystemExit(
                   "[FAIL] Unexpected planner version."
               )
 
 
-          print(
-              "Target rows:",
-              len(rows),
-          )
-
+          print("Target rows:", len(rows))
           print()
-
-          print(
-              "[PASS] Target contract valid."
-          )
-
-          print(
-              "[PASS] Every target = READY_SECOND_PASS."
-          )
-
-          print(
-              "[PASS] Planner program/version valid."
-          )
+          print("[PASS] Target contract valid.")
+          print("[PASS] Every target = READY_SECOND_PASS.")
+          print("[PASS] Planner program/version valid.")
           '@ | Set-Content `
               -LiteralPath "_validate_production_targets.py" `
               -Encoding UTF8
@@ -1230,16 +1401,15 @@ jobs:
 
 
           if ($exitCode -ne 0) {
-
               throw "Production target contract validation failed."
           }
 
 
       # ======================================================
-      # 14. REAL UPBIT API CONNECTIVITY
+      # 18. REAL UPBIT API
       # ======================================================
 
-      - name: 14 - Verify real Upbit API
+      - name: 18 - Verify real Upbit API
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -1250,31 +1420,21 @@ jobs:
           response = requests.get(
               "https://api.upbit.com/v1/candles/minutes/60",
               params={
-                  "market":
-                      "KRW-BTC",
-
-                  "count":
-                      1,
+                  "market": "KRW-BTC",
+                  "count": 1,
               },
               timeout=15,
               headers={
-                  "Accept":
-                      "application/json",
-
-                  "User-Agent":
-                      "Upbit-Surge-Monitor-Production-Recovery",
+                  "Accept": "application/json",
+                  "User-Agent": "Upbit-Surge-Monitor-Production-Recovery",
               },
           )
 
 
-          print(
-              "HTTP status:",
-              response.status_code,
-          )
+          print("HTTP status:", response.status_code)
 
 
           if response.status_code != 200:
-
               raise SystemExit(
                   "[FAIL] Upbit API unavailable: "
                   + response.text[:500]
@@ -1285,24 +1445,16 @@ jobs:
 
 
           if (
-              not isinstance(
-                  payload,
-                  list,
-              )
+              not isinstance(payload, list)
               or
               len(payload) < 1
           ):
-
               raise SystemExit(
                   "[FAIL] Unexpected Upbit API response."
               )
 
 
-          if (
-              "candle_date_time_utc"
-              not in payload[0]
-          ):
-
+          if "candle_date_time_utc" not in payload[0]:
               raise SystemExit(
                   "[FAIL] candle_date_time_utc missing."
               )
@@ -1310,16 +1462,11 @@ jobs:
 
           print(
               "Latest UTC candle:",
-              payload[0][
-                  "candle_date_time_utc"
-              ],
+              payload[0]["candle_date_time_utc"],
           )
 
           print()
-
-          print(
-              "[PASS] Real Upbit API available."
-          )
+          print("[PASS] Real Upbit API available.")
           '@ | Set-Content `
               -LiteralPath "_production_api_test.py" `
               -Encoding UTF8
@@ -1337,16 +1484,15 @@ jobs:
 
 
           if ($exitCode -ne 0) {
-
               throw "Production API connectivity validation failed."
           }
 
 
       # ======================================================
-      # 15. FINAL PRE-EXECUTION GUARD
+      # 19. FINAL PRE-EXECUTION GUARD
       # ======================================================
 
-      - name: 15 - Final pre-execution production safety guard
+      - name: 19 - Final pre-execution production safety guard
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -1379,13 +1525,11 @@ jobs:
 
 
           if ($productionCount -ne 870) {
-
               throw "Production OHLCV inventory changed before execution: $productionCount"
           }
 
 
           if ($backupCount -ne 870) {
-
               throw "Production backup inventory invalid: $backupCount"
           }
 
@@ -1400,14 +1544,57 @@ jobs:
 
 
           if (-not (Test-Path -LiteralPath $planner -PathType Leaf)) {
-
               throw "Production planner disappeared before execution."
           }
 
 
           if (-not (Test-Path -LiteralPath $recovery -PathType Leaf)) {
-
               throw "Production recovery program disappeared before execution."
+          }
+
+
+          $workspacePlanner = Join-Path `
+              $env:GITHUB_WORKSPACE `
+              "plan_history_gap_retry.py"
+
+          $workspaceRecovery = Join-Path `
+              $env:GITHUB_WORKSPACE `
+              "recover_history_gaps_second_pass.py"
+
+
+          $plannerWorkspaceHash = (
+              Get-FileHash `
+                  -LiteralPath $workspacePlanner `
+                  -Algorithm SHA256
+          ).Hash
+
+          $plannerProductionHash = (
+              Get-FileHash `
+                  -LiteralPath $planner `
+                  -Algorithm SHA256
+          ).Hash
+
+
+          $recoveryWorkspaceHash = (
+              Get-FileHash `
+                  -LiteralPath $workspaceRecovery `
+                  -Algorithm SHA256
+          ).Hash
+
+          $recoveryProductionHash = (
+              Get-FileHash `
+                  -LiteralPath $recovery `
+                  -Algorithm SHA256
+          ).Hash
+
+
+          if ($plannerWorkspaceHash -ne $plannerProductionHash) {
+              throw "Planner changed after synchronization."
+          }
+
+
+          if ($recoveryWorkspaceHash -ne $recoveryProductionHash) {
+              throw "Recovery program changed after synchronization."
           }
 
 
@@ -1415,6 +1602,8 @@ jobs:
           Write-Host "[PASS] BEFORE backup = 870."
           Write-Host "[PASS] Production planner available."
           Write-Host "[PASS] Production recovery program available."
+          Write-Host "[PASS] Planner SHA256 still matches GitHub source."
+          Write-Host "[PASS] Recovery SHA256 still matches GitHub source."
           Write-Host "[PASS] Planner target contract validated."
           Write-Host "[PASS] Real Upbit API validated."
 
@@ -1423,25 +1612,16 @@ jobs:
 
 
       # ======================================================
-      # 16. EXECUTE REAL PRODUCTION RECOVERY
-      #
-      # Clean V002 critical fix:
-      #
-      # Execute:
-      #
-      # C:\Users\USER\Documents\upbit-surge-monitor\
-      # recover_history_gaps_second_pass.py
-      #
-      # NOT the GitHub workspace copy.
+      # 20. EXECUTE REAL PRODUCTION RECOVERY
       # ======================================================
 
-      - name: 16 - Execute PRODUCTION second-pass recovery
+      - name: 20 - Execute PRODUCTION second-pass recovery
         run: |
           $ErrorActionPreference = "Stop"
 
           Write-Host "============================================================"
           Write-Host "PRODUCTION SECOND-PASS RECOVERY"
-          Write-Host "Clean V002"
+          Write-Host "Clean V003"
           Write-Host "============================================================"
 
           Write-Host ""
@@ -1463,8 +1643,17 @@ jobs:
           Write-Host ""
 
 
-          Push-Location `
-              $env:LOCAL_PROJECT_ROOT
+          $recovery = Join-Path `
+              $env:LOCAL_PROJECT_ROOT `
+              "recover_history_gaps_second_pass.py"
+
+
+          if (-not (Test-Path -LiteralPath $recovery -PathType Leaf)) {
+              throw "Production recovery program missing immediately before execution."
+          }
+
+
+          Push-Location $env:LOCAL_PROJECT_ROOT
 
 
           try {
@@ -1480,21 +1669,19 @@ jobs:
 
 
           if ($exitCode -ne 0) {
-
               throw "Production second-pass recovery failed with exit code $exitCode."
           }
 
 
           Write-Host ""
-
           Write-Host "[PASS] Production second-pass recovery execution completed."
 
 
       # ======================================================
-      # 17. VALIDATE RESULT CONTRACT
+      # 21. VALIDATE RESULT CONTRACT
       # ======================================================
 
-      - name: 17 - Validate production recovery result
+      - name: 21 - Validate production recovery result
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -1505,13 +1692,11 @@ jobs:
 
 
           if (-not (Test-Path -LiteralPath $resultFile -PathType Leaf)) {
-
               throw "Production recovery result missing: $resultFile"
           }
 
 
           if ((Get-Item -LiteralPath $resultFile).Length -le 0) {
-
               throw "Production recovery result empty: $resultFile"
           }
 
@@ -1525,11 +1710,7 @@ jobs:
           from pathlib import Path
 
 
-          path = Path(
-              os.environ[
-                  "PRODUCTION_RESULT_FILE"
-              ]
-          )
+          path = Path(os.environ["PRODUCTION_RESULT_FILE"])
 
 
           with path.open(
@@ -1537,47 +1718,23 @@ jobs:
               encoding="utf-8-sig",
           ) as handle:
 
-              result = json.load(
-                  handle
-              )
+              result = json.load(handle)
 
 
-          if (
-              result.get(
-                  "program"
-              )
-              !=
-              "recover_history_gaps_second_pass.py"
-          ):
-
+          if result.get("program") != "recover_history_gaps_second_pass.py":
               raise SystemExit(
                   "[FAIL] Unexpected recovery program."
               )
 
 
-          if (
-              result.get(
-                  "version"
-              )
-              !=
-              "Clean V001"
-          ):
-
+          if result.get("version") != "Clean V001":
               raise SystemExit(
                   "[FAIL] Unexpected recovery version."
               )
 
 
-          summary = result.get(
-              "summary",
-              {},
-          )
-
-
-          safety = result.get(
-              "safety",
-              {},
-          )
+          summary = result.get("summary", {})
+          safety = result.get("safety", {})
 
 
           required_false = (
@@ -1605,9 +1762,7 @@ jobs:
 
           for key in required_false:
 
-              if safety.get(
-                  key
-              ) is not False:
+              if safety.get(key) is not False:
 
                   failures.append(
                       f"{key} expected False, "
@@ -1617,9 +1772,7 @@ jobs:
 
           for key in required_true:
 
-              if safety.get(
-                  key
-              ) is not True:
+              if safety.get(key) is not True:
 
                   failures.append(
                       f"{key} expected True, "
@@ -1629,86 +1782,31 @@ jobs:
 
           if failures:
 
-              print(
-                  "[FAIL] Safety contract failures:"
-              )
+              print("[FAIL] Safety contract failures:")
 
               for item in failures:
-
-                  print(
-                      "  ",
-                      item,
-                  )
+                  print("  ", item)
 
               raise SystemExit(1)
 
 
           failed = int(
-              summary.get(
-                  "failed",
-                  0,
-              )
+              summary.get("failed", 0)
               or 0
           )
 
 
-          print(
-              "Targets           :",
-              summary.get(
-                  "targets"
-              ),
-          )
-
-          print(
-              "Success           :",
-              summary.get(
-                  "success"
-              ),
-          )
-
-          print(
-              "Partial           :",
-              summary.get(
-                  "partial"
-              ),
-          )
-
-          print(
-              "Already recovered :",
-              summary.get(
-                  "already_recovered"
-              ),
-          )
-
-          print(
-              "No data           :",
-              summary.get(
-                  "no_data"
-              ),
-          )
-
-          print(
-              "Failed            :",
-              failed,
-          )
-
-          print(
-              "Inserted candles  :",
-              summary.get(
-                  "inserted_candles"
-              ),
-          )
-
-          print(
-              "Changed files     :",
-              summary.get(
-                  "changed_ohlcv_files"
-              ),
-          )
+          print("Targets           :", summary.get("targets"))
+          print("Success           :", summary.get("success"))
+          print("Partial           :", summary.get("partial"))
+          print("Already recovered :", summary.get("already_recovered"))
+          print("No data           :", summary.get("no_data"))
+          print("Failed            :", failed)
+          print("Inserted candles  :", summary.get("inserted_candles"))
+          print("Changed files     :", summary.get("changed_ohlcv_files"))
 
 
           if failed > 0:
-
               raise SystemExit(
                   f"[FAIL] Production recovery contains "
                   f"{failed} failed targets."
@@ -1716,14 +1814,8 @@ jobs:
 
 
           print()
-
-          print(
-              "[PASS] Production recovery result valid."
-          )
-
-          print(
-              "[PASS] Recovery safety contract valid."
-          )
+          print("[PASS] Production recovery result valid.")
+          print("[PASS] Recovery safety contract valid.")
           '@ | Set-Content `
               -LiteralPath "_validate_production_result.py" `
               -Encoding UTF8
@@ -1741,16 +1833,15 @@ jobs:
 
 
           if ($exitCode -ne 0) {
-
               throw "Production recovery result validation failed."
           }
 
 
       # ======================================================
-      # 18. VERIFY EXISTING CANDLE IMMUTABILITY
+      # 22. VERIFY EXISTING CANDLE IMMUTABILITY
       # ======================================================
 
-      - name: 18 - Verify existing candles unchanged
+      - name: 22 - Verify existing production candles unchanged
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -1762,21 +1853,13 @@ jobs:
 
 
           before_root = (
-              Path(
-                  os.environ[
-                      "GITHUB_WORKSPACE"
-                  ]
-              )
-              / os.environ[
-                  "PRODUCTION_BACKUP_ROOT"
-              ]
+              Path(os.environ["GITHUB_WORKSPACE"])
+              / os.environ["PRODUCTION_BACKUP_ROOT"]
           )
 
 
           after_root = Path(
-              os.environ[
-                  "LOCAL_PRODUCTION_OHLCV"
-              ]
+              os.environ["LOCAL_PRODUCTION_OHLCV"]
           )
 
 
@@ -1788,32 +1871,18 @@ jobs:
                   newline="",
               ) as handle:
 
-                  reader = csv.DictReader(
-                      handle
-                  )
+                  reader = csv.DictReader(handle)
 
-                  fields = list(
-                      reader.fieldnames
-                      or []
-                  )
+                  fields = list(reader.fieldnames or [])
+                  rows = list(reader)
 
-                  rows = list(
-                      reader
-                  )
-
-              return (
-                  fields,
-                  rows,
-              )
+              return fields, rows
 
 
-          def detect_timestamp_column(
-              fieldnames,
-          ):
+          def detect_timestamp_column(fieldnames):
 
               normalized = {
-                  str(name).strip().lower():
-                      name
+                  str(name).strip().lower(): name
                   for name in fieldnames
               }
 
@@ -1831,10 +1900,7 @@ jobs:
               for candidate in candidates:
 
                   if candidate in normalized:
-
-                      return normalized[
-                          candidate
-                      ]
+                      return normalized[candidate]
 
 
               raise RuntimeError(
@@ -1843,29 +1909,18 @@ jobs:
 
 
           before_files = {
-              path.relative_to(
-                  before_root
-              ).as_posix():
-                  path
-              for path in before_root.glob(
-                  "*/*.csv"
-              )
+              path.relative_to(before_root).as_posix(): path
+              for path in before_root.glob("*/*.csv")
           }
 
 
           after_files = {
-              path.relative_to(
-                  after_root
-              ).as_posix():
-                  path
-              for path in after_root.glob(
-                  "*/*.csv"
-              )
+              path.relative_to(after_root).as_posix(): path
+              for path in after_root.glob("*/*.csv")
           }
 
 
           if len(before_files) != 870:
-
               raise SystemExit(
                   f"[FAIL] BEFORE inventory != 870: "
                   f"{len(before_files)}"
@@ -1873,7 +1928,6 @@ jobs:
 
 
           if len(after_files) != 870:
-
               raise SystemExit(
                   f"[FAIL] AFTER inventory != 870: "
                   f"{len(after_files)}"
@@ -1892,15 +1946,8 @@ jobs:
                   - set(before_files)
               )
 
-              print(
-                  "Removed:",
-                  removed[:50],
-              )
-
-              print(
-                  "Added:",
-                  added[:50],
-              )
+              print("Removed:", removed[:50])
+              print("Added:", added[:50])
 
               raise SystemExit(
                   "[FAIL] Production OHLCV file set changed."
@@ -1908,54 +1955,23 @@ jobs:
 
 
           checked_files = 0
-
           checked_existing_rows = 0
-
           inserted_rows = 0
-
           changed_files = []
 
 
-          for relative in sorted(
-              before_files
-          ):
+          for relative in sorted(before_files):
 
-              before_path = before_files[
-                  relative
-              ]
-
-              after_path = after_files[
-                  relative
-              ]
+              before_path = before_files[relative]
+              after_path = after_files[relative]
 
 
-              (
-                  before_fields,
-                  before_rows,
-              ) = read_csv(
-                  before_path
-              )
+              before_fields, before_rows = read_csv(before_path)
+              after_fields, after_rows = read_csv(after_path)
 
 
-              (
-                  after_fields,
-                  after_rows,
-              ) = read_csv(
-                  after_path
-              )
-
-
-              before_timestamp = (
-                  detect_timestamp_column(
-                      before_fields
-                  )
-              )
-
-              after_timestamp = (
-                  detect_timestamp_column(
-                      after_fields
-                  )
-              )
+              before_timestamp = detect_timestamp_column(before_fields)
+              after_timestamp = detect_timestamp_column(after_fields)
 
 
               before_map = {}
@@ -1972,23 +1988,19 @@ jobs:
 
 
                   if not timestamp:
-
                       raise SystemExit(
                           f"[FAIL] Empty BEFORE timestamp: {relative}"
                       )
 
 
                   if timestamp in before_map:
-
                       raise SystemExit(
                           f"[FAIL] Duplicate BEFORE timestamp: "
                           f"{relative} {timestamp}"
                       )
 
 
-                  before_map[
-                      timestamp
-                  ] = row
+                  before_map[timestamp] = row
 
 
               after_map = {}
@@ -2005,23 +2017,19 @@ jobs:
 
 
                   if not timestamp:
-
                       raise SystemExit(
                           f"[FAIL] Empty AFTER timestamp: {relative}"
                       )
 
 
                   if timestamp in after_map:
-
                       raise SystemExit(
                           f"[FAIL] Duplicate AFTER timestamp: "
                           f"{relative} {timestamp}"
                       )
 
 
-                  after_map[
-                      timestamp
-                  ] = row
+                  after_map[timestamp] = row
 
 
               missing_existing = (
@@ -2031,7 +2039,6 @@ jobs:
 
 
               if missing_existing:
-
                   raise SystemExit(
                       "[FAIL] Existing candles disappeared: "
                       f"{relative} "
@@ -2048,13 +2055,8 @@ jobs:
 
               for timestamp in before_map:
 
-                  before_row = before_map[
-                      timestamp
-                  ]
-
-                  after_row = after_map[
-                      timestamp
-                  ]
+                  before_row = before_map[timestamp]
+                  after_row = after_map[timestamp]
 
 
                   for column in common_columns:
@@ -2075,7 +2077,6 @@ jobs:
 
 
                       if before_value != after_value:
-
                           raise SystemExit(
                               "[FAIL] Existing candle modified: "
                               f"{relative} "
@@ -2097,59 +2098,24 @@ jobs:
 
               if inserted:
 
-                  inserted_rows += len(
-                      inserted
-                  )
-
-                  changed_files.append(
-                      relative
-                  )
+                  inserted_rows += len(inserted)
+                  changed_files.append(relative)
 
 
               checked_files += 1
 
 
-          print(
-              "Files checked        :",
-              checked_files,
-          )
-
-          print(
-              "Existing rows checked:",
-              checked_existing_rows,
-          )
-
-          print(
-              "Changed files        :",
-              len(changed_files),
-          )
-
-          print(
-              "Inserted timestamps  :",
-              inserted_rows,
-          )
+          print("Files checked         :", checked_files)
+          print("Existing rows checked :", checked_existing_rows)
+          print("Changed files         :", len(changed_files))
+          print("Inserted timestamps   :", inserted_rows)
 
           print()
-
-          print(
-              "[PASS] Production inventory remains 870."
-          )
-
-          print(
-              "[PASS] No OHLCV file disappeared."
-          )
-
-          print(
-              "[PASS] No existing timestamp disappeared."
-          )
-
-          print(
-              "[PASS] No existing candle value changed."
-          )
-
-          print(
-              "[PASS] No duplicate timestamp detected."
-          )
+          print("[PASS] Production inventory remains 870.")
+          print("[PASS] No OHLCV file disappeared.")
+          print("[PASS] No existing timestamp disappeared.")
+          print("[PASS] No existing candle value changed.")
+          print("[PASS] No duplicate timestamp detected.")
           '@ | Set-Content `
               -LiteralPath "_verify_existing_candles.py" `
               -Encoding UTF8
@@ -2167,16 +2133,15 @@ jobs:
 
 
           if ($exitCode -ne 0) {
-
               throw "Existing candle immutability validation failed."
           }
 
 
       # ======================================================
-      # 19. VERIFY CHANGED FILE AUTHORIZATION
+      # 23. VERIFY AUTHORIZED CHANGES
       # ======================================================
 
-      - name: 19 - Verify only authorized recovery files changed
+      - name: 23 - Verify only authorized recovery files changed
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -2190,7 +2155,6 @@ jobs:
 
 
           @'
-          import csv
           import hashlib
           import json
           import os
@@ -2198,28 +2162,18 @@ jobs:
 
 
           before_root = (
-              Path(
-                  os.environ[
-                      "GITHUB_WORKSPACE"
-                  ]
-              )
-              / os.environ[
-                  "PRODUCTION_BACKUP_ROOT"
-              ]
+              Path(os.environ["GITHUB_WORKSPACE"])
+              / os.environ["PRODUCTION_BACKUP_ROOT"]
           )
 
 
           after_root = Path(
-              os.environ[
-                  "LOCAL_PRODUCTION_OHLCV"
-              ]
+              os.environ["LOCAL_PRODUCTION_OHLCV"]
           )
 
 
           result_file = Path(
-              os.environ[
-                  "PRODUCTION_RESULT_FILE"
-              ]
+              os.environ["PRODUCTION_RESULT_FILE"]
           )
 
 
@@ -2227,22 +2181,16 @@ jobs:
 
               digest = hashlib.sha256()
 
-              with path.open(
-                  "rb"
-              ) as handle:
+              with path.open("rb") as handle:
 
                   while True:
 
-                      chunk = handle.read(
-                          1024 * 1024
-                      )
+                      chunk = handle.read(1024 * 1024)
 
                       if not chunk:
                           break
 
-                      digest.update(
-                          chunk
-                      )
+                      digest.update(chunk)
 
               return digest.hexdigest()
 
@@ -2252,9 +2200,7 @@ jobs:
               encoding="utf-8-sig",
           ) as handle:
 
-              result = json.load(
-                  handle
-              )
+              result = json.load(handle)
 
 
           authorized = set()
@@ -2291,9 +2237,7 @@ jobs:
 
 
           for before_path in sorted(
-              before_root.glob(
-                  "*/*.csv"
-              )
+              before_root.glob("*/*.csv")
           ):
 
               relative = before_path.relative_to(
@@ -2301,32 +2245,21 @@ jobs:
               ).as_posix()
 
 
-              after_path = (
-                  after_root
-                  / Path(relative)
-              )
+              after_path = after_root / Path(relative)
 
 
               if not after_path.is_file():
-
                   raise SystemExit(
                       f"[FAIL] Production file disappeared: {relative}"
                   )
 
 
               if (
-                  sha256_file(
-                      before_path
-                  )
+                  sha256_file(before_path)
                   !=
-                  sha256_file(
-                      after_path
-                  )
+                  sha256_file(after_path)
               ):
-
-                  changed.append(
-                      relative
-                  )
+                  changed.append(relative)
 
 
           unexpected = (
@@ -2337,37 +2270,19 @@ jobs:
 
           if unexpected:
 
-              print(
-                  "[FAIL] Unexpected changed files:"
-              )
+              print("[FAIL] Unexpected changed files:")
 
-              for item in sorted(
-                  unexpected
-              )[:100]:
-
-                  print(
-                      "  ",
-                      item,
-                  )
+              for item in sorted(unexpected)[:100]:
+                  print("  ", item)
 
               raise SystemExit(1)
 
 
-          print(
-              "Changed files detected :",
-              len(changed),
-          )
-
-          print(
-              "Authorized files        :",
-              len(authorized),
-          )
+          print("Changed files detected :", len(changed))
+          print("Authorized files        :", len(authorized))
 
           print()
-
-          print(
-              "[PASS] Only recovery-authorized OHLCV files changed."
-          )
+          print("[PASS] Only recovery-authorized OHLCV files changed.")
           '@ | Set-Content `
               -LiteralPath "_verify_authorized_changes.py" `
               -Encoding UTF8
@@ -2385,16 +2300,15 @@ jobs:
 
 
           if ($exitCode -ne 0) {
-
               throw "Authorized change validation failed."
           }
 
 
       # ======================================================
-      # 20. AFTER SNAPSHOT
+      # 24. AFTER SNAPSHOT
       # ======================================================
 
-      - name: 20 - Record production AFTER snapshot
+      - name: 24 - Record production OHLCV AFTER recovery snapshot
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -2407,9 +2321,7 @@ jobs:
 
 
           root = Path(
-              os.environ[
-                  "LOCAL_PRODUCTION_OHLCV"
-              ]
+              os.environ["LOCAL_PRODUCTION_OHLCV"]
           )
 
 
@@ -2417,22 +2329,16 @@ jobs:
 
               digest = hashlib.sha256()
 
-              with path.open(
-                  "rb"
-              ) as handle:
+              with path.open("rb") as handle:
 
                   while True:
 
-                      chunk = handle.read(
-                          1024 * 1024
-                      )
+                      chunk = handle.read(1024 * 1024)
 
                       if not chunk:
                           break
 
-                      digest.update(
-                          chunk
-                      )
+                      digest.update(chunk)
 
               return digest.hexdigest()
 
@@ -2440,26 +2346,13 @@ jobs:
           rows = []
 
 
-          for timeframe in (
-              "h1",
-              "h4",
-              "d1",
-          ):
+          for timeframe in ("h1", "h4", "d1"):
 
-              directory = (
-                  root
-                  / timeframe
-              )
-
-              files = sorted(
-                  directory.glob(
-                      "*.csv"
-                  )
-              )
+              directory = root / timeframe
+              files = sorted(directory.glob("*.csv"))
 
 
               if len(files) != 290:
-
                   raise SystemExit(
                       f"[FAIL] {timeframe} expected 290, "
                       f"found {len(files)}"
@@ -2476,11 +2369,7 @@ jobs:
 
                       row_count = max(
                           0,
-                          sum(
-                              1
-                              for _ in handle
-                          )
-                          - 1,
+                          sum(1 for _ in handle) - 1,
                       )
 
 
@@ -2493,9 +2382,7 @@ jobs:
                               path.stem,
 
                           "relative_path":
-                              path.relative_to(
-                                  root
-                              ).as_posix(),
+                              path.relative_to(root).as_posix(),
 
                           "rows":
                               row_count,
@@ -2504,24 +2391,19 @@ jobs:
                               path.stat().st_size,
 
                           "sha256":
-                              sha256_file(
-                                  path
-                              ),
+                              sha256_file(path),
                       }
                   )
 
 
           if len(rows) != 870:
-
               raise SystemExit(
                   f"[FAIL] AFTER inventory expected 870, "
                   f"found {len(rows)}"
               )
 
 
-          output = Path(
-              "_production_after_snapshot.csv"
-          )
+          output = Path("_production_after_snapshot.csv")
 
 
           with output.open(
@@ -2543,19 +2425,11 @@ jobs:
               )
 
               writer.writeheader()
-
-              writer.writerows(
-                  rows
-              )
+              writer.writerows(rows)
 
 
-          print(
-              "[PASS] AFTER inventory = 870."
-          )
-
-          print(
-              "[PASS] AFTER SHA256 recorded = 870/870."
-          )
+          print("[PASS] AFTER inventory = 870.")
+          print("[PASS] AFTER SHA256 recorded = 870/870.")
           '@ | Set-Content `
               -LiteralPath "_production_after_snapshot.py" `
               -Encoding UTF8
@@ -2573,16 +2447,15 @@ jobs:
 
 
           if ($exitCode -ne 0) {
-
               throw "Production AFTER snapshot failed."
           }
 
 
       # ======================================================
-      # 21. VERIFY CHECKPOINT
+      # 25. VERIFY CHECKPOINT
       # ======================================================
 
-      - name: 21 - Verify production recovery checkpoint
+      - name: 25 - Verify production recovery checkpoint
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -2593,13 +2466,11 @@ jobs:
 
 
           if (-not (Test-Path -LiteralPath $checkpoint -PathType Leaf)) {
-
               throw "Production recovery checkpoint missing: $checkpoint"
           }
 
 
           if ((Get-Item -LiteralPath $checkpoint).Length -le 0) {
-
               throw "Production recovery checkpoint empty."
           }
 
@@ -2608,7 +2479,6 @@ jobs:
 
 
           if ($LASTEXITCODE -ne 0) {
-
               throw "Production recovery checkpoint validation failed."
           }
 
@@ -2619,10 +2489,10 @@ jobs:
 
 
       # ======================================================
-      # 22. VERIFY RECOVERY REPORTS
+      # 26. VERIFY REPORTS
       # ======================================================
 
-      - name: 22 - Verify production recovery reports
+      - name: 26 - Verify production recovery reports
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -2648,13 +2518,11 @@ jobs:
 
 
               if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-
                   throw "Required recovery report missing: $path"
               }
 
 
               if ((Get-Item -LiteralPath $path).Length -le 0) {
-
                   throw "Required recovery report empty: $path"
               }
 
@@ -2671,7 +2539,6 @@ jobs:
           if (Test-Path -LiteralPath $detail -PathType Leaf) {
 
               if ((Get-Item -LiteralPath $detail).Length -le 0) {
-
                   throw "Recovery detail exists but is empty."
               }
 
@@ -2689,10 +2556,14 @@ jobs:
 
 
       # ======================================================
-      # 23. VERIFY NO FORBIDDEN GIT OPERATIONS
+      # 27. VERIFY NO FORBIDDEN GIT COMMANDS
+      #
+      # Exact executable-command patterns only.
+      # Safety text such as "Git push : DISABLED" must not
+      # create a false positive.
       # ======================================================
 
-      - name: 23 - Verify no forbidden Git operations
+      - name: 27 - Verify no forbidden Git commands
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -2702,38 +2573,86 @@ jobs:
               "recover_history_gaps_second_pass.py"
 
 
-          $text = (
-              Get-Content `
-                  -LiteralPath $recovery `
-                  -Raw
-          ).ToLowerInvariant()
+          $env:RECOVERY_SOURCE_FILE = $recovery
 
 
-          $forbidden = @(
-              "git reset --hard",
-              "git clean -",
-              "git commit",
-              "git push"
+          @'
+          import os
+          import re
+          from pathlib import Path
+
+
+          path = Path(
+              os.environ["RECOVERY_SOURCE_FILE"]
           )
 
 
-          foreach ($value in $forbidden) {
+          text = path.read_text(
+              encoding="utf-8-sig"
+          )
 
-              if ($text.Contains($value)) {
 
-                  throw "Forbidden Git operation detected in recovery program: $value"
-              }
+          patterns = {
+              "git reset":
+                  r"(?im)^\s*(?:os\.system\(|subprocess\..*?)?[\"']?\s*git\s+reset\b",
+
+              "git clean":
+                  r"(?im)^\s*(?:os\.system\(|subprocess\..*?)?[\"']?\s*git\s+clean\b",
+
+              "git commit":
+                  r"(?im)^\s*(?:os\.system\(|subprocess\..*?)?[\"']?\s*git\s+commit\b",
+
+              "git push":
+                  r"(?im)^\s*(?:os\.system\(|subprocess\..*?)?[\"']?\s*git\s+push\b",
           }
 
 
-          Write-Host "[PASS] No forbidden Git reset/clean/commit/push operation detected."
+          found = []
+
+
+          for name, pattern in patterns.items():
+
+              if re.search(pattern, text):
+                  found.append(name)
+
+
+          if found:
+
+              print("[FAIL] Forbidden Git command patterns detected:")
+
+              for item in found:
+                  print("  ", item)
+
+              raise SystemExit(1)
+
+
+          print("[PASS] No forbidden Git command patterns detected.")
+          '@ | Set-Content `
+              -LiteralPath "_verify_forbidden_git.py" `
+              -Encoding UTF8
+
+
+          py _verify_forbidden_git.py
+
+          $exitCode = $LASTEXITCODE
+
+
+          Remove-Item `
+              -LiteralPath "_verify_forbidden_git.py" `
+              -Force `
+              -ErrorAction SilentlyContinue
+
+
+          if ($exitCode -ne 0) {
+              throw "Forbidden Git command safety validation failed."
+          }
 
 
       # ======================================================
-      # 24. FINAL CLEAN V002 SAFETY REPORT
+      # 28. FINAL CLEAN V003 REPORT
       # ======================================================
 
-      - name: 24 - Final Clean V002 safety report
+      - name: 28 - Final Clean V003 production safety report
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -2741,28 +2660,35 @@ jobs:
           Write-Host "============================================================"
           Write-Host "UPBIT SURGE MONITOR"
           Write-Host "PRODUCTION SECOND-PASS RECOVERY"
-          Write-Host "Clean V002"
+          Write-Host "Clean V003"
           Write-Host "SUCCESS"
           Write-Host "============================================================"
           Write-Host ""
 
-          Write-Host "[PASS] Workspace source programs validated."
-          Write-Host "[PASS] Production source programs validated."
-          Write-Host "[PASS] Workspace/production program SHA256 matched."
-          Write-Host "[PASS] Production root contract validated."
-          Write-Host "[PASS] Production OHLCV BEFORE inventory = 870."
-          Write-Host "[PASS] Full BEFORE backup = 870."
-          Write-Host "[PASS] BEFORE backup SHA256 = 870/870."
+          Write-Host "[PASS] GitHub workspace source validated."
+          Write-Host "[PASS] Production root validated."
+          Write-Host "[PASS] Production OHLCV before source sync = 870."
+          Write-Host "[PASS] Only required Python programs synchronized."
+          Write-Host "[PASS] data/ was not synchronized."
+          Write-Host "[PASS] Workspace/production Python SHA256 matched."
+          Write-Host "[PASS] Source synchronization changed zero OHLCV files."
+          Write-Host "[PASS] Source-sync OHLCV SHA256 = 870/870."
 
           Write-Host ""
-          Write-Host "[PASS] Planner executed from PRODUCTION project root."
-          Write-Host "[PASS] Planner used PRODUCTION data/ohlcv."
+          Write-Host "[PASS] Persistent audit inputs validated."
+          Write-Host "[PASS] Production BEFORE inventory = 870."
+          Write-Host "[PASS] Production BEFORE backup = 870."
+          Write-Host "[PASS] Production BEFORE backup SHA256 = 870/870."
+
+          Write-Host ""
+          Write-Host "[PASS] Planner executed from production project root."
+          Write-Host "[PASS] Planner used production data/ohlcv."
           Write-Host "[PASS] Second-pass target contract validated."
           Write-Host "[PASS] Real Upbit API validated."
 
           Write-Host ""
-          Write-Host "[PASS] Recovery executed from PRODUCTION project root."
-          Write-Host "[PASS] Production OHLCV AFTER inventory = 870."
+          Write-Host "[PASS] Recovery executed from production project root."
+          Write-Host "[PASS] Production AFTER inventory = 870."
           Write-Host "[PASS] No OHLCV file disappeared."
           Write-Host "[PASS] No existing timestamp disappeared."
           Write-Host "[PASS] Existing candle values remained unchanged."
@@ -2793,27 +2719,28 @@ jobs:
 
           Write-Host ""
           Write-Host "============================================================"
-          Write-Host "NEXT STAGE"
-          Write-Host "POST-RECOVERY AUDIT REVALIDATION"
+          Write-Host "PRODUCTION SECOND-PASS RECOVERY COMPLETE"
+          Write-Host "NEXT: POST-RECOVERY AUDIT REVALIDATION"
           Write-Host "============================================================"
 
 
       # ======================================================
-      # 25. UPLOAD VERIFICATION ARTIFACTS
+      # 29. UPLOAD VERIFICATION ARTIFACTS
       # ======================================================
 
-      - name: 25 - Upload production recovery verification artifacts
+      - name: 29 - Upload production recovery verification artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
 
-          name: recover_history_gaps_second_pass_Clean_V002
+          name: recover_history_gaps_second_pass_Clean_V003
 
           if-no-files-found: warn
 
           retention-days: 30
 
           path: |
+            _source_sync_before_ohlcv_sha256.csv
             _production_before_snapshot.csv
             _production_after_snapshot.csv
             _production_second_pass_before/
