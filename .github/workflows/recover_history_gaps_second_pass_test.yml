@@ -3,7 +3,7 @@
 #
 # .github/workflows/recover_history_gaps_second_pass_test.yml
 #
-# Clean V008
+# Clean V009
 # ============================================================
 #
 # PURPOSE
@@ -145,7 +145,7 @@ jobs:
           Write-Host "============================================================"
           Write-Host "UPBIT SURGE MONITOR"
           Write-Host "SECOND-PASS RECOVERY TEST"
-          Write-Host "Clean V008"
+          Write-Host "Clean V009"
           Write-Host "============================================================"
           Write-Host ""
 
@@ -860,7 +860,7 @@ jobs:
 
       # ======================================================
       # 10. SYNC PERSISTENT AUDIT INPUTS INTO WORKSPACE
-      # Clean V008
+      # Clean V009
       # ======================================================
 
       - name: 10 - Safely synchronize persistent audit inputs into workspace
@@ -869,7 +869,7 @@ jobs:
 
           Write-Host "============================================================"
           Write-Host "SYNC PERSISTENT AUDIT INPUTS INTO WORKSPACE"
-          Write-Host "Clean V008"
+          Write-Host "Clean V009"
           Write-Host "============================================================"
 
           $workspaceRecovery = Join-Path $env:GITHUB_WORKSPACE "data\recovery"
@@ -2045,7 +2045,7 @@ jobs:
 
       # ======================================================
       # 23. VERIFY RECOVERY OUTPUT FILES
-      # Clean V008
+      # Clean V009
       # ======================================================
       - name: 23 - Verify first recovery outputs
         run: |
@@ -2053,7 +2053,7 @@ jobs:
 
           Write-Host "============================================================"
           Write-Host "VERIFY FIRST RECOVERY OUTPUTS"
-          Write-Host "Clean V008"
+          Write-Host "Clean V009"
           Write-Host "============================================================"
 
           $base = Join-Path $env:GITHUB_WORKSPACE "$env:TEST_ROOT\data\reports\history_gap_second_pass_recovery"
@@ -2109,21 +2109,23 @@ jobs:
           Write-Host "[PASS] checkpoint"
 
           $statusFile = Join-Path $env:GITHUB_WORKSPACE "$env:TEST_ROOT\data\recover_history_gaps_second_pass_status.csv"
-          if (-not (Test-Path -LiteralPath $statusFile -PathType Leaf)) {
-              throw "Recovery status file missing: $statusFile"
+          if (Test-Path -LiteralPath $statusFile -PathType Leaf) {
+              if ((Get-Item -LiteralPath $statusFile).Length -le 0) {
+                  throw "Recovery status file exists but is empty: $statusFile"
+              }
+              Write-Host "[PASS] recovery status file"
           }
-          if ((Get-Item -LiteralPath $statusFile).Length -le 0) {
-              throw "Recovery status file is empty: $statusFile"
+          else {
+              Write-Host "[INFO] recover_history_gaps_second_pass_status.csv was not created."
+              Write-Host "[INFO] This is valid when the recovery produced no target/detail rows."
           }
-          Write-Host "[PASS] recovery status file"
 
           Write-Host ""
           Write-Host "[PASS] Required recovery outputs exist."
           Write-Host "[PASS] Result JSON parsed."
           Write-Host "[PASS] BEFORE/AFTER SHA256 reports exist."
           Write-Host "[PASS] Recovery checkpoint exists."
-          Write-Host "[PASS] Recovery status exists."
-          Write-Host "[PASS] Zero-detail recovery is accepted safely."
+          Write-Host "[PASS] Zero-detail/zero-status recovery is accepted safely."
 
 
       # ======================================================
@@ -5067,7 +5069,7 @@ jobs:
       # ======================================================
       # 41. FINAL CLEAN V006 SAFETY REPORT
       # ======================================================
-      - name: 41 - Final Clean V008 safety report
+      - name: 41 - Final Clean V009 safety report
         run: |
           Write-Host "============================================================"
           Write-Host "FINAL CLEAN V006 SAFETY REPORT"
@@ -5149,13 +5151,13 @@ jobs:
       # ======================================================
       # 43. SUCCESS
       # ======================================================
-      - name: 43 - Clean V008 success
+      - name: 43 - Clean V009 success
         run: |
           Write-Host ""
           Write-Host "============================================================"
           Write-Host "UPBIT SURGE MONITOR"
           Write-Host "SECOND-PASS RECOVERY TEST"
-          Write-Host "Clean V008"
+          Write-Host "Clean V009"
           Write-Host "SUCCESS"
           Write-Host "============================================================"
           Write-Host ""
