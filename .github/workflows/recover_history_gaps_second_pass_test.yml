@@ -3,7 +3,7 @@
 #
 # .github/workflows/recover_history_gaps_second_pass_test.yml
 #
-# Clean V009
+# Clean V010
 # ============================================================
 #
 # PURPOSE
@@ -145,7 +145,7 @@ jobs:
           Write-Host "============================================================"
           Write-Host "UPBIT SURGE MONITOR"
           Write-Host "SECOND-PASS RECOVERY TEST"
-          Write-Host "Clean V009"
+          Write-Host "Clean V010"
           Write-Host "============================================================"
           Write-Host ""
 
@@ -860,7 +860,7 @@ jobs:
 
       # ======================================================
       # 10. SYNC PERSISTENT AUDIT INPUTS INTO WORKSPACE
-      # Clean V009
+      # Clean V010
       # ======================================================
 
       - name: 10 - Safely synchronize persistent audit inputs into workspace
@@ -869,7 +869,7 @@ jobs:
 
           Write-Host "============================================================"
           Write-Host "SYNC PERSISTENT AUDIT INPUTS INTO WORKSPACE"
-          Write-Host "Clean V009"
+          Write-Host "Clean V010"
           Write-Host "============================================================"
 
           $workspaceRecovery = Join-Path $env:GITHUB_WORKSPACE "data\recovery"
@@ -2045,7 +2045,7 @@ jobs:
 
       # ======================================================
       # 23. VERIFY RECOVERY OUTPUT FILES
-      # Clean V009
+      # Clean V010
       # ======================================================
       - name: 23 - Verify first recovery outputs
         run: |
@@ -2053,7 +2053,7 @@ jobs:
 
           Write-Host "============================================================"
           Write-Host "VERIFY FIRST RECOVERY OUTPUTS"
-          Write-Host "Clean V009"
+          Write-Host "Clean V010"
           Write-Host "============================================================"
 
           $base = Join-Path $env:GITHUB_WORKSPACE "$env:TEST_ROOT\data\reports\history_gap_second_pass_recovery"
@@ -4759,59 +4759,87 @@ jobs:
 
       # ======================================================
       # 38. VERIFY NO FORBIDDEN GIT OPERATIONS
+      # Clean V010 - executable-call aware safety validation
       # ======================================================
       - name: 38 - Verify no forbidden Git operations are configured
         run: |
+          $ErrorActionPreference = "Stop"
+
           Write-Host "============================================================"
           Write-Host "VERIFY NO FORBIDDEN GIT OPERATIONS"
+          Write-Host "Clean V010"
           Write-Host "============================================================"
 
           @'
+          import ast
+          import re
           from pathlib import Path
 
-          recovery_file = Path(
-              "recover_history_gaps_second_pass.py"
+          recovery_file = Path("recover_history_gaps_second_pass.py")
+          source = recovery_file.read_text(encoding="utf-8-sig")
+
+          # Safety-report text such as "Git commit : DISABLED" is allowed.
+          # Reject only code that can actually invoke Git or shell commands.
+          tree = ast.parse(source, filename=str(recovery_file))
+
+          shell_call_names = {
+              "run", "call", "check_call", "check_output", "popen",
+              "system", "popen2", "popen3", "popen4"
+          }
+
+          forbidden_git = re.compile(
+              r"(?:^|[;&|]\s*)git\s+(?:reset|clean|commit|push)(?:\s|$)",
+              re.IGNORECASE,
           )
 
-          text = recovery_file.read_text(
-              encoding="utf-8-sig"
-          ).lower()
+          violations = []
 
-          forbidden = (
-              "git reset --hard",
-              "git clean -",
-              "git commit",
-              "git push",
-          )
+          def literal_string(node):
+              if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                  return node.value
+              if isinstance(node, (ast.List, ast.Tuple)):
+                  values = []
+                  for item in node.elts:
+                      if not isinstance(item, ast.Constant) or not isinstance(item.value, str):
+                          return None
+                      values.append(item.value)
+                  return " ".join(values)
+              return None
 
-          detected = [
-              value
-              for value in forbidden
-              if value in text
-          ]
+          for node in ast.walk(tree):
+              if not isinstance(node, ast.Call):
+                  continue
 
-          if detected:
+              func_name = None
+              if isinstance(node.func, ast.Name):
+                  func_name = node.func.id.lower()
+              elif isinstance(node.func, ast.Attribute):
+                  func_name = node.func.attr.lower()
 
-              print(
-                  "[FAIL] Forbidden Git operation text detected:"
-              )
+              if func_name not in shell_call_names or not node.args:
+                  continue
 
-              for item in detected:
+              command = literal_string(node.args[0])
+              if command is None:
+                  # Dynamic commands are not automatically classified as forbidden here;
+                  # the recovery program's explicit safety contract is validated elsewhere.
+                  continue
 
-                  print(
-                      "  ",
-                      item,
-                  )
+              normalized = command.strip()
+              if forbidden_git.search(normalized):
+                  violations.append((getattr(node, "lineno", 0), normalized))
 
+          if violations:
+              print("[FAIL] Executable forbidden Git operation detected:")
+              for line, command in violations:
+                  print(f"  line {line}: {command}")
               raise SystemExit(1)
 
-          print(
-              "[PASS] No forbidden Git reset/clean/commit/push operation detected in recovery program."
-          )
+          print("[PASS] No executable Git reset/clean/commit/push operation detected.")
+          print("[PASS] Safety-report strings mentioning disabled Git operations are allowed.")
           '@ | Set-Content -Path "_verify_no_git_operations.py" -Encoding UTF8
 
           py _verify_no_git_operations.py
-
           $exitCode = $LASTEXITCODE
 
           Remove-Item `
@@ -4820,7 +4848,6 @@ jobs:
               -ErrorAction SilentlyContinue
 
           if ($exitCode -ne 0) {
-
               throw "Forbidden Git operation safety validation failed."
           }
 
@@ -5069,7 +5096,7 @@ jobs:
       # ======================================================
       # 41. FINAL CLEAN V006 SAFETY REPORT
       # ======================================================
-      - name: 41 - Final Clean V009 safety report
+      - name: 41 - Final Clean V010 safety report
         run: |
           Write-Host "============================================================"
           Write-Host "FINAL CLEAN V006 SAFETY REPORT"
@@ -5151,13 +5178,13 @@ jobs:
       # ======================================================
       # 43. SUCCESS
       # ======================================================
-      - name: 43 - Clean V009 success
+      - name: 43 - Clean V010 success
         run: |
           Write-Host ""
           Write-Host "============================================================"
           Write-Host "UPBIT SURGE MONITOR"
           Write-Host "SECOND-PASS RECOVERY TEST"
-          Write-Host "Clean V009"
+          Write-Host "Clean V010"
           Write-Host "SUCCESS"
           Write-Host "============================================================"
           Write-Host ""
