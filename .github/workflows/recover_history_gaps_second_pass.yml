@@ -3,7 +3,7 @@
 #
 # .github/workflows/recover_history_gaps_second_pass.yml
 #
-# Clean V003
+# Clean V004
 # ============================================================
 #
 # PURPOSE
@@ -19,28 +19,47 @@
 #   C:\Users\USER\Documents\upbit-surge-monitor\data\ohlcv
 #
 #
-# CLEAN V003 FIX
+# CLEAN V004 FIX
 #
-#   Clean V002 expected these source files to already exist
-#   inside LOCAL_PROJECT_ROOT:
+#   Clean V004 preserves the validated Clean V003 production
+#   recovery workflow and adds two safety fixes:
 #
-#     plan_history_gap_retry.py
-#     recover_history_gaps_second_pass.py
+#     1. Remove false positives from forbidden Git validation.
 #
-#   That assumption was incorrect.
+#        The recovery Python source may legitimately contain
+#        safety metadata/text such as:
 #
-#   Clean V003:
+#          "git_commit": False
+#          "git_push": False
+#          "Git push : DISABLED"
 #
-#     1. Checkout latest GitHub source.
-#     2. Validate workspace Python source.
-#     3. Safely synchronize ONLY the two required Python
-#        programs into LOCAL_PROJECT_ROOT.
-#     4. Verify workspace <-> production SHA256.
-#     5. Never synchronize data/.
-#     6. Never overwrite/delete production OHLCV during sync.
-#     7. Execute planner from LOCAL_PROJECT_ROOT.
-#     8. Execute recovery from LOCAL_PROJECT_ROOT.
-#     9. Verify existing candles remain unchanged.
+#        These are NOT executable Git commands.
+#
+#        Clean V004 therefore uses Python AST inspection and
+#        checks executable process-launch calls instead of
+#        scanning arbitrary source text.
+#
+#     2. Preserve completed recovery Resume/Checkpoint state.
+#
+#        A previous successful production recovery may already
+#        have created:
+#
+#          data\validation\
+#          recover_history_gaps_second_pass_checkpoint.json
+#
+#        and:
+#
+#          data\reports\history_gap_second_pass_recovery\
+#          history_gap_second_pass_recovery_result.json
+#
+#        Clean V004 NEVER deletes or resets these files.
+#
+#        The recovery program is executed normally and its own
+#        Resume/Checkpoint contract decides which targets may
+#        be skipped or resumed.
+#
+#        After execution, checkpoint/result integrity is
+#        validated again.
 #
 #
 # SAFETY CONTRACT
@@ -138,7 +157,7 @@ jobs:
           Write-Host "============================================================"
           Write-Host "UPBIT SURGE MONITOR"
           Write-Host "PRODUCTION SECOND-PASS RECOVERY"
-          Write-Host "Clean V003"
+          Write-Host "Clean V004"
           Write-Host "============================================================"
           Write-Host ""
 
@@ -161,7 +180,7 @@ jobs:
 
           Write-Host ""
           Write-Host "------------------------------------------------------------"
-          Write-Host "CLEAN V003 SOURCE SYNCHRONIZATION"
+          Write-Host "CLEAN V004 SOURCE SYNCHRONIZATION"
           Write-Host "------------------------------------------------------------"
 
           Write-Host "GitHub source:"
@@ -176,6 +195,16 @@ jobs:
           Write-Host ""
           Write-Host "Only these two Python programs may be synchronized."
           Write-Host "Production data/ is NEVER synchronized from workspace."
+
+          Write-Host ""
+          Write-Host "------------------------------------------------------------"
+          Write-Host "RESUME / CHECKPOINT"
+          Write-Host "------------------------------------------------------------"
+
+          Write-Host "Existing recovery checkpoint/result files are preserved."
+          Write-Host "Completed targets must be handled by the recovery program's"
+          Write-Host "validated Resume/Checkpoint logic."
+          Write-Host "The workflow does NOT delete or reset recovery state."
 
           Write-Host ""
           Write-Host "------------------------------------------------------------"
@@ -358,8 +387,6 @@ jobs:
 
       # ======================================================
       # 07. RECORD OHLCV BEFORE SOURCE SYNC
-      #
-      # Source synchronization must NEVER modify OHLCV.
       # ======================================================
 
       - name: 07 - Record production OHLCV SHA256 before source synchronization
@@ -500,14 +527,6 @@ jobs:
 
       # ======================================================
       # 08. SYNCHRONIZE ONLY REQUIRED PYTHON PROGRAMS
-      #
-      # IMPORTANT:
-      #
-      #   DO NOT copy directories.
-      #   DO NOT copy data/.
-      #   DO NOT use robocopy /MIR.
-      #   DO NOT remove production files.
-      #
       # ======================================================
 
       - name: 08 - Safely synchronize production execution programs
@@ -516,7 +535,7 @@ jobs:
 
           Write-Host "============================================================"
           Write-Host "SAFE SOURCE SYNCHRONIZATION"
-          Write-Host "Clean V003"
+          Write-Host "Clean V004"
           Write-Host "============================================================"
 
           $programs = @(
@@ -1163,19 +1182,6 @@ jobs:
 
       # ======================================================
       # 16. GENERATE PRODUCTION SECOND-PASS PLAN
-      #
-      # CRITICAL:
-      #
-      # Execute synchronized copy from LOCAL_PROJECT_ROOT.
-      #
-      # This ensures:
-      #
-      #   Path(__file__).resolve().parent
-      #
-      # resolves to:
-      #
-      #   C:\Users\USER\Documents\upbit-surge-monitor
-      #
       # ======================================================
 
       - name: 16 - Generate production second-pass plan
@@ -1184,7 +1190,7 @@ jobs:
 
           Write-Host "============================================================"
           Write-Host "GENERATE PRODUCTION SECOND-PASS PLAN"
-          Write-Host "Clean V003"
+          Write-Host "Clean V004"
           Write-Host "============================================================"
 
           $planner = Join-Path `
@@ -1613,15 +1619,24 @@ jobs:
 
       # ======================================================
       # 20. EXECUTE REAL PRODUCTION RECOVERY
+      #
+      # CLEAN V004:
+      #
+      #   DO NOT delete/reset the existing checkpoint.
+      #   DO NOT delete/reset the existing recovery result.
+      #
+      #   If a previous run already completed targets, the
+      #   recovery program's Resume/Checkpoint logic must
+      #   safely recognize that state.
       # ======================================================
 
-      - name: 20 - Execute PRODUCTION second-pass recovery
+      - name: 20 - Execute PRODUCTION second-pass recovery with Resume Checkpoint
         run: |
           $ErrorActionPreference = "Stop"
 
           Write-Host "============================================================"
           Write-Host "PRODUCTION SECOND-PASS RECOVERY"
-          Write-Host "Clean V003"
+          Write-Host "Clean V004"
           Write-Host "============================================================"
 
           Write-Host ""
@@ -1629,6 +1644,12 @@ jobs:
           Write-Host "[SAFETY] Existing candle overwrite : FORBIDDEN"
           Write-Host "[SAFETY] OHLCV deletion             : FORBIDDEN"
           Write-Host "[SAFETY] Missing candle insertion   : ENABLED"
+
+          Write-Host ""
+
+          Write-Host "[RESUME] Existing checkpoint will NOT be deleted."
+          Write-Host "[RESUME] Existing recovery result will NOT be deleted."
+          Write-Host "[RESUME] Recovery program controls safe SKIP/Resume."
 
           Write-Host ""
 
@@ -1647,9 +1668,62 @@ jobs:
               $env:LOCAL_PROJECT_ROOT `
               "recover_history_gaps_second_pass.py"
 
+          $checkpoint = Join-Path `
+              $env:LOCAL_DATA_ROOT `
+              "validation\recover_history_gaps_second_pass_checkpoint.json"
+
+          $resultFile = Join-Path `
+              $env:LOCAL_DATA_ROOT `
+              "reports\history_gap_second_pass_recovery\history_gap_second_pass_recovery_result.json"
+
 
           if (-not (Test-Path -LiteralPath $recovery -PathType Leaf)) {
               throw "Production recovery program missing immediately before execution."
+          }
+
+
+          if (Test-Path -LiteralPath $checkpoint -PathType Leaf) {
+
+              if ((Get-Item -LiteralPath $checkpoint).Length -le 0) {
+                  throw "Existing production checkpoint is empty. Refusing unsafe execution."
+              }
+
+              py -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8-sig')); assert isinstance(d,dict); print('[PASS] Existing checkpoint JSON valid')" "$checkpoint"
+
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Existing production checkpoint is invalid. Refusing unsafe execution."
+              }
+
+              Write-Host ""
+              Write-Host "[RESUME] Existing valid checkpoint detected."
+              Write-Host "[RESUME] Checkpoint preserved."
+          }
+          else {
+
+              Write-Host ""
+              Write-Host "[INFO] No existing recovery checkpoint detected."
+              Write-Host "[INFO] Recovery program may create a new checkpoint."
+          }
+
+
+          if (Test-Path -LiteralPath $resultFile -PathType Leaf) {
+
+              if ((Get-Item -LiteralPath $resultFile).Length -le 0) {
+                  throw "Existing production recovery result is empty. Refusing unsafe execution."
+              }
+
+              py -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8-sig')); assert isinstance(d,dict); print('[PASS] Existing recovery result JSON valid')" "$resultFile"
+
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Existing production recovery result is invalid. Refusing unsafe execution."
+              }
+
+              Write-Host "[RESUME] Existing valid recovery result detected."
+              Write-Host "[RESUME] Recovery result preserved until program execution."
+          }
+          else {
+
+              Write-Host "[INFO] No existing recovery result detected."
           }
 
 
@@ -1675,6 +1749,7 @@ jobs:
 
           Write-Host ""
           Write-Host "[PASS] Production second-pass recovery execution completed."
+          Write-Host "[PASS] Resume/Checkpoint state was not reset by workflow."
 
 
       # ======================================================
@@ -2453,9 +2528,15 @@ jobs:
 
       # ======================================================
       # 25. VERIFY CHECKPOINT
+      #
+      # CLEAN V004:
+      #
+      #   Checkpoint must survive the workflow.
+      #   Existing completed checkpoint is valid.
+      #   Workflow never deletes/resets it.
       # ======================================================
 
-      - name: 25 - Verify production recovery checkpoint
+      - name: 25 - Verify production recovery Resume Checkpoint
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -2475,17 +2556,94 @@ jobs:
           }
 
 
-          py -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8-sig')); assert isinstance(d,dict); print('[PASS] Recovery checkpoint JSON valid')" "$checkpoint"
+          $env:PRODUCTION_CHECKPOINT_FILE = $checkpoint
 
 
-          if ($LASTEXITCODE -ne 0) {
+          @'
+          import json
+          import os
+          from pathlib import Path
+
+
+          path = Path(
+              os.environ["PRODUCTION_CHECKPOINT_FILE"]
+          )
+
+
+          with path.open(
+              "r",
+              encoding="utf-8-sig",
+          ) as handle:
+
+              checkpoint = json.load(handle)
+
+
+          if not isinstance(checkpoint, dict):
+              raise SystemExit(
+                  "[FAIL] Recovery checkpoint root is not a JSON object."
+              )
+
+
+          print("Checkpoint:")
+          print(" ", path)
+          print()
+
+          print(
+              "Program :",
+              checkpoint.get("program"),
+          )
+
+          print(
+              "Version :",
+              checkpoint.get("version"),
+          )
+
+
+          completed = checkpoint.get("completed")
+
+          if completed is not None:
+
+              if isinstance(completed, (list, dict)):
+                  print(
+                      "Completed entries:",
+                      len(completed),
+                  )
+              else:
+                  print(
+                      "Completed field:",
+                      completed,
+                  )
+
+
+          print()
+          print("[PASS] Recovery checkpoint JSON valid.")
+          print("[PASS] Recovery checkpoint state preserved.")
+          '@ | Set-Content `
+              -LiteralPath "_verify_production_checkpoint.py" `
+              -Encoding UTF8
+
+
+          py _verify_production_checkpoint.py
+
+          $exitCode = $LASTEXITCODE
+
+
+          Remove-Item `
+              -LiteralPath "_verify_production_checkpoint.py" `
+              -Force `
+              -ErrorAction SilentlyContinue
+
+
+          if ($exitCode -ne 0) {
               throw "Production recovery checkpoint validation failed."
           }
 
 
           Write-Host ""
           Write-Host "[PASS] Production checkpoint exists."
+          Write-Host "[PASS] Production checkpoint is non-empty."
           Write-Host "[PASS] Production checkpoint is valid JSON."
+          Write-Host "[PASS] Resume/Checkpoint state preserved."
 
 
       # ======================================================
@@ -2556,14 +2714,41 @@ jobs:
 
 
       # ======================================================
-      # 27. VERIFY NO FORBIDDEN GIT COMMANDS
+      # 27. VERIFY NO FORBIDDEN GIT OPERATIONS
       #
-      # Exact executable-command patterns only.
-      # Safety text such as "Git push : DISABLED" must not
-      # create a false positive.
+      # CLEAN V004 FIX
+      #
+      #   DO NOT search arbitrary source text for:
+      #
+      #       git reset
+      #       git clean
+      #       git commit
+      #       git push
+      #
+      #   because safety metadata, dictionaries, comments and
+      #   log messages may legitimately contain those words.
+      #
+      #   Instead parse Python AST and inspect executable
+      #   process-launch calls.
+      #
+      #   Covered launch mechanisms:
+      #
+      #       os.system(...)
+      #       os.popen(...)
+      #
+      #       subprocess.run(...)
+      #       subprocess.call(...)
+      #       subprocess.check_call(...)
+      #       subprocess.check_output(...)
+      #       subprocess.Popen(...)
+      #
+      #   Literal command strings/lists are inspected.
+      #
+      #   Dynamic command expressions involving the literal
+      #   executable name "git" are rejected conservatively.
       # ======================================================
 
-      - name: 27 - Verify no forbidden Git commands
+      - name: 27 - Verify no forbidden Git operations are executable
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -2573,10 +2758,16 @@ jobs:
               "recover_history_gaps_second_pass.py"
 
 
+          if (-not (Test-Path -LiteralPath $recovery -PathType Leaf)) {
+              throw "Recovery source missing for Git safety validation: $recovery"
+          }
+
+
           $env:RECOVERY_SOURCE_FILE = $recovery
 
 
           @'
+          import ast
           import os
           import re
           from pathlib import Path
@@ -2587,72 +2778,291 @@ jobs:
           )
 
 
-          text = path.read_text(
+          source = path.read_text(
               encoding="utf-8-sig"
           )
 
 
-          patterns = {
-              "git reset":
-                  r"(?im)^\s*(?:os\.system\(|subprocess\..*?)?[\"']?\s*git\s+reset\b",
+          try:
+              tree = ast.parse(
+                  source,
+                  filename=str(path),
+              )
+          except SyntaxError as exc:
+              raise SystemExit(
+                  f"[FAIL] Unable to parse recovery source AST: {exc}"
+              )
 
-              "git clean":
-                  r"(?im)^\s*(?:os\.system\(|subprocess\..*?)?[\"']?\s*git\s+clean\b",
 
-              "git commit":
-                  r"(?im)^\s*(?:os\.system\(|subprocess\..*?)?[\"']?\s*git\s+commit\b",
-
-              "git push":
-                  r"(?im)^\s*(?:os\.system\(|subprocess\..*?)?[\"']?\s*git\s+push\b",
+          forbidden_subcommands = {
+              "reset",
+              "clean",
+              "commit",
+              "push",
           }
 
 
-          found = []
+          process_launchers = {
+              "os.system",
+              "os.popen",
+              "subprocess.run",
+              "subprocess.call",
+              "subprocess.check_call",
+              "subprocess.check_output",
+              "subprocess.Popen",
+          }
 
 
-          for name, pattern in patterns.items():
+          def dotted_name(node):
 
-              if re.search(pattern, text):
-                  found.append(name)
+              parts = []
+
+              while isinstance(node, ast.Attribute):
+                  parts.append(node.attr)
+                  node = node.value
+
+              if isinstance(node, ast.Name):
+                  parts.append(node.id)
+              else:
+                  return None
+
+              return ".".join(reversed(parts))
 
 
-          if found:
+          def literal_command(node):
 
-              print("[FAIL] Forbidden Git command patterns detected:")
+              if isinstance(node, ast.Constant):
 
-              for item in found:
-                  print("  ", item)
+                  if isinstance(node.value, str):
+                      return node.value
+
+                  return None
+
+
+              if isinstance(node, (ast.List, ast.Tuple)):
+
+                  values = []
+
+                  for element in node.elts:
+
+                      if not (
+                          isinstance(element, ast.Constant)
+                          and
+                          isinstance(element.value, str)
+                      ):
+                          return None
+
+                      values.append(element.value)
+
+                  return values
+
+
+              return None
+
+
+          def contains_git_literal(node):
+
+              for child in ast.walk(node):
+
+                  if (
+                      isinstance(child, ast.Constant)
+                      and
+                      isinstance(child.value, str)
+                  ):
+
+                      value = child.value.strip().lower()
+
+                      if (
+                          value == "git"
+                          or
+                          re.search(
+                              r"(^|[\s\"'])git(?:\.exe)?([\s\"']|$)",
+                              value,
+                          )
+                      ):
+                          return True
+
+              return False
+
+
+          def forbidden_from_string(command):
+
+              normalized = " ".join(
+                  str(command).strip().lower().split()
+              )
+
+              match = re.search(
+                  r"(?:^|[\s;&|])"
+                  r"git(?:\.exe)?\s+"
+                  r"(reset|clean|commit|push)"
+                  r"(?:\s|$)",
+                  normalized,
+              )
+
+              if match:
+                  return match.group(1)
+
+              return None
+
+
+          def forbidden_from_list(command):
+
+              tokens = [
+                  str(item).strip().lower()
+                  for item in command
+              ]
+
+              for index, token in enumerate(tokens):
+
+                  executable = (
+                      token.replace("\\", "/")
+                      .rsplit("/", 1)[-1]
+                  )
+
+                  if executable not in (
+                      "git",
+                      "git.exe",
+                  ):
+                      continue
+
+                  if index + 1 >= len(tokens):
+                      continue
+
+                  subcommand = tokens[index + 1]
+
+                  if subcommand in forbidden_subcommands:
+                      return subcommand
+
+              return None
+
+
+          violations = []
+
+
+          for node in ast.walk(tree):
+
+              if not isinstance(node, ast.Call):
+                  continue
+
+              launcher = dotted_name(node.func)
+
+              if launcher not in process_launchers:
+                  continue
+
+              if not node.args:
+                  continue
+
+              command_node = node.args[0]
+              command = literal_command(command_node)
+
+              if isinstance(command, str):
+
+                  forbidden = forbidden_from_string(
+                      command
+                  )
+
+                  if forbidden:
+
+                      violations.append(
+                          (
+                              node.lineno,
+                              launcher,
+                              f"git {forbidden}",
+                          )
+                      )
+
+                  continue
+
+
+              if isinstance(command, list):
+
+                  forbidden = forbidden_from_list(
+                      command
+                  )
+
+                  if forbidden:
+
+                      violations.append(
+                          (
+                              node.lineno,
+                              launcher,
+                              f"git {forbidden}",
+                          )
+                      )
+
+                  continue
+
+
+              # Dynamic process command:
+              #
+              # Do not fail merely because unrelated dynamic
+              # commands exist.
+              #
+              # Fail only when the dynamic expression itself
+              # contains a literal Git executable reference.
+              if contains_git_literal(command_node):
+
+                  violations.append(
+                      (
+                          node.lineno,
+                          launcher,
+                          "dynamic command containing literal git executable",
+                      )
+                  )
+
+
+          if violations:
+
+              print(
+                  "[FAIL] Forbidden executable Git operation detected:"
+              )
+
+              for lineno, launcher, detail in violations:
+
+                  print(
+                      f"  line={lineno} "
+                      f"launcher={launcher} "
+                      f"command={detail}"
+                  )
 
               raise SystemExit(1)
 
 
-          print("[PASS] No forbidden Git command patterns detected.")
+          print(
+              "[PASS] No executable forbidden Git "
+              "reset/clean/commit/push operation detected."
+          )
+
+          print(
+              "[PASS] Safety metadata/comments/log text "
+              "do not trigger false positives."
+          )
           '@ | Set-Content `
-              -LiteralPath "_verify_forbidden_git.py" `
+              -LiteralPath "_verify_forbidden_git_ast.py" `
               -Encoding UTF8
 
 
-          py _verify_forbidden_git.py
+          py _verify_forbidden_git_ast.py
 
           $exitCode = $LASTEXITCODE
 
 
           Remove-Item `
-              -LiteralPath "_verify_forbidden_git.py" `
+              -LiteralPath "_verify_forbidden_git_ast.py" `
               -Force `
               -ErrorAction SilentlyContinue
 
 
           if ($exitCode -ne 0) {
-              throw "Forbidden Git command safety validation failed."
+              throw "Forbidden Git operation safety validation failed."
           }
 
 
       # ======================================================
-      # 28. FINAL CLEAN V003 REPORT
+      # 28. FINAL CLEAN V004 REPORT
       # ======================================================
 
-      - name: 28 - Final Clean V003 production safety report
+      - name: 28 - Final Clean V004 production safety report
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -2660,7 +3070,7 @@ jobs:
           Write-Host "============================================================"
           Write-Host "UPBIT SURGE MONITOR"
           Write-Host "PRODUCTION SECOND-PASS RECOVERY"
-          Write-Host "Clean V003"
+          Write-Host "Clean V004"
           Write-Host "SUCCESS"
           Write-Host "============================================================"
           Write-Host ""
@@ -2688,6 +3098,7 @@ jobs:
 
           Write-Host ""
           Write-Host "[PASS] Recovery executed from production project root."
+          Write-Host "[PASS] Existing Resume/Checkpoint state was preserved."
           Write-Host "[PASS] Production AFTER inventory = 870."
           Write-Host "[PASS] No OHLCV file disappeared."
           Write-Host "[PASS] No existing timestamp disappeared."
@@ -2696,6 +3107,7 @@ jobs:
           Write-Host "[PASS] Only authorized recovery files changed."
           Write-Host "[PASS] Recovery checkpoint validated."
           Write-Host "[PASS] Recovery reports validated."
+          Write-Host "[PASS] AST Git executable-operation safety validation passed."
 
           Write-Host ""
           Write-Host "------------------------------------------------------------"
@@ -2712,10 +3124,10 @@ jobs:
           Write-Host "Prediction                 : DISABLED"
           Write-Host "Trading                    : DISABLED"
 
-          Write-Host "Git reset                  : DISABLED"
-          Write-Host "Git clean                  : DISABLED"
-          Write-Host "Git commit                 : DISABLED"
-          Write-Host "Git push                   : DISABLED"
+          Write-Host "Git reset                  : DISABLED / VERIFIED"
+          Write-Host "Git clean                  : DISABLED / VERIFIED"
+          Write-Host "Git commit                 : DISABLED / VERIFIED"
+          Write-Host "Git push                   : DISABLED / VERIFIED"
 
           Write-Host ""
           Write-Host "============================================================"
@@ -2733,7 +3145,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
 
-          name: recover_history_gaps_second_pass_Clean_V003
+          name: recover_history_gaps_second_pass_Clean_V004
 
           if-no-files-found: warn
 
