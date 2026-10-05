@@ -209,16 +209,58 @@ TIMEFRAME_SECONDS = {
 # ============================================================
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+SCRIPT_ROOT = Path(__file__).resolve().parent
 
+def _resolve_project_root() -> Path:
+    """Resolve the real production project root, never silently auditing an empty Actions workspace."""
+    env_names = (
+        "UPBIT_SURGE_PROJECT_ROOT",
+        "UPBIT_PROJECT_ROOT",
+        "PRODUCTION_PROJECT_ROOT",
+        "PRODUCTION_ROOT",
+    )
+    candidates: List[Tuple[str, Path]] = []
+    for name in env_names:
+        raw = clean_text(os.environ.get(name, ""))
+        if raw:
+            candidates.append((f"env:{name}", Path(raw).expanduser()))
+
+    # Self-hosted Windows production location used by this project.
+    candidates.append(("user-documents", Path.home() / "Documents" / "upbit-surge-monitor"))
+    # Local/manual execution remains supported when the script itself is in production.
+    candidates.append(("script-root", SCRIPT_ROOT))
+
+    required_relatives = (
+        Path("data") / "recovery" / "history_gap_second_pass_targets.csv",
+        Path("data") / "recovery" / "history_gap_second_pass_plan.json",
+        Path("data") / "reports" / "history_gap_second_pass_recovery" / "history_gap_second_pass_recovery_result.json",
+        Path("data") / "validation" / "recover_history_gaps_second_pass_checkpoint.json",
+        Path("data") / "ohlcv" / "h1",
+        Path("data") / "ohlcv" / "h4",
+        Path("data") / "ohlcv" / "d1",
+    )
+
+    checked: List[str] = []
+    for source, candidate in candidates:
+        candidate = candidate.resolve()
+        missing = [str(rel) for rel in required_relatives if not (candidate / rel).exists()]
+        checked.append(f"{source}={candidate} missing={len(missing)}")
+        if not missing:
+            print(f"[PATH] Production project root: {candidate}")
+            print(f"[PATH] Root source: {source}")
+            return candidate
+
+    raise FileNotFoundError(
+        "Unable to resolve production project root containing the required "
+        "post-recovery evidence and OHLCV directories. Checked: "
+        + " | ".join(checked)
+    )
+
+PROJECT_ROOT = _resolve_project_root()
 DATA_DIR = PROJECT_ROOT / "data"
-
 OHLCV_DIR = DATA_DIR / "ohlcv"
-
 RECOVERY_DIR = DATA_DIR / "recovery"
-
 REPORTS_DIR = DATA_DIR / "reports"
-
 VALIDATION_DIR = DATA_DIR / "validation"
 
 
