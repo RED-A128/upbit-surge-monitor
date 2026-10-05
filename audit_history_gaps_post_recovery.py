@@ -221,7 +221,11 @@ def _resolve_project_root() -> Path:
     )
     candidates: List[Tuple[str, Path]] = []
     for name in env_names:
-        raw = clean_text(os.environ.get(name, ""))
+        # IMPORTANT: root resolution runs during module import, before
+        # clean_text() is defined later in this file. Keep this bootstrap
+        # logic dependency-free.
+        raw_value = os.environ.get(name, "")
+        raw = str(raw_value).strip() if raw_value is not None else ""
         if raw:
             candidates.append((f"env:{name}", Path(raw).expanduser()))
 
