@@ -1,0 +1,1254 @@
+# ============================================================
+# Upbit Surge Monitor
+# audit_history_gaps_post_recovery_test.yml
+# Clean V001
+# ============================================================
+#
+# PURPOSE
+#
+#   SAFE GitHub Actions test workflow for:
+#
+#       audit_history_gaps_post_recovery.py
+#
+#   This workflow validates the post-recovery audit in the
+#   existing self-hosted Windows project environment.
+#
+#
+# IMPORTANT
+#
+#   1. Uses the self-hosted Windows runner.
+#   2. Does NOT run second-pass recovery.
+#   3. Does NOT download candles.
+#   4. Does NOT modify production OHLCV.
+#   5. Does NOT delete production OHLCV.
+#   6. Does NOT build features.
+#   7. Does NOT run 256 detector.
+#   8. Does NOT generate future labels.
+#   9. Does NOT run prediction.
+#  10. Does NOT run trading.
+#  11. Does NOT git reset / clean.
+#  12. Does NOT commit or push.
+#  13. Executes only the READ-ONLY post-recovery audit.
+#  14. Audit exit code must be 0 for workflow PASS.
+#
+#
+# REQUIRED LOCAL STATE
+#
+#   The self-hosted runner working tree must already contain:
+#
+#       data/ohlcv/h1/
+#       data/ohlcv/h4/
+#       data/ohlcv/d1/
+#
+#       data/recovery/
+#           history_gap_second_pass_targets.csv
+#           history_gap_second_pass_plan.json
+#
+#       data/reports/history_gap_second_pass_recovery/
+#           history_gap_second_pass_recovery_summary.csv
+#           history_gap_second_pass_recovery_detail.csv
+#           history_gap_second_pass_recovery_result.json
+#           history_gap_second_pass_before_sha256.csv
+#           history_gap_second_pass_after_sha256.csv
+#
+#       data/validation/
+#           recover_history_gaps_second_pass_checkpoint.json
+#
+#
+# TEST OUTPUT
+#
+#   data/reports/history_gap_post_recovery_audit/
+#
+#       history_gap_post_recovery_audit_summary.csv
+#       history_gap_post_recovery_audit_detail.csv
+#       history_gap_post_recovery_audit_inventory.csv
+#       history_gap_post_recovery_audit_result.json
+#
+#   data/validation/
+#
+#       audit_history_gaps_post_recovery_checkpoint.json
+#
+#   data/
+#
+#       audit_history_gaps_post_recovery_status.csv
+#
+#
+# SAFETY
+#
+#   NO OHLCV WRITE
+#   NO OHLCV DELETE
+#   NO API DOWNLOAD
+#   NO GAP REPAIR
+#   NO FEATURE BUILD
+#   NO DETECTOR
+#   NO FUTURE LABEL
+#   NO PREDICTION
+#   NO TRADING
+#   NO GIT RESET
+#   NO GIT CLEAN
+#   NO COMMIT
+#   NO PUSH
+#
+# ============================================================
+
+
+name: audit_history_gaps_post_recovery_test.yml
+
+
+on:
+  workflow_dispatch:
+
+
+permissions:
+  contents: read
+
+
+concurrency:
+  group: audit-history-gaps-post-recovery-test
+  cancel-in-progress: false
+
+
+jobs:
+
+  audit-history-gaps-post-recovery-test:
+
+    name: audit_history_gaps_post_recovery_test.yml
+
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+
+    timeout-minutes: 120
+
+
+    steps:
+
+      # ======================================================
+      # 1. CHECKOUT
+      # ======================================================
+
+      - name: Checkout repository
+
+        uses: actions/checkout@v4
+
+        with:
+          fetch-depth: 1
+          clean: false
+
+
+      # ======================================================
+      # 2. ENVIRONMENT INFORMATION
+      # ======================================================
+
+      - name: Show environment
+
+        shell: powershell
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "UPBIT SURGE MONITOR"
+          Write-Host "POST-RECOVERY AUDIT TEST"
+          Write-Host "Clean V001"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          Write-Host "Runner:"
+          Write-Host "  Name : $env:RUNNER_NAME"
+          Write-Host "  OS   : $env:RUNNER_OS"
+          Write-Host "  Arch : $env:RUNNER_ARCH"
+          Write-Host ""
+
+          Write-Host "Workspace:"
+          Write-Host "  $env:GITHUB_WORKSPACE"
+          Write-Host ""
+
+          Write-Host "Repository:"
+          Write-Host "  $env:GITHUB_REPOSITORY"
+          Write-Host ""
+
+          Write-Host "Ref:"
+          Write-Host "  $env:GITHUB_REF"
+          Write-Host ""
+
+          Write-Host "SHA:"
+          Write-Host "  $env:GITHUB_SHA"
+          Write-Host ""
+
+          Write-Host "Python:"
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Python launcher 'py' is not available."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Environment information confirmed."
+
+
+      # ======================================================
+      # 3. VERIFY AUDIT PROGRAM
+      # ======================================================
+
+      - name: Verify audit program
+
+        shell: powershell
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          $AuditFile = Join-Path `
+              $env:GITHUB_WORKSPACE `
+              "audit_history_gaps_post_recovery.py"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY AUDIT PROGRAM"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          if (-not (Test-Path -LiteralPath $AuditFile -PathType Leaf)) {
+              throw "Missing audit program: $AuditFile"
+          }
+
+          $Info = Get-Item -LiteralPath $AuditFile
+
+          if ($Info.Length -le 0) {
+              throw "Audit program is empty: $AuditFile"
+          }
+
+          Write-Host "File:"
+          Write-Host "  $AuditFile"
+          Write-Host ""
+
+          Write-Host "Size:"
+          Write-Host "  $($Info.Length) bytes"
+          Write-Host ""
+
+          $Text = Get-Content `
+              -LiteralPath $AuditFile `
+              -Raw `
+              -Encoding UTF8
+
+          if ($Text -notmatch 'PROGRAM\s*=\s*"audit_history_gaps_post_recovery\.py"') {
+              throw "Unexpected PROGRAM declaration."
+          }
+
+          if ($Text -notmatch 'VERSION\s*=\s*"Clean V001"') {
+              throw "Unexpected audit VERSION declaration."
+          }
+
+          if ($Text -notmatch 'EXECUTION_MODE\s*=\s*"READ_ONLY_POST_RECOVERY_AUDIT"') {
+              throw "Unexpected audit EXECUTION_MODE declaration."
+          }
+
+          Write-Host "[PASS] audit_history_gaps_post_recovery.py"
+          Write-Host "[PASS] Clean V001"
+          Write-Host "[PASS] READ_ONLY_POST_RECOVERY_AUDIT"
+
+
+      # ======================================================
+      # 4. VERIFY REQUIRED DIRECTORY STRUCTURE
+      # ======================================================
+
+      - name: Verify required directories
+
+        shell: powershell
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY REQUIRED DIRECTORIES"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $RequiredDirectories = @(
+
+              "data\ohlcv\h1",
+              "data\ohlcv\h4",
+              "data\ohlcv\d1",
+              "data\recovery",
+              "data\reports\history_gap_second_pass_recovery",
+              "data\validation"
+
+          )
+
+          foreach ($RelativePath in $RequiredDirectories) {
+
+              $FullPath = Join-Path `
+                  $env:GITHUB_WORKSPACE `
+                  $RelativePath
+
+              if (-not (Test-Path -LiteralPath $FullPath -PathType Container)) {
+
+                  throw "Required directory missing: $FullPath"
+
+              }
+
+              Write-Host "[PASS] $RelativePath"
+
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Required directory structure confirmed."
+
+
+      # ======================================================
+      # 5. VERIFY REQUIRED RECOVERY EVIDENCE
+      # ======================================================
+
+      - name: Verify required recovery evidence
+
+        shell: powershell
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY REQUIRED RECOVERY EVIDENCE"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $RequiredFiles = @(
+
+              "data\recovery\history_gap_second_pass_targets.csv",
+              "data\recovery\history_gap_second_pass_plan.json",
+
+              "data\reports\history_gap_second_pass_recovery\history_gap_second_pass_recovery_summary.csv",
+              "data\reports\history_gap_second_pass_recovery\history_gap_second_pass_recovery_detail.csv",
+              "data\reports\history_gap_second_pass_recovery\history_gap_second_pass_recovery_result.json",
+              "data\reports\history_gap_second_pass_recovery\history_gap_second_pass_before_sha256.csv",
+              "data\reports\history_gap_second_pass_recovery\history_gap_second_pass_after_sha256.csv",
+
+              "data\validation\recover_history_gaps_second_pass_checkpoint.json"
+
+          )
+
+          foreach ($RelativePath in $RequiredFiles) {
+
+              $FullPath = Join-Path `
+                  $env:GITHUB_WORKSPACE `
+                  $RelativePath
+
+              if (-not (Test-Path -LiteralPath $FullPath -PathType Leaf)) {
+
+                  throw "Required recovery evidence missing: $FullPath"
+
+              }
+
+              $Info = Get-Item -LiteralPath $FullPath
+
+              if ($Info.Length -le 0) {
+
+                  throw "Required recovery evidence is empty: $FullPath"
+
+              }
+
+              Write-Host "[PASS] $RelativePath"
+              Write-Host "       $($Info.Length) bytes"
+
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Recovery evidence exists."
+
+
+      # ======================================================
+      # 6. VERIFY PRODUCTION OHLCV INVENTORY
+      # ======================================================
+
+      - name: Verify production OHLCV inventory
+
+        shell: powershell
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY PRODUCTION OHLCV INVENTORY"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $ExpectedPerTimeframe = 290
+          $ExpectedTotal = 870
+
+          $Counts = @{}
+
+          foreach ($Timeframe in @("h1", "h4", "d1")) {
+
+              $Directory = Join-Path `
+                  $env:GITHUB_WORKSPACE `
+                  "data\ohlcv\$Timeframe"
+
+              if (-not (Test-Path -LiteralPath $Directory -PathType Container)) {
+
+                  throw "OHLCV directory missing: $Directory"
+
+              }
+
+              $Files = @(
+                  Get-ChildItem `
+                      -LiteralPath $Directory `
+                      -File `
+                      -Filter "*.csv"
+              )
+
+              $Count = $Files.Count
+
+              $Counts[$Timeframe] = $Count
+
+              Write-Host "$($Timeframe.ToUpper()) : $Count"
+
+              if ($Count -ne $ExpectedPerTimeframe) {
+
+                  throw "$($Timeframe.ToUpper()) inventory mismatch. Expected=$ExpectedPerTimeframe Found=$Count"
+
+              }
+
+          }
+
+          $Total = `
+              $Counts["h1"] + `
+              $Counts["h4"] + `
+              $Counts["d1"]
+
+          Write-Host ""
+          Write-Host "TOTAL : $Total"
+          Write-Host ""
+
+          if ($Total -ne $ExpectedTotal) {
+
+              throw "Total OHLCV inventory mismatch. Expected=$ExpectedTotal Found=$Total"
+
+          }
+
+          Write-Host "[PASS] H1 = 290"
+          Write-Host "[PASS] H4 = 290"
+          Write-Host "[PASS] D1 = 290"
+          Write-Host "[PASS] TOTAL = 870"
+
+
+      # ======================================================
+      # 7. VERIFY RECOVERY CHECKPOINT
+      # ======================================================
+
+      - name: Verify recovery checkpoint completed
+
+        shell: powershell
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY SECOND-PASS RECOVERY CHECKPOINT"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $CheckpointPath = Join-Path `
+              $env:GITHUB_WORKSPACE `
+              "data\validation\recover_history_gaps_second_pass_checkpoint.json"
+
+          $Checkpoint = Get-Content `
+              -LiteralPath $CheckpointPath `
+              -Raw `
+              -Encoding UTF8 |
+              ConvertFrom-Json
+
+          if ($null -eq $Checkpoint) {
+
+              throw "Unable to parse recovery checkpoint JSON."
+
+          }
+
+          Write-Host "Program   : $($Checkpoint.program)"
+          Write-Host "Version   : $($Checkpoint.version)"
+          Write-Host "Status    : $($Checkpoint.status)"
+          Write-Host "Completed : $($Checkpoint.completed)"
+          Write-Host ""
+
+          if ($Checkpoint.program -ne "recover_history_gaps_second_pass.py") {
+
+              throw "Unexpected recovery checkpoint program: $($Checkpoint.program)"
+
+          }
+
+          if ($Checkpoint.version -ne "Clean V001") {
+
+              throw "Unexpected recovery checkpoint version: $($Checkpoint.version)"
+
+          }
+
+          if ($Checkpoint.status -ne "COMPLETED") {
+
+              throw "Recovery checkpoint status is not COMPLETED."
+
+          }
+
+          if ($Checkpoint.completed -ne $true) {
+
+              throw "Recovery checkpoint completed flag is not true."
+
+          }
+
+          Write-Host "[PASS] Second-pass recovery checkpoint is COMPLETED."
+
+
+      # ======================================================
+      # 8. RECORD OHLCV HASHES BEFORE AUDIT
+      # ======================================================
+
+      - name: Record OHLCV hashes before audit
+
+        shell: powershell
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "RECORD OHLCV HASHES BEFORE AUDIT"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $HashFile = Join-Path `
+              $env:RUNNER_TEMP `
+              "post_recovery_audit_before_sha256.csv"
+
+          $Rows = @()
+
+          foreach ($Timeframe in @("h1", "h4", "d1")) {
+
+              $Directory = Join-Path `
+                  $env:GITHUB_WORKSPACE `
+                  "data\ohlcv\$Timeframe"
+
+              $Files = Get-ChildItem `
+                  -LiteralPath $Directory `
+                  -File `
+                  -Filter "*.csv" |
+                  Sort-Object Name
+
+              foreach ($File in $Files) {
+
+                  $Hash = Get-FileHash `
+                      -LiteralPath $File.FullName `
+                      -Algorithm SHA256
+
+                  $Rows += [PSCustomObject]@{
+
+                      timeframe = $Timeframe
+                      market    = $File.BaseName.ToUpper()
+                      path      = $File.FullName
+                      bytes     = $File.Length
+                      sha256    = $Hash.Hash.ToLower()
+
+                  }
+
+              }
+
+          }
+
+          if ($Rows.Count -ne 870) {
+
+              throw "Before-audit hash inventory mismatch. Expected=870 Found=$($Rows.Count)"
+
+          }
+
+          $Rows |
+              Export-Csv `
+                  -LiteralPath $HashFile `
+                  -NoTypeInformation `
+                  -Encoding UTF8
+
+          Write-Host "Hash snapshot:"
+          Write-Host "  $HashFile"
+          Write-Host ""
+
+          Write-Host "Files:"
+          Write-Host "  $($Rows.Count)"
+          Write-Host ""
+
+          Write-Host "[PASS] BEFORE audit SHA256 snapshot created."
+
+
+      # ======================================================
+      # 9. RUN READ-ONLY POST-RECOVERY AUDIT
+      # ======================================================
+
+      - name: Run post-recovery audit
+
+        shell: powershell
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "RUN POST-RECOVERY AUDIT"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          Set-Location `
+              -LiteralPath $env:GITHUB_WORKSPACE
+
+          py audit_history_gaps_post_recovery.py
+
+          $AuditExitCode = $LASTEXITCODE
+
+          Write-Host ""
+          Write-Host "Audit exit code:"
+          Write-Host "  $AuditExitCode"
+          Write-Host ""
+
+          if ($AuditExitCode -ne 0) {
+
+              throw "Post-recovery audit failed with exit code $AuditExitCode"
+
+          }
+
+          Write-Host "[PASS] Audit process exit code = 0"
+
+
+      # ======================================================
+      # 10. VERIFY OHLCV WAS NOT MODIFIED
+      # ======================================================
+
+      - name: Verify OHLCV unchanged after audit
+
+        shell: powershell
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY OHLCV UNCHANGED AFTER AUDIT"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $BeforeHashFile = Join-Path `
+              $env:RUNNER_TEMP `
+              "post_recovery_audit_before_sha256.csv"
+
+          if (-not (Test-Path -LiteralPath $BeforeHashFile -PathType Leaf)) {
+
+              throw "Before-audit SHA256 snapshot missing."
+
+          }
+
+          $BeforeRows = @(
+              Import-Csv `
+                  -LiteralPath $BeforeHashFile
+          )
+
+          if ($BeforeRows.Count -ne 870) {
+
+              throw "Invalid BEFORE hash inventory. Expected=870 Found=$($BeforeRows.Count)"
+
+          }
+
+          $BeforeMap = @{}
+
+          foreach ($Row in $BeforeRows) {
+
+              $Key = "$($Row.timeframe)|$($Row.market)"
+
+              if ($BeforeMap.ContainsKey($Key)) {
+
+                  throw "Duplicate BEFORE hash key: $Key"
+
+              }
+
+              $BeforeMap[$Key] = $Row.sha256.ToLower()
+
+          }
+
+          $AfterCount = 0
+          $Changed = @()
+
+          foreach ($Timeframe in @("h1", "h4", "d1")) {
+
+              $Directory = Join-Path `
+                  $env:GITHUB_WORKSPACE `
+                  "data\ohlcv\$Timeframe"
+
+              $Files = Get-ChildItem `
+                  -LiteralPath $Directory `
+                  -File `
+                  -Filter "*.csv" |
+                  Sort-Object Name
+
+              foreach ($File in $Files) {
+
+                  $AfterCount++
+
+                  $Market = $File.BaseName.ToUpper()
+
+                  $Key = "$Timeframe|$Market"
+
+                  if (-not $BeforeMap.ContainsKey($Key)) {
+
+                      $Changed += "NEW_OR_UNEXPECTED:$Key"
+
+                      continue
+
+                  }
+
+                  $AfterHash = (
+                      Get-FileHash `
+                          -LiteralPath $File.FullName `
+                          -Algorithm SHA256
+                  ).Hash.ToLower()
+
+                  $BeforeHash = $BeforeMap[$Key]
+
+                  if ($AfterHash -ne $BeforeHash) {
+
+                      $Changed += "HASH_CHANGED:$Key"
+
+                  }
+
+              }
+
+          }
+
+          if ($AfterCount -ne 870) {
+
+              throw "After-audit OHLCV inventory mismatch. Expected=870 Found=$AfterCount"
+
+          }
+
+          if ($Changed.Count -gt 0) {
+
+              Write-Host ""
+              Write-Host "OHLCV changes detected:"
+              Write-Host ""
+
+              foreach ($Item in $Changed) {
+
+                  Write-Host "  $Item"
+
+              }
+
+              throw "READ-ONLY safety violation: OHLCV changed during audit."
+
+          }
+
+          Write-Host "[PASS] AFTER audit OHLCV count = 870"
+          Write-Host "[PASS] All 870 OHLCV SHA256 hashes unchanged."
+          Write-Host "[PASS] READ-ONLY safety independently confirmed."
+
+
+      # ======================================================
+      # 11. VERIFY AUDIT OUTPUT FILES
+      # ======================================================
+
+      - name: Verify audit output files
+
+        shell: powershell
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY AUDIT OUTPUT FILES"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $RequiredOutputs = @(
+
+              "data\reports\history_gap_post_recovery_audit\history_gap_post_recovery_audit_summary.csv",
+              "data\reports\history_gap_post_recovery_audit\history_gap_post_recovery_audit_detail.csv",
+              "data\reports\history_gap_post_recovery_audit\history_gap_post_recovery_audit_inventory.csv",
+              "data\reports\history_gap_post_recovery_audit\history_gap_post_recovery_audit_result.json",
+
+              "data\validation\audit_history_gaps_post_recovery_checkpoint.json",
+
+              "data\audit_history_gaps_post_recovery_status.csv"
+
+          )
+
+          foreach ($RelativePath in $RequiredOutputs) {
+
+              $FullPath = Join-Path `
+                  $env:GITHUB_WORKSPACE `
+                  $RelativePath
+
+              if (-not (Test-Path -LiteralPath $FullPath -PathType Leaf)) {
+
+                  throw "Audit output missing: $FullPath"
+
+              }
+
+              $Info = Get-Item `
+                  -LiteralPath $FullPath
+
+              if ($Info.Length -le 0) {
+
+                  throw "Audit output is empty: $FullPath"
+
+              }
+
+              Write-Host "[PASS] $RelativePath"
+              Write-Host "       $($Info.Length) bytes"
+
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] All expected audit outputs exist."
+
+
+      # ======================================================
+      # 12. VERIFY AUDIT RESULT JSON
+      # ======================================================
+
+      - name: Verify audit result
+
+        shell: powershell
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY AUDIT RESULT"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $ResultPath = Join-Path `
+              $env:GITHUB_WORKSPACE `
+              "data\reports\history_gap_post_recovery_audit\history_gap_post_recovery_audit_result.json"
+
+          $Result = Get-Content `
+              -LiteralPath $ResultPath `
+              -Raw `
+              -Encoding UTF8 |
+              ConvertFrom-Json
+
+          if ($null -eq $Result) {
+
+              throw "Unable to parse audit result JSON."
+
+          }
+
+          Write-Host "Program:"
+          Write-Host "  $($Result.program)"
+          Write-Host ""
+
+          Write-Host "Version:"
+          Write-Host "  $($Result.version)"
+          Write-Host ""
+
+          Write-Host "Mode:"
+          Write-Host "  $($Result.mode)"
+          Write-Host ""
+
+          Write-Host "Final status:"
+          Write-Host "  $($Result.final_status)"
+          Write-Host ""
+
+          if ($Result.program -ne "audit_history_gaps_post_recovery.py") {
+
+              throw "Unexpected audit result program."
+
+          }
+
+          if ($Result.version -ne "Clean V001") {
+
+              throw "Unexpected audit result version."
+
+          }
+
+          if ($Result.mode -ne "READ_ONLY_POST_RECOVERY_AUDIT") {
+
+              throw "Unexpected audit execution mode."
+
+          }
+
+          $AllowedFinalStatuses = @(
+
+              "PASS",
+              "PASS_WITH_UNAVAILABLE_HISTORY"
+
+          )
+
+          if ($AllowedFinalStatuses -notcontains $Result.final_status) {
+
+              throw "Audit final status is not PASS-compatible: $($Result.final_status)"
+
+          }
+
+          Write-Host "Targets:"
+          Write-Host "  $($Result.post_recovery_audit.targets)"
+          Write-Host ""
+
+          Write-Host "Recovered targets:"
+          Write-Host "  $($Result.post_recovery_audit.recovered_targets)"
+          Write-Host ""
+
+          Write-Host "Remaining gap targets:"
+          Write-Host "  $($Result.post_recovery_audit.remaining_gap_targets)"
+          Write-Host ""
+
+          Write-Host "Remaining missing timestamps:"
+          Write-Host "  $($Result.post_recovery_audit.remaining_missing_timestamps)"
+          Write-Host ""
+
+          Write-Host "Invalid targets:"
+          Write-Host "  $($Result.post_recovery_audit.invalid_targets)"
+          Write-Host ""
+
+          Write-Host "OHLCV errors:"
+          Write-Host "  $($Result.post_recovery_audit.ohlcv_errors)"
+          Write-Host ""
+
+          Write-Host "Inventory failures:"
+          Write-Host "  $($Result.post_recovery_audit.inventory_failures)"
+          Write-Host ""
+
+          if ([int]$Result.post_recovery_audit.invalid_targets -ne 0) {
+
+              throw "Audit contains invalid targets."
+
+          }
+
+          if ([int]$Result.post_recovery_audit.ohlcv_errors -ne 0) {
+
+              throw "Audit contains OHLCV errors."
+
+          }
+
+          if ([int]$Result.post_recovery_audit.inventory_failures -ne 0) {
+
+              throw "Audit contains inventory failures."
+
+          }
+
+          if ($Result.next_stage.allowed -ne $true) {
+
+              throw "Audit next-stage gate is not allowed."
+
+          }
+
+          Write-Host "[PASS] Audit result contract valid."
+          Write-Host "[PASS] Final status = $($Result.final_status)"
+          Write-Host "[PASS] Critical errors = 0"
+
+
+      # ======================================================
+      # 13. VERIFY AUDIT CHECKPOINT
+      # ======================================================
+
+      - name: Verify audit checkpoint
+
+        shell: powershell
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY AUDIT CHECKPOINT"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $CheckpointPath = Join-Path `
+              $env:GITHUB_WORKSPACE `
+              "data\validation\audit_history_gaps_post_recovery_checkpoint.json"
+
+          $Checkpoint = Get-Content `
+              -LiteralPath $CheckpointPath `
+              -Raw `
+              -Encoding UTF8 |
+              ConvertFrom-Json
+
+          if ($null -eq $Checkpoint) {
+
+              throw "Unable to parse audit checkpoint JSON."
+
+          }
+
+          Write-Host "Program:"
+          Write-Host "  $($Checkpoint.program)"
+          Write-Host ""
+
+          Write-Host "Version:"
+          Write-Host "  $($Checkpoint.version)"
+          Write-Host ""
+
+          Write-Host "Status:"
+          Write-Host "  $($Checkpoint.status)"
+          Write-Host ""
+
+          Write-Host "Completed:"
+          Write-Host "  $($Checkpoint.completed)"
+          Write-Host ""
+
+          Write-Host "Final status:"
+          Write-Host "  $($Checkpoint.final_status)"
+          Write-Host ""
+
+          if ($Checkpoint.program -ne "audit_history_gaps_post_recovery.py") {
+
+              throw "Unexpected audit checkpoint program."
+
+          }
+
+          if ($Checkpoint.version -ne "Clean V001") {
+
+              throw "Unexpected audit checkpoint version."
+
+          }
+
+          if ($Checkpoint.status -ne "COMPLETED") {
+
+              throw "Audit checkpoint status is not COMPLETED."
+
+          }
+
+          if ($Checkpoint.completed -ne $true) {
+
+              throw "Audit checkpoint completed flag is not true."
+
+          }
+
+          $AllowedFinalStatuses = @(
+
+              "PASS",
+              "PASS_WITH_UNAVAILABLE_HISTORY"
+
+          )
+
+          if ($AllowedFinalStatuses -notcontains $Checkpoint.final_status) {
+
+              throw "Audit checkpoint final status is not PASS-compatible."
+
+          }
+
+          Write-Host "[PASS] Audit checkpoint valid."
+
+
+      # ======================================================
+      # 14. PRINT AUDIT SUMMARY
+      # ======================================================
+
+      - name: Print audit summary
+
+        shell: powershell
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "POST-RECOVERY AUDIT SUMMARY"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $SummaryPath = Join-Path `
+              $env:GITHUB_WORKSPACE `
+              "data\reports\history_gap_post_recovery_audit\history_gap_post_recovery_audit_summary.csv"
+
+          $Rows = @(
+              Import-Csv `
+                  -LiteralPath $SummaryPath
+          )
+
+          if ($Rows.Count -eq 0) {
+
+              throw "Audit summary contains no rows."
+
+          }
+
+          foreach ($Row in $Rows) {
+
+              Write-Host "------------------------------------------------------------"
+              Write-Host "Timeframe                  : $($Row.timeframe)"
+              Write-Host "Targets                    : $($Row.targets)"
+              Write-Host "Recovered                  : $($Row.recovered)"
+              Write-Host "Remaining gap              : $($Row.remaining_gap)"
+              Write-Host "Invalid target             : $($Row.invalid_target)"
+              Write-Host "OHLCV error                : $($Row.ohlcv_error)"
+              Write-Host "Expected missing from plan : $($Row.expected_missing_from_plan)"
+              Write-Host "Current missing            : $($Row.current_missing)"
+
+          }
+
+          Write-Host "------------------------------------------------------------"
+          Write-Host ""
+
+
+      # ======================================================
+      # 15. FINAL TEST GATE
+      # ======================================================
+
+      - name: Final test gate
+
+        shell: powershell
+
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "FINAL TEST GATE"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $ResultPath = Join-Path `
+              $env:GITHUB_WORKSPACE `
+              "data\reports\history_gap_post_recovery_audit\history_gap_post_recovery_audit_result.json"
+
+          $Result = Get-Content `
+              -LiteralPath $ResultPath `
+              -Raw `
+              -Encoding UTF8 |
+              ConvertFrom-Json
+
+          if ($Result.final_status -eq "PASS") {
+
+              Write-Host "[PASS] FINAL STATUS = PASS"
+              Write-Host ""
+              Write-Host "[PASS] All second-pass target timestamps are present."
+              Write-Host "[PASS] Production OHLCV integrity passed."
+              Write-Host "[PASS] Recovery evidence passed."
+              Write-Host "[PASS] READ-ONLY safety passed."
+              Write-Host ""
+              Write-Host "[READY] Production workflow may be created next."
+
+          }
+          elseif ($Result.final_status -eq "PASS_WITH_UNAVAILABLE_HISTORY") {
+
+              Write-Host "[PASS] FINAL STATUS = PASS_WITH_UNAVAILABLE_HISTORY"
+              Write-Host ""
+              Write-Host "[PASS] Production OHLCV integrity passed."
+              Write-Host "[PASS] Recovery evidence passed."
+              Write-Host "[PASS] READ-ONLY safety passed."
+              Write-Host ""
+              Write-Host "[INFO] Historical target timestamps still remain missing."
+              Write-Host "[INFO] They are NOT automatically classified as permanently unavailable."
+              Write-Host ""
+              Write-Host "[READY] Production workflow may be created next."
+
+          }
+          else {
+
+              throw "Post-recovery audit final gate FAILED: $($Result.final_status)"
+
+          }
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "audit_history_gaps_post_recovery_test.yml"
+          Write-Host "Clean V001"
+          Write-Host "TEST PASSED"
+          Write-Host "============================================================"
+
+
+      # ======================================================
+      # 16. FAILURE DIAGNOSTICS
+      # ======================================================
+
+      - name: Failure diagnostics
+
+        if: failure()
+
+        shell: powershell
+
+        run: |
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "POST-RECOVERY AUDIT TEST FAILED"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          Write-Host "Safety statement:"
+          Write-Host ""
+
+          Write-Host "  This workflow does NOT intentionally:"
+          Write-Host "    - write production OHLCV"
+          Write-Host "    - delete production OHLCV"
+          Write-Host "    - download API candles"
+          Write-Host "    - repair historical gaps"
+          Write-Host "    - build features"
+          Write-Host "    - run 256 detector"
+          Write-Host "    - generate future labels"
+          Write-Host "    - run prediction"
+          Write-Host "    - run trading"
+          Write-Host "    - git reset"
+          Write-Host "    - git clean"
+          Write-Host "    - git commit"
+          Write-Host "    - git push"
+          Write-Host ""
+
+          $StatusPath = Join-Path `
+              $env:GITHUB_WORKSPACE `
+              "data\audit_history_gaps_post_recovery_status.csv"
+
+          if (Test-Path -LiteralPath $StatusPath -PathType Leaf) {
+
+              Write-Host "------------------------------------------------------------"
+              Write-Host "AUDIT STATUS"
+              Write-Host "------------------------------------------------------------"
+
+              Get-Content `
+                  -LiteralPath $StatusPath `
+                  -Encoding UTF8 |
+                  Select-Object -Last 20 |
+                  ForEach-Object {
+                      Write-Host $_
+                  }
+
+              Write-Host ""
+
+          }
+
+          $ResultPath = Join-Path `
+              $env:GITHUB_WORKSPACE `
+              "data\reports\history_gap_post_recovery_audit\history_gap_post_recovery_audit_result.json"
+
+          if (Test-Path -LiteralPath $ResultPath -PathType Leaf) {
+
+              Write-Host "------------------------------------------------------------"
+              Write-Host "AUDIT RESULT JSON"
+              Write-Host "------------------------------------------------------------"
+
+              Get-Content `
+                  -LiteralPath $ResultPath `
+                  -Encoding UTF8 |
+                  Select-Object -First 200 |
+                  ForEach-Object {
+                      Write-Host $_
+                  }
+
+              Write-Host ""
+
+          }
+
+          Write-Host "============================================================"
+          Write-Host "DO NOT RUN THE PRODUCTION WORKFLOW YET."
+          Write-Host "============================================================"
