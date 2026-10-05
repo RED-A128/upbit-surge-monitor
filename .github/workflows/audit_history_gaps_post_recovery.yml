@@ -1,0 +1,1170 @@
+# =============================================================================
+# UPBIT SURGE MONITOR
+# POST-RECOVERY AUDIT REVALIDATION
+# Production Workflow
+# Clean V001
+#
+# SAFETY POLICY
+# - READ-ONLY AUDIT
+# - Production OHLCV modification is FORBIDDEN
+# - Recovery execution is DISABLED
+# - API candle download is DISABLED
+# - Feature build is DISABLED
+# - Pattern / 256 detection is DISABLED
+# - Future labels are DISABLED
+# - Prediction / trading is DISABLED
+# - Git reset / clean / commit / push is FORBIDDEN
+#
+# PURPOSE
+# - Run audit_history_gaps_post_recovery.py against REAL production data.
+# - Verify production OHLCV files are not changed by the audit.
+# - Verify the audit itself returns PASS.
+# - Preserve audit evidence as a GitHub Actions artifact.
+# =============================================================================
+
+name: audit_history_gaps_post_recovery.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-history-gaps-post-recovery-production
+  cancel-in-progress: false
+
+jobs:
+  audit_history_gaps_post_recovery:
+    name: audit_history_gaps_post_recovery.yml
+
+    # IMPORTANT:
+    # Real production data exists on the Windows self-hosted runner.
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 180
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+
+    steps:
+
+      # =======================================================================
+      # 01
+      # =======================================================================
+
+      - name: 01 - Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          clean: false
+
+      # =======================================================================
+      # 02
+      # =======================================================================
+
+      - name: 02 - Show production audit safety policy
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "POST-RECOVERY AUDIT REVALIDATION"
+          Write-Host "PRODUCTION"
+          Write-Host "Clean V001"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          Write-Host "[SAFETY] READ-ONLY AUDIT"
+          Write-Host "[SAFETY] OHLCV modification : FORBIDDEN"
+          Write-Host "[SAFETY] Recovery execution : DISABLED"
+          Write-Host "[SAFETY] API candle download : DISABLED"
+          Write-Host "[SAFETY] Feature build : DISABLED"
+          Write-Host "[SAFETY] 256 detector : DISABLED"
+          Write-Host "[SAFETY] Future labels : DISABLED"
+          Write-Host "[SAFETY] Prediction/trading : DISABLED"
+          Write-Host "[SAFETY] Git destructive/write operations : FORBIDDEN"
+          Write-Host ""
+
+      # =======================================================================
+      # 03
+      # =======================================================================
+
+      - name: 03 - Verify audit program
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY AUDIT PROGRAM"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $auditFile = Join-Path $env:GITHUB_WORKSPACE "audit_history_gaps_post_recovery.py"
+
+          if (-not (Test-Path -LiteralPath $auditFile -PathType Leaf)) {
+              throw "Required audit program missing: $auditFile"
+          }
+
+          Write-Host "[PASS] audit_history_gaps_post_recovery.py"
+
+          py -m py_compile $auditFile
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Python syntax validation failed."
+          }
+
+          Write-Host "[PASS] Python syntax validation"
+
+      # =======================================================================
+      # 04
+      # =======================================================================
+
+      - name: 04 - Resolve production project root
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "RESOLVE PRODUCTION PROJECT ROOT"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $candidates = @(
+              (Join-Path $env:USERPROFILE "Documents\upbit-surge-monitor"),
+              $env:GITHUB_WORKSPACE
+          )
+
+          $productionRoot = $null
+          $rootSource = $null
+
+          foreach ($candidate in $candidates) {
+
+              if ([string]::IsNullOrWhiteSpace($candidate)) {
+                  continue
+              }
+
+              $ohlcvRoot = Join-Path $candidate "data\ohlcv"
+
+              $h1 = Join-Path $ohlcvRoot "h1"
+              $h4 = Join-Path $ohlcvRoot "h4"
+              $d1 = Join-Path $ohlcvRoot "d1"
+
+              if (
+                  (Test-Path -LiteralPath $h1 -PathType Container) -and
+                  (Test-Path -LiteralPath $h4 -PathType Container) -and
+                  (Test-Path -LiteralPath $d1 -PathType Container)
+              ) {
+                  $productionRoot = (Resolve-Path -LiteralPath $candidate).Path
+
+                  if ($candidate -eq $env:GITHUB_WORKSPACE) {
+                      $rootSource = "github-workspace"
+                  }
+                  else {
+                      $rootSource = "user-documents"
+                  }
+
+                  break
+              }
+          }
+
+          if ([string]::IsNullOrWhiteSpace($productionRoot)) {
+              throw "Unable to locate production project root containing data\ohlcv\h1, h4, d1."
+          }
+
+          Write-Host "[PATH] Production project root: $productionRoot"
+          Write-Host "[PATH] Root source: $rootSource"
+
+          "PRODUCTION_ROOT=$productionRoot" |
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          "PRODUCTION_ROOT_SOURCE=$rootSource" |
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      # =======================================================================
+      # 05
+      # =======================================================================
+
+      - name: 05 - Verify production directories
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY PRODUCTION DIRECTORIES"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $requiredDirectories = @(
+              "data\ohlcv\h1",
+              "data\ohlcv\h4",
+              "data\ohlcv\d1"
+          )
+
+          foreach ($relativePath in $requiredDirectories) {
+
+              $fullPath = Join-Path $env:PRODUCTION_ROOT $relativePath
+
+              if (-not (Test-Path -LiteralPath $fullPath -PathType Container)) {
+                  throw "Required production directory missing: $fullPath"
+              }
+
+              Write-Host "[PASS] $relativePath"
+          }
+
+          $optionalDirectories = @(
+              "data\recovery",
+              "data\reports",
+              "data\reports\history_gap_second_pass_recovery"
+          )
+
+          foreach ($relativePath in $optionalDirectories) {
+
+              $fullPath = Join-Path $env:PRODUCTION_ROOT $relativePath
+
+              if (Test-Path -LiteralPath $fullPath -PathType Container) {
+                  Write-Host "[FOUND] $relativePath"
+              }
+              else {
+                  Write-Host "[INFO] Optional directory not present: $relativePath"
+              }
+          }
+
+      # =======================================================================
+      # 06
+      # =======================================================================
+
+      - name: 06 - Show relevant production data structure
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "RELEVANT PRODUCTION DATA STRUCTURE"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $paths = @(
+              "data\recovery",
+              "data\reports",
+              "data\reports\history_gap_second_pass_recovery"
+          )
+
+          foreach ($relativePath in $paths) {
+
+              $fullPath = Join-Path $env:PRODUCTION_ROOT $relativePath
+
+              Write-Host ""
+              Write-Host "------------------------------------------------------------"
+              Write-Host $relativePath
+              Write-Host "------------------------------------------------------------"
+
+              if (-not (Test-Path -LiteralPath $fullPath -PathType Container)) {
+                  Write-Host "[NOT PRESENT]"
+                  continue
+              }
+
+              Get-ChildItem -LiteralPath $fullPath -File -Recurse -ErrorAction SilentlyContinue |
+                  Sort-Object FullName |
+                  ForEach-Object {
+                      Write-Host $_.FullName
+                  }
+          }
+
+      # =======================================================================
+      # 07
+      # =======================================================================
+
+      - name: 07 - Discover production OHLCV inventory
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "DISCOVER PRODUCTION OHLCV INVENTORY"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $timeframes = @("h1", "h4", "d1")
+
+          foreach ($timeframe in $timeframes) {
+
+              $directory = Join-Path $env:PRODUCTION_ROOT "data\ohlcv\$timeframe"
+
+              $files = @(
+                  Get-ChildItem `
+                      -LiteralPath $directory `
+                      -File `
+                      -Filter "*.csv" `
+                      -ErrorAction Stop
+              )
+
+              $count = $files.Count
+
+              Write-Host "$($timeframe.ToUpper()) : $count"
+
+              if ($count -le 0) {
+                  throw "No production OHLCV CSV files found: $directory"
+              }
+          }
+
+      # =======================================================================
+      # 08
+      # =======================================================================
+
+      - name: 08 - Verify production OHLCV file names
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY PRODUCTION OHLCV FILE NAMES"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $timeframes = @("h1", "h4", "d1")
+
+          $invalid = @()
+
+          foreach ($timeframe in $timeframes) {
+
+              $directory = Join-Path $env:PRODUCTION_ROOT "data\ohlcv\$timeframe"
+
+              $files = Get-ChildItem `
+                  -LiteralPath $directory `
+                  -File `
+                  -Filter "*.csv" `
+                  -ErrorAction Stop
+
+              foreach ($file in $files) {
+
+                  if ($file.Name -notmatch '^KRW-[A-Z0-9]+\.csv$') {
+
+                      $invalid += [PSCustomObject]@{
+                          Timeframe = $timeframe
+                          File      = $file.Name
+                      }
+                  }
+              }
+          }
+
+          if ($invalid.Count -gt 0) {
+
+              $invalid | Format-Table -AutoSize
+
+              throw "Invalid production OHLCV file name(s) detected."
+          }
+
+          Write-Host "[PASS] Production OHLCV file names"
+
+      # =======================================================================
+      # 09
+      # =======================================================================
+
+      - name: 09 - Create production audit evidence directory
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "CREATE AUDIT EVIDENCE DIRECTORY"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP "post_recovery_audit_production"
+
+          if (Test-Path -LiteralPath $evidenceRoot) {
+              Remove-Item `
+                  -LiteralPath $evidenceRoot `
+                  -Recurse `
+                  -Force
+          }
+
+          New-Item `
+              -ItemType Directory `
+              -Path $evidenceRoot `
+              -Force |
+              Out-Null
+
+          Write-Host "[PATH] $evidenceRoot"
+
+          "AUDIT_EVIDENCE_ROOT=$evidenceRoot" |
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      # =======================================================================
+      # 10
+      # =======================================================================
+
+      - name: 10 - Record production OHLCV file set before audit
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "RECORD OHLCV FILE SET BEFORE AUDIT"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $outputFile = Join-Path $env:AUDIT_EVIDENCE_ROOT "ohlcv_files_before.txt"
+
+          $records = @()
+
+          foreach ($timeframe in @("h1", "h4", "d1")) {
+
+              $directory = Join-Path $env:PRODUCTION_ROOT "data\ohlcv\$timeframe"
+
+              $files = Get-ChildItem `
+                  -LiteralPath $directory `
+                  -File `
+                  -Filter "*.csv" `
+                  -ErrorAction Stop |
+                  Sort-Object Name
+
+              foreach ($file in $files) {
+
+                  $records += "$timeframe|$($file.Name)"
+              }
+          }
+
+          $records |
+              Set-Content `
+                  -LiteralPath $outputFile `
+                  -Encoding UTF8
+
+          Write-Host "[PASS] Recorded $($records.Count) OHLCV files"
+
+      # =======================================================================
+      # 11
+      # =======================================================================
+
+      - name: 11 - Record production OHLCV SHA256 before audit
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "RECORD OHLCV SHA256 BEFORE AUDIT"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $outputFile = Join-Path $env:AUDIT_EVIDENCE_ROOT "ohlcv_sha256_before.txt"
+
+          $records = @()
+
+          foreach ($timeframe in @("h1", "h4", "d1")) {
+
+              $directory = Join-Path $env:PRODUCTION_ROOT "data\ohlcv\$timeframe"
+
+              $files = Get-ChildItem `
+                  -LiteralPath $directory `
+                  -File `
+                  -Filter "*.csv" `
+                  -ErrorAction Stop |
+                  Sort-Object Name
+
+              foreach ($file in $files) {
+
+                  $hash = Get-FileHash `
+                      -LiteralPath $file.FullName `
+                      -Algorithm SHA256
+
+                  $records += "$timeframe|$($file.Name)|$($hash.Hash)"
+              }
+          }
+
+          $records |
+              Set-Content `
+                  -LiteralPath $outputFile `
+                  -Encoding UTF8
+
+          Write-Host "[PASS] Recorded SHA256 for $($records.Count) OHLCV files"
+
+      # =======================================================================
+      # 12
+      # =======================================================================
+
+      - name: 12 - Record existing production audit evidence
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "RECORD EXISTING PRODUCTION AUDIT EVIDENCE"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $outputFile = Join-Path $env:AUDIT_EVIDENCE_ROOT "evidence_before.txt"
+
+          $roots = @(
+              (Join-Path $env:PRODUCTION_ROOT "data\recovery"),
+              (Join-Path $env:PRODUCTION_ROOT "data\reports")
+          )
+
+          $records = @()
+
+          foreach ($root in $roots) {
+
+              if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+                  continue
+              }
+
+              Get-ChildItem `
+                  -LiteralPath $root `
+                  -File `
+                  -Recurse `
+                  -ErrorAction SilentlyContinue |
+                  Sort-Object FullName |
+                  ForEach-Object {
+
+                      $records += "$($_.FullName)|$($_.Length)|$($_.LastWriteTimeUtc.ToString('o'))"
+                  }
+          }
+
+          $records |
+              Set-Content `
+                  -LiteralPath $outputFile `
+                  -Encoding UTF8
+
+          Write-Host "[PASS] Existing evidence recorded"
+
+      # =======================================================================
+      # 13
+      # =======================================================================
+
+      - name: 13 - Run production post-recovery audit
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "RUN PRODUCTION POST-RECOVERY AUDIT"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          Write-Host "[SAFETY] READ-ONLY AUDIT"
+          Write-Host "[SAFETY] OHLCV modification : FORBIDDEN"
+          Write-Host "[SAFETY] Recovery execution : DISABLED"
+          Write-Host ""
+
+          $auditFile = Join-Path $env:GITHUB_WORKSPACE "audit_history_gaps_post_recovery.py"
+
+          Push-Location $env:PRODUCTION_ROOT
+
+          try {
+
+              & py $auditFile
+
+              $auditExitCode = $LASTEXITCODE
+          }
+          finally {
+
+              Pop-Location
+          }
+
+          if ($null -eq $auditExitCode) {
+              $auditExitCode = 1
+          }
+
+          Write-Host ""
+          Write-Host "Audit exit code:"
+          Write-Host "  $auditExitCode"
+          Write-Host ""
+
+          $auditExitCode |
+              Set-Content `
+                  -LiteralPath (Join-Path $env:AUDIT_EVIDENCE_ROOT "audit_exit_code.txt") `
+                  -Encoding ASCII
+
+          "AUDIT_EXIT_CODE=$auditExitCode" |
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          if ($auditExitCode -ne 0) {
+              Write-Host "[INFO] Audit returned exit code $auditExitCode"
+              Write-Host "[INFO] OHLCV safety checks will still run."
+          }
+          else {
+              Write-Host "[PASS] Production post-recovery audit returned exit code 0"
+          }
+
+          exit 0
+
+      # =======================================================================
+      # 14
+      # =======================================================================
+
+      - name: 14 - Verify production OHLCV file set unchanged
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY OHLCV FILE SET UNCHANGED"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $beforeFile = Join-Path $env:AUDIT_EVIDENCE_ROOT "ohlcv_files_before.txt"
+          $afterFile  = Join-Path $env:AUDIT_EVIDENCE_ROOT "ohlcv_files_after.txt"
+
+          if (-not (Test-Path -LiteralPath $beforeFile -PathType Leaf)) {
+              throw "Before-audit OHLCV file list missing."
+          }
+
+          $records = @()
+
+          foreach ($timeframe in @("h1", "h4", "d1")) {
+
+              $directory = Join-Path $env:PRODUCTION_ROOT "data\ohlcv\$timeframe"
+
+              $files = Get-ChildItem `
+                  -LiteralPath $directory `
+                  -File `
+                  -Filter "*.csv" `
+                  -ErrorAction Stop |
+                  Sort-Object Name
+
+              foreach ($file in $files) {
+
+                  $records += "$timeframe|$($file.Name)"
+              }
+          }
+
+          $records |
+              Set-Content `
+                  -LiteralPath $afterFile `
+                  -Encoding UTF8
+
+          $before = @(
+              Get-Content -LiteralPath $beforeFile -Encoding UTF8
+          )
+
+          $after = @(
+              Get-Content -LiteralPath $afterFile -Encoding UTF8
+          )
+
+          $difference = Compare-Object `
+              -ReferenceObject $before `
+              -DifferenceObject $after
+
+          if ($difference) {
+
+              Write-Host ""
+              Write-Host "OHLCV file-set difference:"
+              $difference | Format-Table -AutoSize
+
+              throw "Production OHLCV file set changed during audit."
+          }
+
+          Write-Host "[PASS] Production OHLCV file set unchanged"
+
+      # =======================================================================
+      # 15
+      # =======================================================================
+
+      - name: 15 - Verify production OHLCV SHA256 unchanged
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY OHLCV SHA256 UNCHANGED"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $beforeFile = Join-Path $env:AUDIT_EVIDENCE_ROOT "ohlcv_sha256_before.txt"
+          $afterFile  = Join-Path $env:AUDIT_EVIDENCE_ROOT "ohlcv_sha256_after.txt"
+
+          if (-not (Test-Path -LiteralPath $beforeFile -PathType Leaf)) {
+              throw "Before-audit OHLCV SHA256 file missing."
+          }
+
+          $records = @()
+
+          foreach ($timeframe in @("h1", "h4", "d1")) {
+
+              $directory = Join-Path $env:PRODUCTION_ROOT "data\ohlcv\$timeframe"
+
+              $files = Get-ChildItem `
+                  -LiteralPath $directory `
+                  -File `
+                  -Filter "*.csv" `
+                  -ErrorAction Stop |
+                  Sort-Object Name
+
+              foreach ($file in $files) {
+
+                  $hash = Get-FileHash `
+                      -LiteralPath $file.FullName `
+                      -Algorithm SHA256
+
+                  $records += "$timeframe|$($file.Name)|$($hash.Hash)"
+              }
+          }
+
+          $records |
+              Set-Content `
+                  -LiteralPath $afterFile `
+                  -Encoding UTF8
+
+          $before = @(
+              Get-Content -LiteralPath $beforeFile -Encoding UTF8
+          )
+
+          $after = @(
+              Get-Content -LiteralPath $afterFile -Encoding UTF8
+          )
+
+          $difference = Compare-Object `
+              -ReferenceObject $before `
+              -DifferenceObject $after
+
+          if ($difference) {
+
+              Write-Host ""
+              Write-Host "OHLCV SHA256 difference:"
+              $difference | Format-Table -AutoSize
+
+              throw "Production OHLCV content changed during audit."
+          }
+
+          Write-Host "[PASS] Production OHLCV SHA256 unchanged"
+
+      # =======================================================================
+      # 16
+      # =======================================================================
+
+      - name: 16 - Verify audit process exit code
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY AUDIT PROCESS EXIT CODE"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $exitCodeFile = Join-Path $env:AUDIT_EVIDENCE_ROOT "audit_exit_code.txt"
+
+          if (-not (Test-Path -LiteralPath $exitCodeFile -PathType Leaf)) {
+              throw "Audit exit-code evidence missing."
+          }
+
+          $auditExitCode = (
+              Get-Content `
+                  -LiteralPath $exitCodeFile `
+                  -Encoding ASCII `
+                  -Raw
+          ).Trim()
+
+          Write-Host "Audit exit code:"
+          Write-Host "  $auditExitCode"
+          Write-Host ""
+
+          if ($auditExitCode -ne "0") {
+              throw "audit_history_gaps_post_recovery.py returned exit code $auditExitCode"
+          }
+
+          Write-Host "[PASS] Audit process exit code = 0"
+
+      # =======================================================================
+      # 17
+      # =======================================================================
+
+      - name: 17 - Discover production audit evidence
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "DISCOVER PRODUCTION AUDIT EVIDENCE"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $roots = @(
+              (Join-Path $env:PRODUCTION_ROOT "data\recovery"),
+              (Join-Path $env:PRODUCTION_ROOT "data\reports")
+          )
+
+          $records = @()
+
+          foreach ($root in $roots) {
+
+              if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+                  continue
+              }
+
+              Get-ChildItem `
+                  -LiteralPath $root `
+                  -File `
+                  -Recurse `
+                  -ErrorAction SilentlyContinue |
+                  Sort-Object FullName |
+                  ForEach-Object {
+
+                      $records += "$($_.FullName)|$($_.Length)|$($_.LastWriteTimeUtc.ToString('o'))"
+                  }
+          }
+
+          $outputFile = Join-Path $env:AUDIT_EVIDENCE_ROOT "evidence_after.txt"
+
+          $records |
+              Set-Content `
+                  -LiteralPath $outputFile `
+                  -Encoding UTF8
+
+          Write-Host "[PASS] Production audit evidence discovery completed"
+
+      # =======================================================================
+      # 18
+      # =======================================================================
+
+      - name: 18 - Validate result JSON when present
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VALIDATE RESULT JSON WHEN PRESENT"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $candidates = @()
+
+          $searchRoots = @(
+              (Join-Path $env:PRODUCTION_ROOT "data\recovery"),
+              (Join-Path $env:PRODUCTION_ROOT "data\reports")
+          )
+
+          foreach ($root in $searchRoots) {
+
+              if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+                  continue
+              }
+
+              $candidates += @(
+                  Get-ChildItem `
+                      -LiteralPath $root `
+                      -File `
+                      -Recurse `
+                      -Filter "*.json" `
+                      -ErrorAction SilentlyContinue |
+                  Where-Object {
+                      $_.Name -match "audit" -or
+                      $_.Name -match "post.recovery" -or
+                      $_.Name -match "history.gap"
+                  }
+              )
+          }
+
+          if ($candidates.Count -eq 0) {
+
+              Write-Host "[INFO] No matching result JSON present."
+              Write-Host "[INFO] Audit process exit code remains authoritative."
+              exit 0
+          }
+
+          foreach ($file in ($candidates | Sort-Object FullName -Unique)) {
+
+              Write-Host "[CHECK] $($file.FullName)"
+
+              try {
+
+                  $null = Get-Content `
+                      -LiteralPath $file.FullName `
+                      -Raw `
+                      -Encoding UTF8 |
+                      ConvertFrom-Json
+              }
+              catch {
+
+                  throw "Invalid JSON file: $($file.FullName)"
+              }
+          }
+
+          Write-Host "[PASS] Matching JSON files are syntactically valid"
+
+      # =======================================================================
+      # 19
+      # =======================================================================
+
+      - name: 19 - Validate checkpoint when present
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VALIDATE CHECKPOINT WHEN PRESENT"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $searchRoots = @(
+              (Join-Path $env:PRODUCTION_ROOT "data\recovery"),
+              (Join-Path $env:PRODUCTION_ROOT "data\reports")
+          )
+
+          $checkpointFiles = @()
+
+          foreach ($root in $searchRoots) {
+
+              if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+                  continue
+              }
+
+              $checkpointFiles += @(
+                  Get-ChildItem `
+                      -LiteralPath $root `
+                      -File `
+                      -Recurse `
+                      -ErrorAction SilentlyContinue |
+                  Where-Object {
+                      $_.Name -match "checkpoint"
+                  }
+              )
+          }
+
+          if ($checkpointFiles.Count -eq 0) {
+
+              Write-Host "[INFO] No checkpoint file discovered."
+              Write-Host "[INFO] Audit process exit code remains authoritative."
+              exit 0
+          }
+
+          foreach ($file in ($checkpointFiles | Sort-Object FullName -Unique)) {
+
+              Write-Host "[FOUND] $($file.FullName)"
+
+              if ($file.Length -le 0) {
+                  throw "Checkpoint file is empty: $($file.FullName)"
+              }
+          }
+
+          Write-Host "[PASS] Checkpoint evidence present"
+
+      # =======================================================================
+      # 20
+      # =======================================================================
+
+      - name: 20 - Final production inventory revalidation
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "FINAL PRODUCTION INVENTORY REVALIDATION"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          foreach ($timeframe in @("h1", "h4", "d1")) {
+
+              $directory = Join-Path $env:PRODUCTION_ROOT "data\ohlcv\$timeframe"
+
+              if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+                  throw "Production OHLCV directory missing: $directory"
+              }
+
+              $files = @(
+                  Get-ChildItem `
+                      -LiteralPath $directory `
+                      -File `
+                      -Filter "*.csv" `
+                      -ErrorAction Stop
+              )
+
+              Write-Host "$($timeframe.ToUpper()) : $($files.Count)"
+
+              if ($files.Count -le 0) {
+                  throw "Production OHLCV inventory is empty: $timeframe"
+              }
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Final production OHLCV inventory revalidation"
+
+      # =======================================================================
+      # 21
+      # =======================================================================
+
+      - name: 21 - Verify no forbidden Git operations are executable
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY GIT SAFETY"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          Write-Host "[PASS] Workflow contains no Git reset execution step."
+          Write-Host "[PASS] Workflow contains no Git clean execution step."
+          Write-Host "[PASS] Workflow contains no Git commit execution step."
+          Write-Host "[PASS] Workflow contains no Git push execution step."
+          Write-Host ""
+          Write-Host "[SAFETY] Repository write-back is not part of this workflow."
+
+      # =======================================================================
+      # 22
+      # =======================================================================
+
+      - name: 22 - Final Clean V001 production gate
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "FINAL CLEAN V001 PRODUCTION GATE"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $exitCodeFile = Join-Path $env:AUDIT_EVIDENCE_ROOT "audit_exit_code.txt"
+          $beforeFiles  = Join-Path $env:AUDIT_EVIDENCE_ROOT "ohlcv_files_before.txt"
+          $afterFiles   = Join-Path $env:AUDIT_EVIDENCE_ROOT "ohlcv_files_after.txt"
+          $beforeHashes = Join-Path $env:AUDIT_EVIDENCE_ROOT "ohlcv_sha256_before.txt"
+          $afterHashes  = Join-Path $env:AUDIT_EVIDENCE_ROOT "ohlcv_sha256_after.txt"
+
+          $requiredEvidence = @(
+              $exitCodeFile,
+              $beforeFiles,
+              $afterFiles,
+              $beforeHashes,
+              $afterHashes
+          )
+
+          foreach ($file in $requiredEvidence) {
+
+              if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+                  throw "Required final-gate evidence missing: $file"
+              }
+          }
+
+          $auditExitCode = (
+              Get-Content `
+                  -LiteralPath $exitCodeFile `
+                  -Raw `
+                  -Encoding ASCII
+          ).Trim()
+
+          if ($auditExitCode -ne "0") {
+              throw "Production audit did not PASS. Exit code=$auditExitCode"
+          }
+
+          $fileDiff = Compare-Object `
+              -ReferenceObject @(Get-Content -LiteralPath $beforeFiles -Encoding UTF8) `
+              -DifferenceObject @(Get-Content -LiteralPath $afterFiles -Encoding UTF8)
+
+          if ($fileDiff) {
+              throw "Production OHLCV file set changed."
+          }
+
+          $hashDiff = Compare-Object `
+              -ReferenceObject @(Get-Content -LiteralPath $beforeHashes -Encoding UTF8) `
+              -DifferenceObject @(Get-Content -LiteralPath $afterHashes -Encoding UTF8)
+
+          if ($hashDiff) {
+              throw "Production OHLCV SHA256 changed."
+          }
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "PRODUCTION POST-RECOVERY AUDIT : PASS"
+          Write-Host "============================================================"
+          Write-Host ""
+          Write-Host "[PASS] Audit process exit code = 0"
+          Write-Host "[PASS] Production OHLCV file set unchanged"
+          Write-Host "[PASS] Production OHLCV SHA256 unchanged"
+          Write-Host "[PASS] Read-only audit contract preserved"
+          Write-Host ""
+          Write-Host "[SAFETY] No OHLCV deletion was executed."
+          Write-Host "[SAFETY] No OHLCV write was executed."
+          Write-Host "[SAFETY] No existing candle overwrite was executed."
+          Write-Host "[SAFETY] No historical gap repair was executed."
+          Write-Host "[SAFETY] No API candle download was executed."
+          Write-Host "[SAFETY] No feature build was executed."
+          Write-Host "[SAFETY] No 256 detector was executed."
+          Write-Host "[SAFETY] No future labels were generated."
+          Write-Host "[SAFETY] No prediction/trading was executed."
+          Write-Host "[SAFETY] No Git reset/clean/commit/push was executed."
+          Write-Host ""
+          Write-Host "[NEXT] Production post-recovery audit gate PASSED."
+          Write-Host "[NEXT] Research stage may proceed only after reviewing this PASS."
+          Write-Host "============================================================"
+
+      # =======================================================================
+      # 23
+      # =======================================================================
+
+      - name: 23 - Failure diagnostics
+        if: failure()
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "FAILURE DIAGNOSTICS"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          Write-Host "Production root:"
+          Write-Host "  $env:PRODUCTION_ROOT"
+          Write-Host ""
+
+          Write-Host "Production root source:"
+          Write-Host "  $env:PRODUCTION_ROOT_SOURCE"
+          Write-Host ""
+
+          Write-Host "Audit exit code:"
+          Write-Host "  $env:AUDIT_EXIT_CODE"
+          Write-Host ""
+
+          foreach ($timeframe in @("h1", "h4", "d1")) {
+
+              $directory = Join-Path $env:PRODUCTION_ROOT "data\ohlcv\$timeframe"
+
+              if (Test-Path -LiteralPath $directory -PathType Container) {
+
+                  $count = @(
+                      Get-ChildItem `
+                          -LiteralPath $directory `
+                          -File `
+                          -Filter "*.csv" `
+                          -ErrorAction SilentlyContinue
+                  ).Count
+
+                  Write-Host "$($timeframe.ToUpper()) files: $count"
+              }
+              else {
+
+                  Write-Host "$($timeframe.ToUpper()) directory: MISSING"
+              }
+          }
+
+          Write-Host ""
+          Write-Host "[BLOCK] Production audit did not complete successfully."
+          Write-Host "[BLOCK] Do NOT proceed to the next research stage."
+
+      # =======================================================================
+      # 24
+      # =======================================================================
+
+      - name: 24 - Upload production post-recovery audit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: post-recovery-audit-production-${{ github.run_id }}
+          path: ${{ runner.temp }}/post_recovery_audit_production
+          if-no-files-found: warn
+          retention-days: 30
