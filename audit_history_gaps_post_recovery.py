@@ -779,6 +779,13 @@ def sha256_file(
     return digest.hexdigest()
 
 
+def sha256_optional_file(path: Path) -> str:
+    """Return SHA256 when evidence exists; mark valid optional absence."""
+    if not path.is_file():
+        return "OPTIONAL_NOT_CREATED_ZERO_DETAIL"
+    return sha256_file(path)
+
+
 def atomic_json_write(
     path: Path,
     payload: Any,
@@ -1227,7 +1234,6 @@ def validate_required_inputs() -> Tuple[
         SECOND_PASS_TARGET_FILE,
         SECOND_PASS_PLAN_FILE,
         RECOVERY_SUMMARY_FILE,
-        RECOVERY_DETAIL_FILE,
         RECOVERY_RESULT_FILE,
         BEFORE_SHA256_FILE,
         AFTER_SHA256_FILE,
@@ -1756,50 +1762,92 @@ def load_recovery_detail() -> Dict[
     str,
     Dict[str, str],
 ]:
+    """Load recovery detail evidence.
 
-    fieldnames, rows = read_csv(
-        RECOVERY_DETAIL_FILE
-    )
+    Clean V001 compatibility rule:
+    recover_history_gaps_second_pass.py intentionally permits a
+    zero-detail recovery run. In that case the detail CSV is not
+    created, while the completed recovery checkpoint keeps the
+    per-event terminal state under checkpoint["targets"].
 
-    event_column = detect_column(
-        fieldnames,
-        EVENT_KEY_ALIASES,
-    )
+    The post-recovery audit therefore uses the CSV when present and
+    falls back to the checkpoint target map when the CSV is absent.
+    This does not weaken the audit: current production OHLCV is still
+    independently revalidated for every planner target.
+    """
 
-    if event_column is None:
+    if RECOVERY_DETAIL_FILE.is_file():
+        fieldnames, rows = read_csv(RECOVERY_DETAIL_FILE)
 
+        event_column = detect_column(
+            fieldnames,
+            EVENT_KEY_ALIASES,
+        )
+
+        if event_column is None:
+            raise RuntimeError(
+                "Recovery detail report has no event_key column."
+            )
+
+        result: Dict[str, Dict[str, str]] = {}
+
+        for row in rows:
+            event_key = clean_text(row.get(event_column, ""))
+
+            if not event_key:
+                raise RuntimeError(
+                    "Recovery detail contains empty event_key."
+                )
+
+            if event_key in result:
+                raise RuntimeError(
+                    f"Duplicate recovery detail event_key: {event_key}"
+                )
+
+            result[event_key] = row
+
+        return result
+
+    # Zero-detail recovery is a valid output contract.  Recover the
+    # per-event evidence from the completed resume checkpoint instead.
+    checkpoint = read_json(RECOVERY_CHECKPOINT_FILE)
+    checkpoint_targets = checkpoint.get("targets", {})
+
+    if not isinstance(checkpoint_targets, dict):
         raise RuntimeError(
-            "Recovery detail report has no event_key column."
+            "Recovery detail CSV is absent and checkpoint targets "
+            "is not an object."
         )
 
-    result: Dict[
-        str,
-        Dict[str, str],
-    ] = {}
+    result: Dict[str, Dict[str, str]] = {}
 
-    for row in rows:
-
-        event_key = clean_text(
-            row.get(
-                event_column,
-                "",
+    for event_key, value in checkpoint_targets.items():
+        key = clean_text(event_key)
+        if not key:
+            raise RuntimeError(
+                "Recovery checkpoint contains empty event_key."
             )
+        if not isinstance(value, dict):
+            raise RuntimeError(
+                f"Recovery checkpoint target is not an object: {key}"
+            )
+
+        row = {str(k): clean_text(v) for k, v in value.items()}
+        row["event_key"] = key
+        result[key] = row
+
+    if not result:
+        # An actually empty planner target set is allowed.  A non-empty
+        # target set will be caught by verify_event_contract().
+        print(
+            "[INFO] Recovery detail CSV absent and checkpoint has "
+            "no target rows."
         )
-
-        if not event_key:
-
-            raise RuntimeError(
-                "Recovery detail contains empty event_key."
-            )
-
-        if event_key in result:
-
-            raise RuntimeError(
-                "Duplicate event_key in recovery detail: "
-                f"{event_key}"
-            )
-
-        result[event_key] = row
+    else:
+        print(
+            "[INFO] Recovery detail CSV absent; using completed "
+            f"checkpoint target evidence ({len(result)} rows)."
+        )
 
     return result
 
@@ -3575,7 +3623,7 @@ def build_result_json(
                 ),
 
             "recovery_detail_sha256":
-                sha256_file(
+                sha256_optional_file(
                     RECOVERY_DETAIL_FILE
                 ),
 
@@ -3710,7 +3758,7 @@ def build_checkpoint(
                 ),
 
             "recovery_detail_sha256":
-                sha256_file(
+                sha256_optional_file(
                     RECOVERY_DETAIL_FILE
                 ),
 
