@@ -868,15 +868,6 @@ jobs:
 
       # ================================================================
       # 18. VALIDATE RESULT JSON
-      #
-      # IMPORTANT:
-      # PowerShell ConvertFrom-Json is intentionally NOT used here.
-      #
-      # The validation report can contain a very large issues array.
-      # Windows PowerShell JSON parsing can fail on large/deep reports.
-      #
-      # Python parses the original JSON directly and validates only the
-      # required contract fields.
       # ================================================================
 
       - name: 18 - Validate result JSON
@@ -897,6 +888,8 @@ jobs:
               throw "Result JSON missing: $resultPath"
           }
 
+          $env:PATTERN_RESULT_JSON = $resultPath
+
           $pythonCode = @'
           import json
           import os
@@ -908,7 +901,12 @@ jobs:
               with open(path, "r", encoding="utf-8-sig") as f:
                   data = json.load(f)
           except Exception as exc:
-              print(f"[FAIL] Unable to parse result JSON: {type(exc).__name__}: {exc}")
+              print(
+                  "[FAIL] Unable to parse result JSON: "
+                  + type(exc).__name__
+                  + ": "
+                  + str(exc)
+              )
               sys.exit(10)
 
           if not isinstance(data, dict):
@@ -929,33 +927,37 @@ jobs:
           failed_files = summary.get("failed_files")
           fatal_count = summary.get("fatal_count")
 
-          print(f"Program:")
-          print(f"  {program}")
+          print("Program:")
+          print("  " + str(program))
           print()
-          print(f"Version:")
-          print(f"  {version}")
+          print("Version:")
+          print("  " + str(version))
           print()
-          print(f"Result:")
-          print(f"  {result}")
+          print("Result:")
+          print("  " + str(result))
           print()
-          print(f"Total files:")
-          print(f"  {total_files}")
+          print("Total files:")
+          print("  " + str(total_files))
           print()
-          print(f"Passed files:")
-          print(f"  {passed_files}")
+          print("Passed files:")
+          print("  " + str(passed_files))
           print()
-          print(f"Failed files:")
-          print(f"  {failed_files}")
+          print("Failed files:")
+          print("  " + str(failed_files))
           print()
-          print(f"Fatal issues:")
-          print(f"  {fatal_count}")
+          print("Fatal issues:")
+          print("  " + str(fatal_count))
 
           if version != "Clean V001":
-              print(f"[FAIL] Unexpected validator version: {version}")
+              print("[FAIL] Unexpected validator version: " + str(version))
               sys.exit(20)
 
           if result != "PASS":
-              print(f"[FAIL] Pattern research input validation result is not PASS: {result}")
+              print(
+                  "[FAIL] Pattern research input validation "
+                  "result is not PASS: "
+                  + str(result)
+              )
               sys.exit(21)
 
           try:
@@ -972,25 +974,31 @@ jobs:
               sys.exit(23)
 
           if failed_files_int != 0:
-              print(f"[FAIL] Validation result contains failed files: {failed_files_int}")
+              print(
+                  "[FAIL] Validation result contains failed files: "
+                  + str(failed_files_int)
+              )
               sys.exit(24)
 
           if fatal_count_int != 0:
-              print(f"[FAIL] Validation result contains fatal issues: {fatal_count_int}")
+              print(
+                  "[FAIL] Validation result contains fatal issues: "
+                  + str(fatal_count_int)
+              )
               sys.exit(25)
 
           if passed_files_int != total_files_int:
               print(
                   "[FAIL] passed_files does not equal total_files: "
-                  f"{passed_files_int} != {total_files_int}"
+                  + str(passed_files_int)
+                  + " != "
+                  + str(total_files_int)
               )
               sys.exit(26)
 
           print()
           print("[PASS] Result JSON validated.")
           '@
-
-          $env:PATTERN_RESULT_JSON = $resultPath
 
           $pythonCode | py -X utf8 -
 
@@ -1001,6 +1009,10 @@ jobs:
 
       # ================================================================
       # 19. VALIDATE CHECKPOINT
+      #
+      # Korean pattern names are represented only with ASCII Unicode
+      # escapes inside Python source.
+      # This avoids Windows PowerShell -> stdin source-code corruption.
       # ================================================================
 
       - name: 19 - Validate checkpoint
@@ -1021,6 +1033,8 @@ jobs:
               throw "Checkpoint missing: $checkpointPath"
           }
 
+          $env:PATTERN_CHECKPOINT_JSON = $checkpointPath
+
           $pythonCode = @'
           import json
           import os
@@ -1032,7 +1046,12 @@ jobs:
               with open(path, "r", encoding="utf-8-sig") as f:
                   checkpoint = json.load(f)
           except Exception as exc:
-              print(f"[FAIL] Unable to parse checkpoint JSON: {type(exc).__name__}: {exc}")
+              print(
+                  "[FAIL] Unable to parse checkpoint JSON: "
+                  + type(exc).__name__
+                  + ": "
+                  + str(exc)
+              )
               sys.exit(10)
 
           if not isinstance(checkpoint, dict):
@@ -1046,43 +1065,55 @@ jobs:
           patterns = checkpoint.get("patterns")
 
           print("Result:")
-          print(f"  {result}")
+          print("  " + str(result))
           print()
           print("Research stage:")
-          print(f"  {research_stage}")
+          print("  " + str(research_stage))
           print()
           print("Next stage allowed:")
-          print(f"  {next_stage_allowed}")
+          print("  " + str(next_stage_allowed))
           print()
           print("Next stage:")
-          print(f"  {next_stage}")
+          print("  " + str(next_stage))
 
           if result != "PASS":
-              print(f"[FAIL] Checkpoint result is not PASS: {result}")
+              print(
+                  "[FAIL] Checkpoint result is not PASS: "
+                  + str(result)
+              )
               sys.exit(20)
 
           if research_stage != "PATTERN_RESEARCH_INPUT_VALIDATION":
-              print(f"[FAIL] Unexpected research stage: {research_stage}")
+              print(
+                  "[FAIL] Unexpected research stage: "
+                  + str(research_stage)
+              )
               sys.exit(21)
 
           if next_stage_allowed is not True:
-              print("[FAIL] Checkpoint does not allow next research stage.")
+              print(
+                  "[FAIL] Checkpoint does not allow "
+                  "next research stage."
+              )
               sys.exit(22)
 
           if next_stage != "PATTERN_QUANTIFICATION":
-              print(f"[FAIL] Unexpected next stage: {next_stage}")
+              print(
+                  "[FAIL] Unexpected next stage: "
+                  + str(next_stage)
+              )
               sys.exit(23)
 
           expected_patterns = [
               "256",
-              "밥그릇 3번자리",
-              "역매공파",
-              "공구리",
-              "돌파",
-              "눌림목",
-              "기준봉",
-              "하이힐",
-              "오돌이",
+              "\ubc25\uadf8\ub987 3\ubc88\uc790\ub9ac",
+              "\uc5ed\ub9e4\uacf5\ud30c",
+              "\uacf5\uad6c\ub9ac",
+              "\ub3cc\ud30c",
+              "\ub20c\ub9bc\ubaa9",
+              "\uae30\uc900\ubd09",
+              "\ud558\uc774\ud790",
+              "\uc624\ub3cc\uc774",
           ]
 
           if not isinstance(patterns, list):
@@ -1093,27 +1124,41 @@ jobs:
               print("[FAIL] Research pattern contract mismatch.")
               print()
               print("Expected:")
-              for index, value in enumerate(expected_patterns, start=1):
-                  print(f"  {index:02d}. {value}")
+
+              for index, value in enumerate(
+                  expected_patterns,
+                  start=1
+              ):
+                  print(
+                      "  "
+                      + str(index).zfill(2)
+                      + ". "
+                      + value
+                  )
 
               print()
               print("Found:")
-              for index, value in enumerate(patterns, start=1):
-                  print(f"  {index:02d}. {value}")
+
+              for index, value in enumerate(
+                  patterns,
+                  start=1
+              ):
+                  print(
+                      "  "
+                      + str(index).zfill(2)
+                      + ". "
+                      + str(value)
+                  )
 
               sys.exit(25)
 
           print()
-          print("Patterns:")
-
-          for index, pattern in enumerate(patterns, start=1):
-              print(f"  {index:02d}. {pattern}")
+          print("Pattern count:")
+          print("  " + str(len(patterns)))
 
           print()
           print("[PASS] Checkpoint validated.")
           '@
-
-          $env:PATTERN_CHECKPOINT_JSON = $checkpointPath
 
           $pythonCode | py -X utf8 -
 
@@ -1144,6 +1189,8 @@ jobs:
               throw "Manifest missing: $manifestPath"
           }
 
+          $env:PATTERN_MANIFEST_JSON = $manifestPath
+
           $pythonCode = @'
           import hashlib
           import json
@@ -1154,10 +1201,19 @@ jobs:
           report_dir = os.environ["PATTERN_VALIDATION_REPORT_DIR"]
 
           try:
-              with open(manifest_path, "r", encoding="utf-8-sig") as f:
+              with open(
+                  manifest_path,
+                  "r",
+                  encoding="utf-8-sig"
+              ) as f:
                   manifest = json.load(f)
           except Exception as exc:
-              print(f"[FAIL] Unable to parse manifest JSON: {type(exc).__name__}: {exc}")
+              print(
+                  "[FAIL] Unable to parse manifest JSON: "
+                  + type(exc).__name__
+                  + ": "
+                  + str(exc)
+              )
               sys.exit(10)
 
           if not isinstance(manifest, dict):
@@ -1167,7 +1223,10 @@ jobs:
           version = manifest.get("version")
 
           if version != "Clean V001":
-              print(f"[FAIL] Unexpected manifest version: {version}")
+              print(
+                  "[FAIL] Unexpected manifest version: "
+                  + str(version)
+              )
               sys.exit(20)
 
           records = manifest.get("files")
@@ -1179,6 +1238,7 @@ jobs:
           validated = 0
 
           for record in records:
+
               if not isinstance(record, dict):
                   print("[FAIL] Invalid manifest file record.")
                   sys.exit(22)
@@ -1191,24 +1251,45 @@ jobs:
                   print("[FAIL] Manifest record missing file name.")
                   sys.exit(23)
 
-              path = os.path.join(report_dir, name)
+              path = os.path.join(
+                  report_dir,
+                  name
+              )
 
               if not os.path.isfile(path):
-                  print(f"[FAIL] Manifest file missing: {path}")
+                  print(
+                      "[FAIL] Manifest file missing: "
+                      + path
+                  )
                   sys.exit(24)
 
               digest = hashlib.sha256()
 
               with open(path, "rb") as f:
-                  for chunk in iter(lambda: f.read(1024 * 1024), b""):
+
+                  while True:
+                      chunk = f.read(1024 * 1024)
+
+                      if not chunk:
+                          break
+
                       digest.update(chunk)
 
               actual_hash = digest.hexdigest().lower()
 
               if str(expected_hash).lower() != actual_hash:
-                  print(f"[FAIL] Manifest SHA256 mismatch: {name}")
-                  print(f"  Expected: {expected_hash}")
-                  print(f"  Actual  : {actual_hash}")
+                  print(
+                      "[FAIL] Manifest SHA256 mismatch: "
+                      + str(name)
+                  )
+                  print(
+                      "  Expected: "
+                      + str(expected_hash)
+                  )
+                  print(
+                      "  Actual  : "
+                      + actual_hash
+                  )
                   sys.exit(25)
 
               actual_size = os.path.getsize(path)
@@ -1216,24 +1297,38 @@ jobs:
               try:
                   expected_size_int = int(expected_size)
               except (TypeError, ValueError):
-                  print(f"[FAIL] Invalid manifest size for: {name}")
+                  print(
+                      "[FAIL] Invalid manifest size for: "
+                      + str(name)
+                  )
                   sys.exit(26)
 
               if actual_size != expected_size_int:
-                  print(f"[FAIL] Manifest size mismatch: {name}")
-                  print(f"  Expected: {expected_size_int}")
-                  print(f"  Actual  : {actual_size}")
+                  print(
+                      "[FAIL] Manifest size mismatch: "
+                      + str(name)
+                  )
+                  print(
+                      "  Expected: "
+                      + str(expected_size_int)
+                  )
+                  print(
+                      "  Actual  : "
+                      + str(actual_size)
+                  )
                   sys.exit(27)
 
-              print(f"[PASS] {name}")
+              print("[PASS] " + str(name))
+
               validated += 1
 
           print()
-          print(f"Validated manifest records: {validated}")
+          print(
+              "Validated manifest records: "
+              + str(validated)
+          )
           print("[PASS] Manifest hashes validated.")
           '@
-
-          $env:PATTERN_MANIFEST_JSON = $manifestPath
 
           $pythonCode | py -X utf8 -
 
@@ -1282,6 +1377,9 @@ jobs:
 
       # ================================================================
       # 22. FINAL CLEAN V001 TEST GATE
+      #
+      # Same encoding protection as Step 19.
+      # No literal Korean characters are embedded in Python source.
       # ================================================================
 
       - name: 22 - Final Clean V001 test gate
@@ -1302,23 +1400,49 @@ jobs:
               $env:PATTERN_VALIDATION_REPORT_DIR `
               "pattern_research_input_validation_checkpoint.json"
 
+          if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
+              throw "Final gate result JSON missing: $resultPath"
+          }
+
+          if (-not (Test-Path -LiteralPath $checkpointPath -PathType Leaf)) {
+              throw "Final gate checkpoint missing: $checkpointPath"
+          }
+
+          $env:PATTERN_RESULT_JSON = $resultPath
+          $env:PATTERN_CHECKPOINT_JSON = $checkpointPath
+
           $pythonCode = @'
           import json
           import os
           import sys
 
           result_path = os.environ["PATTERN_RESULT_JSON"]
-          checkpoint_path = os.environ["PATTERN_CHECKPOINT_JSON"]
+          checkpoint_path = os.environ[
+              "PATTERN_CHECKPOINT_JSON"
+          ]
 
           try:
-              with open(result_path, "r", encoding="utf-8-sig") as f:
+              with open(
+                  result_path,
+                  "r",
+                  encoding="utf-8-sig"
+              ) as f:
                   result_data = json.load(f)
 
-              with open(checkpoint_path, "r", encoding="utf-8-sig") as f:
+              with open(
+                  checkpoint_path,
+                  "r",
+                  encoding="utf-8-sig"
+              ) as f:
                   checkpoint = json.load(f)
 
           except Exception as exc:
-              print(f"[FAIL] Final gate JSON parse error: {type(exc).__name__}: {exc}")
+              print(
+                  "[FAIL] Final gate JSON parse error: "
+                  + type(exc).__name__
+                  + ": "
+                  + str(exc)
+              )
               sys.exit(10)
 
           summary = result_data.get("summary")
@@ -1332,75 +1456,129 @@ jobs:
               sys.exit(20)
 
           try:
-              failed_files = int(summary.get("failed_files"))
-              fatal_count = int(summary.get("fatal_count"))
+              total_files = int(
+                  summary.get("total_files")
+              )
+              passed_files = int(
+                  summary.get("passed_files")
+              )
+              failed_files = int(
+                  summary.get("failed_files")
+              )
+              fatal_count = int(
+                  summary.get("fatal_count")
+              )
           except (TypeError, ValueError):
-              print("[FAIL] Final gate: invalid summary counters.")
+              print(
+                  "[FAIL] Final gate: "
+                  "invalid summary counters."
+              )
               sys.exit(21)
 
-          if failed_files != 0:
-              print("[FAIL] Final gate: failed_files != 0")
+          if total_files <= 0:
+              print(
+                  "[FAIL] Final gate: total_files <= 0"
+              )
               sys.exit(22)
 
-          if fatal_count != 0:
-              print("[FAIL] Final gate: fatal_count != 0")
+          if passed_files != total_files:
+              print(
+                  "[FAIL] Final gate: "
+                  "passed_files != total_files"
+              )
               sys.exit(23)
 
-          if checkpoint.get("result") != "PASS":
-              print("[FAIL] Final gate: checkpoint result != PASS")
+          if failed_files != 0:
+              print(
+                  "[FAIL] Final gate: failed_files != 0"
+              )
               sys.exit(24)
 
-          if checkpoint.get("next_stage_allowed") is not True:
-              print("[FAIL] Final gate: next_stage_allowed != true")
+          if fatal_count != 0:
+              print(
+                  "[FAIL] Final gate: fatal_count != 0"
+              )
               sys.exit(25)
 
-          if checkpoint.get("next_stage") != "PATTERN_QUANTIFICATION":
+          if checkpoint.get("result") != "PASS":
               print(
-                  "[FAIL] Final gate: next_stage != PATTERN_QUANTIFICATION"
+                  "[FAIL] Final gate: "
+                  "checkpoint result != PASS"
               )
               sys.exit(26)
 
+          if checkpoint.get("next_stage_allowed") is not True:
+              print(
+                  "[FAIL] Final gate: "
+                  "next_stage_allowed != true"
+              )
+              sys.exit(27)
+
+          if (
+              checkpoint.get("next_stage")
+              != "PATTERN_QUANTIFICATION"
+          ):
+              print(
+                  "[FAIL] Final gate: "
+                  "next_stage != PATTERN_QUANTIFICATION"
+              )
+              sys.exit(28)
+
           expected_patterns = [
               "256",
-              "밥그릇 3번자리",
-              "역매공파",
-              "공구리",
-              "돌파",
-              "눌림목",
-              "기준봉",
-              "하이힐",
-              "오돌이",
+              "\ubc25\uadf8\ub987 3\ubc88\uc790\ub9ac",
+              "\uc5ed\ub9e4\uacf5\ud30c",
+              "\uacf5\uad6c\ub9ac",
+              "\ub3cc\ud30c",
+              "\ub20c\ub9bc\ubaa9",
+              "\uae30\uc900\ubd09",
+              "\ud558\uc774\ud790",
+              "\uc624\ub3cc\uc774",
           ]
 
-          if checkpoint.get("patterns") != expected_patterns:
-              print("[FAIL] Final gate: pattern contract mismatch.")
-              sys.exit(27)
+          patterns = checkpoint.get("patterns")
+
+          if patterns != expected_patterns:
+              print(
+                  "[FAIL] Final gate: "
+                  "pattern contract mismatch."
+              )
+              sys.exit(29)
 
           print("Program:")
           print("  validate_pattern_research_input.py")
+
           print()
           print("Version:")
           print("  Clean V001")
+
           print()
           print("Validation:")
           print("  PASS")
+
           print()
           print("Production OHLCV:")
           print("  UNCHANGED")
+
           print()
           print("Research patterns:")
-          print(f"  {len(expected_patterns)}")
+          print("  " + str(len(expected_patterns)))
+
           print()
           print("Next stage:")
           print("  PATTERN_QUANTIFICATION")
-          print()
-          print("============================================================")
-          print("CLEAN V001 TEST GATE: PASS")
-          print("============================================================")
-          '@
 
-          $env:PATTERN_RESULT_JSON = $resultPath
-          $env:PATTERN_CHECKPOINT_JSON = $checkpointPath
+          print()
+          print(
+              "============================================================"
+          )
+          print(
+              "CLEAN V001 TEST GATE: PASS"
+          )
+          print(
+              "============================================================"
+          )
+          '@
 
           $pythonCode | py -X utf8 -
 
