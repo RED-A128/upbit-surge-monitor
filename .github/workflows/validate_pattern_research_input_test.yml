@@ -1,0 +1,1307 @@
+name: validate_pattern_research_input_test.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate_pattern_research_input_test:
+    name: validate_pattern_research_input_test.yml
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 120
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+
+    steps:
+
+      # ================================================================
+      # 01. CHECKOUT
+      # ================================================================
+
+      - name: 01 - Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          clean: false
+
+
+      # ================================================================
+      # 02. SHOW ENVIRONMENT
+      # ================================================================
+
+      - name: 02 - Show environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "SHOW ENVIRONMENT"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          Write-Host "Repository:"
+          Write-Host "  $env:GITHUB_REPOSITORY"
+
+          Write-Host ""
+          Write-Host "Workspace:"
+          Write-Host "  $env:GITHUB_WORKSPACE"
+
+          Write-Host ""
+          Write-Host "Runner:"
+          Write-Host "  $env:RUNNER_NAME"
+
+          Write-Host ""
+          Write-Host "OS:"
+          Write-Host "  $env:RUNNER_OS"
+
+          Write-Host ""
+          Write-Host "Python:"
+          py --version
+
+          Write-Host ""
+          Write-Host "[PASS] Environment displayed."
+
+
+      # ================================================================
+      # 03. RESOLVE PRODUCTION PROJECT ROOT
+      # ================================================================
+
+      - name: 03 - Resolve production project root
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "RESOLVE PRODUCTION PROJECT ROOT"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $productionRoot = Join-Path $env:USERPROFILE "Documents\upbit-surge-monitor"
+
+          if (-not (Test-Path -LiteralPath $productionRoot -PathType Container)) {
+              throw "Production project root missing: $productionRoot"
+          }
+
+          $ohlcvRoot = Join-Path $productionRoot "data\ohlcv"
+
+          if (-not (Test-Path -LiteralPath $ohlcvRoot -PathType Container)) {
+              throw "Production OHLCV root missing: $ohlcvRoot"
+          }
+
+          "UPBIT_SURGE_PROJECT_ROOT=$productionRoot" |
+              Out-File `
+                  -FilePath $env:GITHUB_ENV `
+                  -Encoding utf8 `
+                  -Append
+
+          "PRODUCTION_OHLCV_ROOT=$ohlcvRoot" |
+              Out-File `
+                  -FilePath $env:GITHUB_ENV `
+                  -Encoding utf8 `
+                  -Append
+
+          Write-Host "[PATH] Production project root:"
+          Write-Host "  $productionRoot"
+
+          Write-Host ""
+          Write-Host "[PATH] Production OHLCV root:"
+          Write-Host "  $ohlcvRoot"
+
+          Write-Host ""
+          Write-Host "[PASS] Production project root resolved."
+
+
+      # ================================================================
+      # 04. VERIFY VALIDATOR PROGRAM
+      # ================================================================
+
+      - name: 04 - Verify validator program
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY VALIDATOR PROGRAM"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $validator = Join-Path $env:GITHUB_WORKSPACE "validate_pattern_research_input.py"
+
+          if (-not (Test-Path -LiteralPath $validator -PathType Leaf)) {
+              throw "Validator program missing: $validator"
+          }
+
+          Write-Host "[PASS] Validator exists:"
+          Write-Host "  $validator"
+
+          Write-Host ""
+
+          $content = Get-Content -LiteralPath $validator -Raw
+
+          if ($content -notmatch "Clean V001") {
+              throw "Validator does not contain expected version: Clean V001"
+          }
+
+          Write-Host "[PASS] Clean V001 marker found."
+
+
+      # ================================================================
+      # 05. VERIFY REQUIRED PRODUCTION DIRECTORIES
+      # ================================================================
+
+      - name: 05 - Verify required production directories
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY REQUIRED PRODUCTION DIRECTORIES"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $required = @(
+              "h1",
+              "h4",
+              "d1"
+          )
+
+          foreach ($timeframe in $required) {
+
+              $directory = Join-Path $env:PRODUCTION_OHLCV_ROOT $timeframe
+
+              if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+                  throw "Required timeframe directory missing: $directory"
+              }
+
+              Write-Host "[PASS] $directory"
+          }
+
+
+      # ================================================================
+      # 06. DISCOVER PRODUCTION OHLCV INVENTORY
+      # ================================================================
+
+      - name: 06 - Discover production OHLCV inventory
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "DISCOVER PRODUCTION OHLCV INVENTORY"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $timeframes = @(
+              "h1",
+              "h4",
+              "d1"
+          )
+
+          $grandTotal = 0
+
+          foreach ($timeframe in $timeframes) {
+
+              $directory = Join-Path $env:PRODUCTION_OHLCV_ROOT $timeframe
+
+              $files = @(
+                  Get-ChildItem `
+                      -LiteralPath $directory `
+                      -File `
+                      -Recurse `
+                      -Filter "*.csv"
+              )
+
+              $count = $files.Count
+              $grandTotal += $count
+
+              Write-Host "$($timeframe.ToUpper()) : $count CSV file(s)"
+
+              if ($count -eq 0) {
+                  throw "No production CSV files found: $directory"
+              }
+          }
+
+          Write-Host ""
+          Write-Host "TOTAL : $grandTotal CSV file(s)"
+
+          if ($grandTotal -eq 0) {
+              throw "Production OHLCV inventory is empty."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Production OHLCV inventory discovered."
+
+
+      # ================================================================
+      # 07. CREATE TEST EVIDENCE DIRECTORY
+      # ================================================================
+
+      - name: 07 - Create test evidence directory
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "CREATE TEST EVIDENCE DIRECTORY"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $evidenceRoot = Join-Path `
+              $env:RUNNER_TEMP `
+              "validate_pattern_research_input_test"
+
+          if (Test-Path -LiteralPath $evidenceRoot) {
+              Remove-Item `
+                  -LiteralPath $evidenceRoot `
+                  -Recurse `
+                  -Force
+          }
+
+          New-Item `
+              -ItemType Directory `
+              -Path $evidenceRoot `
+              -Force |
+              Out-Null
+
+          "PATTERN_TEST_EVIDENCE=$evidenceRoot" |
+              Out-File `
+                  -FilePath $env:GITHUB_ENV `
+                  -Encoding utf8 `
+                  -Append
+
+          Write-Host "[PATH] Evidence directory:"
+          Write-Host "  $evidenceRoot"
+
+          Write-Host ""
+          Write-Host "[PASS] Evidence directory ready."
+
+
+      # ================================================================
+      # 08. RECORD OHLCV FILE SET BEFORE VALIDATION
+      # ================================================================
+
+      - name: 08 - Record OHLCV file set before validation
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "RECORD OHLCV FILE SET BEFORE VALIDATION"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $output = Join-Path `
+              $env:PATTERN_TEST_EVIDENCE `
+              "ohlcv_files_before.txt"
+
+          $files = @(
+              Get-ChildItem `
+                  -LiteralPath $env:PRODUCTION_OHLCV_ROOT `
+                  -File `
+                  -Recurse `
+                  -Filter "*.csv" |
+              Sort-Object FullName
+          )
+
+          $relativePaths = foreach ($file in $files) {
+
+              $file.FullName.Substring(
+                  $env:PRODUCTION_OHLCV_ROOT.Length
+              ).TrimStart('\')
+          }
+
+          $relativePaths |
+              Set-Content `
+                  -LiteralPath $output `
+                  -Encoding utf8
+
+          Write-Host "Recorded files: $($files.Count)"
+          Write-Host "[PASS] BEFORE file set recorded."
+
+
+      # ================================================================
+      # 09. RECORD OHLCV SHA256 BEFORE VALIDATION
+      # ================================================================
+
+      - name: 09 - Record OHLCV SHA256 before validation
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "RECORD OHLCV SHA256 BEFORE VALIDATION"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $output = Join-Path `
+              $env:PATTERN_TEST_EVIDENCE `
+              "ohlcv_sha256_before.csv"
+
+          $files = @(
+              Get-ChildItem `
+                  -LiteralPath $env:PRODUCTION_OHLCV_ROOT `
+                  -File `
+                  -Recurse `
+                  -Filter "*.csv" |
+              Sort-Object FullName
+          )
+
+          $records = foreach ($file in $files) {
+
+              $relativePath = $file.FullName.Substring(
+                  $env:PRODUCTION_OHLCV_ROOT.Length
+              ).TrimStart('\')
+
+              $hash = Get-FileHash `
+                  -LiteralPath $file.FullName `
+                  -Algorithm SHA256
+
+              [PSCustomObject]@{
+                  path   = $relativePath
+                  sha256 = $hash.Hash.ToLower()
+                  size   = $file.Length
+              }
+          }
+
+          $records |
+              Export-Csv `
+                  -LiteralPath $output `
+                  -NoTypeInformation `
+                  -Encoding utf8
+
+          Write-Host "Hashed files: $($records.Count)"
+          Write-Host "[PASS] BEFORE SHA256 inventory recorded."
+
+
+      # ================================================================
+      # 10. RUN PATTERN RESEARCH INPUT VALIDATOR
+      # ================================================================
+
+      - name: 10 - Run pattern research input validator
+        id: run_validator
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "RUN PATTERN RESEARCH INPUT VALIDATOR"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          Write-Host "[SAFETY] READ-ONLY VALIDATION"
+          Write-Host "[SAFETY] OHLCV modification : FORBIDDEN"
+          Write-Host "[SAFETY] Recovery execution : DISABLED"
+          Write-Host "[SAFETY] Pattern detection : DISABLED"
+          Write-Host ""
+
+          $validator = Join-Path `
+              $env:GITHUB_WORKSPACE `
+              "validate_pattern_research_input.py"
+
+          & py -X utf8 $validator
+
+          $validatorExitCode = $LASTEXITCODE
+
+          Write-Host ""
+          Write-Host "Validator exit code:"
+          Write-Host "  $validatorExitCode"
+
+          $exitCodeFile = Join-Path `
+              $env:PATTERN_TEST_EVIDENCE `
+              "validator_exit_code.txt"
+
+          "$validatorExitCode" |
+              Set-Content `
+                  -LiteralPath $exitCodeFile `
+                  -Encoding ascii
+
+          if ($validatorExitCode -ne 0) {
+
+              Write-Host ""
+              Write-Host "[INFO] Validator returned exit code $validatorExitCode"
+              Write-Host "[INFO] OHLCV safety checks will still run."
+
+              exit 1
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Validator returned exit code 0."
+
+
+      # ================================================================
+      # 11. RECORD OHLCV FILE SET AFTER VALIDATION
+      # ================================================================
+
+      - name: 11 - Record OHLCV file set after validation
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "RECORD OHLCV FILE SET AFTER VALIDATION"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $output = Join-Path `
+              $env:PATTERN_TEST_EVIDENCE `
+              "ohlcv_files_after.txt"
+
+          $files = @(
+              Get-ChildItem `
+                  -LiteralPath $env:PRODUCTION_OHLCV_ROOT `
+                  -File `
+                  -Recurse `
+                  -Filter "*.csv" |
+              Sort-Object FullName
+          )
+
+          $relativePaths = foreach ($file in $files) {
+
+              $file.FullName.Substring(
+                  $env:PRODUCTION_OHLCV_ROOT.Length
+              ).TrimStart('\')
+          }
+
+          $relativePaths |
+              Set-Content `
+                  -LiteralPath $output `
+                  -Encoding utf8
+
+          Write-Host "Recorded files: $($files.Count)"
+          Write-Host "[PASS] AFTER file set recorded."
+
+
+      # ================================================================
+      # 12. VERIFY OHLCV FILE SET UNCHANGED
+      # ================================================================
+
+      - name: 12 - Verify OHLCV file set unchanged
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY OHLCV FILE SET UNCHANGED"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $before = Join-Path `
+              $env:PATTERN_TEST_EVIDENCE `
+              "ohlcv_files_before.txt"
+
+          $after = Join-Path `
+              $env:PATTERN_TEST_EVIDENCE `
+              "ohlcv_files_after.txt"
+
+          if (-not (Test-Path -LiteralPath $before -PathType Leaf)) {
+              throw "BEFORE file inventory missing."
+          }
+
+          if (-not (Test-Path -LiteralPath $after -PathType Leaf)) {
+              throw "AFTER file inventory missing."
+          }
+
+          $beforeHash = (
+              Get-FileHash `
+                  -LiteralPath $before `
+                  -Algorithm SHA256
+          ).Hash
+
+          $afterHash = (
+              Get-FileHash `
+                  -LiteralPath $after `
+                  -Algorithm SHA256
+          ).Hash
+
+          Write-Host "BEFORE:"
+          Write-Host "  $beforeHash"
+
+          Write-Host ""
+          Write-Host "AFTER:"
+          Write-Host "  $afterHash"
+
+          if ($beforeHash -ne $afterHash) {
+
+              Write-Host ""
+              Write-Host "OHLCV file set changed."
+
+              $beforeContent = @(
+                  Get-Content -LiteralPath $before
+              )
+
+              $afterContent = @(
+                  Get-Content -LiteralPath $after
+              )
+
+              Compare-Object `
+                  -ReferenceObject $beforeContent `
+                  -DifferenceObject $afterContent |
+                  Format-Table |
+                  Out-String |
+                  Write-Host
+
+              throw "Production OHLCV file set changed during validation."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Production OHLCV file set unchanged."
+
+
+      # ================================================================
+      # 13. RECORD OHLCV SHA256 AFTER VALIDATION
+      # ================================================================
+
+      - name: 13 - Record OHLCV SHA256 after validation
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "RECORD OHLCV SHA256 AFTER VALIDATION"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $output = Join-Path `
+              $env:PATTERN_TEST_EVIDENCE `
+              "ohlcv_sha256_after.csv"
+
+          $files = @(
+              Get-ChildItem `
+                  -LiteralPath $env:PRODUCTION_OHLCV_ROOT `
+                  -File `
+                  -Recurse `
+                  -Filter "*.csv" |
+              Sort-Object FullName
+          )
+
+          $records = foreach ($file in $files) {
+
+              $relativePath = $file.FullName.Substring(
+                  $env:PRODUCTION_OHLCV_ROOT.Length
+              ).TrimStart('\')
+
+              $hash = Get-FileHash `
+                  -LiteralPath $file.FullName `
+                  -Algorithm SHA256
+
+              [PSCustomObject]@{
+                  path   = $relativePath
+                  sha256 = $hash.Hash.ToLower()
+                  size   = $file.Length
+              }
+          }
+
+          $records |
+              Export-Csv `
+                  -LiteralPath $output `
+                  -NoTypeInformation `
+                  -Encoding utf8
+
+          Write-Host "Hashed files: $($records.Count)"
+          Write-Host "[PASS] AFTER SHA256 inventory recorded."
+
+
+      # ================================================================
+      # 14. VERIFY OHLCV SHA256 UNCHANGED
+      # ================================================================
+
+      - name: 14 - Verify OHLCV SHA256 unchanged
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY OHLCV SHA256 UNCHANGED"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $beforePath = Join-Path `
+              $env:PATTERN_TEST_EVIDENCE `
+              "ohlcv_sha256_before.csv"
+
+          $afterPath = Join-Path `
+              $env:PATTERN_TEST_EVIDENCE `
+              "ohlcv_sha256_after.csv"
+
+          if (-not (Test-Path -LiteralPath $beforePath -PathType Leaf)) {
+              throw "BEFORE SHA256 inventory missing."
+          }
+
+          if (-not (Test-Path -LiteralPath $afterPath -PathType Leaf)) {
+              throw "AFTER SHA256 inventory missing."
+          }
+
+          $before = @(
+              Import-Csv -LiteralPath $beforePath
+          )
+
+          $after = @(
+              Import-Csv -LiteralPath $afterPath
+          )
+
+          if ($before.Count -ne $after.Count) {
+              throw "OHLCV file count changed during validation."
+          }
+
+          $beforeMap = @{}
+
+          foreach ($item in $before) {
+
+              $beforeMap[$item.path] = @{
+                  sha256 = $item.sha256
+                  size   = $item.size
+              }
+          }
+
+          $changed = @()
+
+          foreach ($item in $after) {
+
+              if (-not $beforeMap.ContainsKey($item.path)) {
+
+                  $changed += [PSCustomObject]@{
+                      path   = $item.path
+                      reason = "NEW_FILE"
+                  }
+
+                  continue
+              }
+
+              $old = $beforeMap[$item.path]
+
+              if ($old.sha256 -ne $item.sha256) {
+
+                  $changed += [PSCustomObject]@{
+                      path   = $item.path
+                      reason = "SHA256_CHANGED"
+                  }
+
+                  continue
+              }
+
+              if ([string]$old.size -ne [string]$item.size) {
+
+                  $changed += [PSCustomObject]@{
+                      path   = $item.path
+                      reason = "SIZE_CHANGED"
+                  }
+              }
+          }
+
+          if ($changed.Count -gt 0) {
+
+              Write-Host ""
+              Write-Host "Modified OHLCV files:"
+              Write-Host ""
+
+              $changed |
+                  Format-Table -AutoSize |
+                  Out-String |
+                  Write-Host
+
+              throw "Production OHLCV content changed during validation."
+          }
+
+          Write-Host "[PASS] All production OHLCV SHA256 hashes unchanged."
+
+
+      # ================================================================
+      # 15. VERIFY VALIDATOR EXIT CODE
+      # ================================================================
+
+      - name: 15 - Verify validator process exit code
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY VALIDATOR PROCESS EXIT CODE"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $exitCodeFile = Join-Path `
+              $env:PATTERN_TEST_EVIDENCE `
+              "validator_exit_code.txt"
+
+          if (-not (Test-Path -LiteralPath $exitCodeFile -PathType Leaf)) {
+              throw "Validator exit-code evidence missing."
+          }
+
+          $validatorExitCode = (
+              Get-Content `
+                  -LiteralPath $exitCodeFile `
+                  -Raw
+          ).Trim()
+
+          Write-Host "Validator exit code:"
+          Write-Host "  $validatorExitCode"
+
+          if ($validatorExitCode -ne "0") {
+              throw "validate_pattern_research_input.py returned exit code $validatorExitCode"
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Validator exit code is 0."
+
+
+      # ================================================================
+      # 16. VERIFY VALIDATION OUTPUT DIRECTORY
+      # ================================================================
+
+      - name: 16 - Verify validation output directory
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY VALIDATION OUTPUT DIRECTORY"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $reportDirectory = Join-Path `
+              $env:UPBIT_SURGE_PROJECT_ROOT `
+              "data\reports\pattern_research_input_validation"
+
+          if (-not (Test-Path -LiteralPath $reportDirectory -PathType Container)) {
+              throw "Validation report directory missing: $reportDirectory"
+          }
+
+          "PATTERN_VALIDATION_REPORT_DIR=$reportDirectory" |
+              Out-File `
+                  -FilePath $env:GITHUB_ENV `
+                  -Encoding utf8 `
+                  -Append
+
+          $files = @(
+              Get-ChildItem `
+                  -LiteralPath $reportDirectory `
+                  -File
+          )
+
+          if ($files.Count -eq 0) {
+              throw "Validation report directory contains no files."
+          }
+
+          Write-Host "Report directory:"
+          Write-Host "  $reportDirectory"
+
+          Write-Host ""
+          Write-Host "Files:"
+
+          foreach ($file in $files) {
+              Write-Host "  $($file.Name)"
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Validation output directory verified."
+
+
+      # ================================================================
+      # 17. VERIFY EXPECTED VALIDATION OUTPUTS
+      # ================================================================
+
+      - name: 17 - Verify expected validation outputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY EXPECTED VALIDATION OUTPUTS"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $requiredFiles = @(
+              "pattern_research_input_validation.json",
+              "pattern_research_input_validation_detail.csv",
+              "pattern_research_input_validation_issues.csv",
+              "pattern_research_input_validation_checkpoint.json",
+              "pattern_research_input_validation_manifest.json"
+          )
+
+          foreach ($name in $requiredFiles) {
+
+              $path = Join-Path `
+                  $env:PATTERN_VALIDATION_REPORT_DIR `
+                  $name
+
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                  throw "Required validation output missing: $path"
+              }
+
+              $file = Get-Item -LiteralPath $path
+
+              if ($file.Length -eq 0) {
+                  throw "Validation output is empty: $path"
+              }
+
+              Write-Host "[PASS] $name ($($file.Length) bytes)"
+          }
+
+
+      # ================================================================
+      # 18. VALIDATE RESULT JSON
+      # ================================================================
+
+      - name: 18 - Validate result JSON
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VALIDATE RESULT JSON"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $path = Join-Path `
+              $env:PATTERN_VALIDATION_REPORT_DIR `
+              "pattern_research_input_validation.json"
+
+          $json = Get-Content `
+              -LiteralPath $path `
+              -Raw |
+              ConvertFrom-Json
+
+          if ($null -eq $json.summary) {
+              throw "Result JSON missing summary."
+          }
+
+          Write-Host "Program:"
+          Write-Host "  $($json.summary.program)"
+
+          Write-Host ""
+          Write-Host "Version:"
+          Write-Host "  $($json.summary.version)"
+
+          Write-Host ""
+          Write-Host "Result:"
+          Write-Host "  $($json.summary.result)"
+
+          Write-Host ""
+          Write-Host "Total files:"
+          Write-Host "  $($json.summary.total_files)"
+
+          Write-Host ""
+          Write-Host "Passed files:"
+          Write-Host "  $($json.summary.passed_files)"
+
+          Write-Host ""
+          Write-Host "Failed files:"
+          Write-Host "  $($json.summary.failed_files)"
+
+          Write-Host ""
+          Write-Host "Fatal issues:"
+          Write-Host "  $($json.summary.fatal_count)"
+
+          if ($json.summary.version -ne "Clean V001") {
+              throw "Unexpected validator version: $($json.summary.version)"
+          }
+
+          if ($json.summary.result -ne "PASS") {
+              throw "Pattern research input validation result is not PASS."
+          }
+
+          if ([int]$json.summary.total_files -le 0) {
+              throw "Validation result contains zero files."
+          }
+
+          if ([int]$json.summary.failed_files -ne 0) {
+              throw "Validation result contains failed files."
+          }
+
+          if ([int]$json.summary.fatal_count -ne 0) {
+              throw "Validation result contains fatal issues."
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Result JSON validated."
+
+
+      # ================================================================
+      # 19. VALIDATE CHECKPOINT
+      # ================================================================
+
+      - name: 19 - Validate checkpoint
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VALIDATE CHECKPOINT"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $path = Join-Path `
+              $env:PATTERN_VALIDATION_REPORT_DIR `
+              "pattern_research_input_validation_checkpoint.json"
+
+          $checkpoint = Get-Content `
+              -LiteralPath $path `
+              -Raw |
+              ConvertFrom-Json
+
+          Write-Host "Result:"
+          Write-Host "  $($checkpoint.result)"
+
+          Write-Host ""
+          Write-Host "Research stage:"
+          Write-Host "  $($checkpoint.research_stage)"
+
+          Write-Host ""
+          Write-Host "Next stage allowed:"
+          Write-Host "  $($checkpoint.next_stage_allowed)"
+
+          Write-Host ""
+          Write-Host "Next stage:"
+          Write-Host "  $($checkpoint.next_stage)"
+
+          if ($checkpoint.result -ne "PASS") {
+              throw "Checkpoint result is not PASS."
+          }
+
+          if ($checkpoint.research_stage -ne "PATTERN_RESEARCH_INPUT_VALIDATION") {
+              throw "Unexpected research stage."
+          }
+
+          if ($checkpoint.next_stage_allowed -ne $true) {
+              throw "Checkpoint does not allow next research stage."
+          }
+
+          if ($checkpoint.next_stage -ne "PATTERN_QUANTIFICATION") {
+              throw "Unexpected next stage: $($checkpoint.next_stage)"
+          }
+
+          $expectedPatterns = @(
+              "256",
+              "밥그릇 3번자리",
+              "역매공파",
+              "공구리",
+              "돌파",
+              "눌림목",
+              "기준봉",
+              "하이힐",
+              "오돌이"
+          )
+
+          $actualPatterns = @(
+              $checkpoint.patterns
+          )
+
+          if ($actualPatterns.Count -ne $expectedPatterns.Count) {
+              throw "Unexpected research pattern count."
+          }
+
+          for ($i = 0; $i -lt $expectedPatterns.Count; $i++) {
+
+              if ($actualPatterns[$i] -ne $expectedPatterns[$i]) {
+
+                  throw (
+                      "Pattern contract mismatch at index ${i}: " +
+                      "Expected='$($expectedPatterns[$i])' " +
+                      "Found='$($actualPatterns[$i])'"
+                  )
+              }
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Checkpoint validated."
+
+
+      # ================================================================
+      # 20. VALIDATE MANIFEST HASHES
+      # ================================================================
+
+      - name: 20 - Validate report manifest hashes
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VALIDATE REPORT MANIFEST HASHES"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $manifestPath = Join-Path `
+              $env:PATTERN_VALIDATION_REPORT_DIR `
+              "pattern_research_input_validation_manifest.json"
+
+          $manifest = Get-Content `
+              -LiteralPath $manifestPath `
+              -Raw |
+              ConvertFrom-Json
+
+          if ($manifest.version -ne "Clean V001") {
+              throw "Unexpected manifest version: $($manifest.version)"
+          }
+
+          if ($null -eq $manifest.files) {
+              throw "Manifest contains no file records."
+          }
+
+          foreach ($record in $manifest.files) {
+
+              $path = Join-Path `
+                  $env:PATTERN_VALIDATION_REPORT_DIR `
+                  $record.name
+
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                  throw "Manifest file missing: $path"
+              }
+
+              $actualHash = (
+                  Get-FileHash `
+                      -LiteralPath $path `
+                      -Algorithm SHA256
+              ).Hash.ToLower()
+
+              $expectedHash = (
+                  [string]$record.sha256
+              ).ToLower()
+
+              if ($actualHash -ne $expectedHash) {
+
+                  throw (
+                      "Manifest SHA256 mismatch: " +
+                      "$($record.name)"
+                  )
+              }
+
+              $actualSize = (
+                  Get-Item `
+                      -LiteralPath $path
+              ).Length
+
+              if (
+                  [int64]$actualSize -ne
+                  [int64]$record.size_bytes
+              ) {
+
+                  throw (
+                      "Manifest size mismatch: " +
+                      "$($record.name)"
+                  )
+              }
+
+              Write-Host "[PASS] $($record.name)"
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Manifest hashes validated."
+
+
+      # ================================================================
+      # 21. VERIFY NO FORBIDDEN GIT OPERATIONS
+      # ================================================================
+
+      - name: 21 - Verify no forbidden Git operations are executable
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY NO FORBIDDEN GIT OPERATIONS"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $validator = Join-Path `
+              $env:GITHUB_WORKSPACE `
+              "validate_pattern_research_input.py"
+
+          $content = Get-Content `
+              -LiteralPath $validator `
+              -Raw
+
+          $forbiddenPatterns = @(
+              '(?im)^\s*os\.system\s*\(\s*["'']git\s+(reset|clean|commit|push)\b',
+              '(?im)^\s*subprocess\.(run|call|Popen|check_call|check_output)\s*\([^\r\n]*(git)[^\r\n]*(reset|clean|commit|push)',
+              '(?im)^\s*["'']git["'']\s*,\s*["''](reset|clean|commit|push)["'']'
+          )
+
+          foreach ($pattern in $forbiddenPatterns) {
+
+              if ($content -match $pattern) {
+                  throw "Potential executable forbidden Git operation detected."
+              }
+          }
+
+          Write-Host "[PASS] No executable forbidden Git operation detected."
+
+
+      # ================================================================
+      # 22. FINAL CLEAN V001 TEST GATE
+      # ================================================================
+
+      - name: 22 - Final Clean V001 test gate
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "FINAL CLEAN V001 TEST GATE"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $resultPath = Join-Path `
+              $env:PATTERN_VALIDATION_REPORT_DIR `
+              "pattern_research_input_validation.json"
+
+          $checkpointPath = Join-Path `
+              $env:PATTERN_VALIDATION_REPORT_DIR `
+              "pattern_research_input_validation_checkpoint.json"
+
+          $result = Get-Content `
+              -LiteralPath $resultPath `
+              -Raw |
+              ConvertFrom-Json
+
+          $checkpoint = Get-Content `
+              -LiteralPath $checkpointPath `
+              -Raw |
+              ConvertFrom-Json
+
+          if ($result.summary.result -ne "PASS") {
+              throw "Final gate failed: result != PASS"
+          }
+
+          if ([int]$result.summary.failed_files -ne 0) {
+              throw "Final gate failed: failed_files != 0"
+          }
+
+          if ([int]$result.summary.fatal_count -ne 0) {
+              throw "Final gate failed: fatal_count != 0"
+          }
+
+          if ($checkpoint.next_stage_allowed -ne $true) {
+              throw "Final gate failed: next_stage_allowed != true"
+          }
+
+          if ($checkpoint.next_stage -ne "PATTERN_QUANTIFICATION") {
+              throw "Final gate failed: next_stage != PATTERN_QUANTIFICATION"
+          }
+
+          Write-Host "Program:"
+          Write-Host "  validate_pattern_research_input.py"
+
+          Write-Host ""
+          Write-Host "Version:"
+          Write-Host "  Clean V001"
+
+          Write-Host ""
+          Write-Host "Validation:"
+          Write-Host "  PASS"
+
+          Write-Host ""
+          Write-Host "Production OHLCV:"
+          Write-Host "  UNCHANGED"
+
+          Write-Host ""
+          Write-Host "Next stage:"
+          Write-Host "  PATTERN_QUANTIFICATION"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "CLEAN V001 TEST GATE: PASS"
+          Write-Host "============================================================"
+
+
+      # ================================================================
+      # 23. FAILURE DIAGNOSTICS
+      # ================================================================
+
+      - name: 23 - Failure diagnostics
+        if: failure()
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "FAILURE DIAGNOSTICS"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          Write-Host "Production root:"
+          Write-Host "  $env:UPBIT_SURGE_PROJECT_ROOT"
+
+          Write-Host ""
+          Write-Host "OHLCV root:"
+          Write-Host "  $env:PRODUCTION_OHLCV_ROOT"
+
+          Write-Host ""
+          Write-Host "Evidence:"
+          Write-Host "  $env:PATTERN_TEST_EVIDENCE"
+
+          Write-Host ""
+          Write-Host "Report directory:"
+          Write-Host "  $env:PATTERN_VALIDATION_REPORT_DIR"
+
+          if (
+              $env:PATTERN_VALIDATION_REPORT_DIR -and
+              (Test-Path -LiteralPath $env:PATTERN_VALIDATION_REPORT_DIR)
+          ) {
+
+              Write-Host ""
+              Write-Host "Validation report files:"
+
+              Get-ChildItem `
+                  -LiteralPath $env:PATTERN_VALIDATION_REPORT_DIR `
+                  -File |
+                  Select-Object `
+                      Name,
+                      Length,
+                      LastWriteTime |
+                  Format-Table -AutoSize |
+                  Out-String |
+                  Write-Host
+          }
+
+          if (
+              $env:PATTERN_TEST_EVIDENCE -and
+              (Test-Path -LiteralPath $env:PATTERN_TEST_EVIDENCE)
+          ) {
+
+              Write-Host ""
+              Write-Host "Test evidence files:"
+
+              Get-ChildItem `
+                  -LiteralPath $env:PATTERN_TEST_EVIDENCE `
+                  -File |
+                  Select-Object `
+                      Name,
+                      Length,
+                      LastWriteTime |
+                  Format-Table -AutoSize |
+                  Out-String |
+                  Write-Host
+          }
+
+
+      # ================================================================
+      # 24. UPLOAD TEST EVIDENCE
+      # ================================================================
+
+      - name: 24 - Upload pattern research input validation test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-research-input-validation-test-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            ${{ runner.temp }}/validate_pattern_research_input_test/**
+            ${{ env.UPBIT_SURGE_PROJECT_ROOT }}/data/reports/pattern_research_input_validation/**
