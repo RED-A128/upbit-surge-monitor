@@ -174,16 +174,10 @@ jobs:
           Write-Host "       $rootSource"
 
           "PRODUCTION_ROOT=$productionRoot" |
-              Out-File `
-                  -FilePath $env:GITHUB_ENV `
-                  -Encoding utf8 `
-                  -Append
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
           "PRODUCTION_ROOT_SOURCE=$rootSource" |
-              Out-File `
-                  -FilePath $env:GITHUB_ENV `
-                  -Encoding utf8 `
-                  -Append
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
 
       # ================================================================
@@ -232,11 +226,7 @@ jobs:
           Write-Host "============================================================"
           Write-Host ""
 
-          $timeframes = @(
-              "h1",
-              "h4",
-              "d1"
-          )
+          $timeframes = @("h1", "h4", "d1")
 
           $total = 0
 
@@ -266,10 +256,7 @@ jobs:
           }
 
           "OHLCV_FILE_COUNT=$total" |
-              Out-File `
-                  -FilePath $env:GITHUB_ENV `
-                  -Encoding utf8 `
-                  -Append
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
 
       # ================================================================
@@ -287,6 +274,13 @@ jobs:
           Write-Host ""
 
           $snapshotDir = Join-Path $env:RUNNER_TEMP "quantify_patterns_test"
+
+          if (Test-Path -LiteralPath $snapshotDir) {
+              Remove-Item `
+                  -LiteralPath $snapshotDir `
+                  -Recurse `
+                  -Force
+          }
 
           New-Item `
               -ItemType Directory `
@@ -326,15 +320,8 @@ jobs:
           Write-Host "Recorded files:"
           Write-Host "  $($relativePaths.Count)"
 
-          Write-Host ""
-          Write-Host "Snapshot:"
-          Write-Host "  $beforeList"
-
           "QUANTIFY_TEST_SNAPSHOT_DIR=$snapshotDir" |
-              Out-File `
-                  -FilePath $env:GITHUB_ENV `
-                  -Encoding utf8 `
-                  -Append
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
 
       # ================================================================
@@ -396,6 +383,13 @@ jobs:
 
       # ================================================================
       # 09
+      # IMPORTANT:
+      # Do not compare Korean literals inside PowerShell source.
+      # Windows PowerShell 5.1 on self-hosted runner can corrupt UTF-8
+      # literals when the temporary .ps1 file is generated.
+      #
+      # Python reads quantify_patterns.py as UTF-8 and verifies the
+      # Unicode pattern names safely.
       # ================================================================
 
       - name: 09 - Verify pattern registry source contract
@@ -410,34 +404,61 @@ jobs:
 
           $program = Join-Path $env:GITHUB_WORKSPACE $env:PROGRAM_FILE
 
-          $content = Get-Content `
-              -LiteralPath $program `
-              -Raw `
-              -Encoding UTF8
+          @'
+          import pathlib
+          import sys
 
-          $requiredPatterns = @(
-              'korean_name="256"',
-              'korean_name="밥그릇 3번자리"',
-              'korean_name="역매공파"',
-              'korean_name="공구리"',
-              'korean_name="돌파"',
-              'korean_name="눌림목"',
-              'korean_name="기준봉"',
-              'korean_name="하이힐"',
-              'korean_name="오돌이"'
-          )
+          program = pathlib.Path(sys.argv[1])
 
-          foreach ($pattern in $requiredPatterns) {
+          try:
+              content = program.read_text(encoding="utf-8-sig")
+          except Exception as exc:
+              print(f"[FAIL] Unable to read source as UTF-8: {exc}")
+              raise SystemExit(1)
 
-              if (-not $content.Contains($pattern)) {
-                  throw "Required pattern definition missing: $pattern"
-              }
+          required_patterns = [
+              "\u0032\u0035\u0036",
+              "\ubc25\uadf8\ub987\u0020\u0033\ubc88\uc790\ub9ac",
+              "\uc5ed\ub9e4\uacf5\ud30c",
+              "\uacf5\uad6c\ub9ac",
+              "\ub3cc\ud30c",
+              "\ub20c\ub9bc\ubaa9",
+              "\uae30\uc900\ubd09",
+              "\ud558\uc774\ud790",
+              "\uc624\ub3cc\uc774",
+          ]
 
-              Write-Host "[PASS] $pattern"
+          missing = []
+
+          for name in required_patterns:
+              candidates = [
+                  f'korean_name="{name}"',
+                  f"korean_name='{name}'",
+                  f'"korean_name": "{name}"',
+                  f'"korean_name":"{name}"',
+                  f"'korean_name': '{name}'",
+                  f"'korean_name':'{name}'",
+              ]
+
+              if any(candidate in content for candidate in candidates):
+                  print(f"[PASS] {name}")
+              else:
+                  missing.append(name)
+                  print(f"[FAIL] Required pattern definition missing: {name}")
+
+          if missing:
+              print("")
+              print("[FAIL] Missing pattern count:", len(missing))
+              raise SystemExit(1)
+
+          print("")
+          print("[PASS] All 9 pattern definitions found.")
+          '@ |
+              py - "$program"
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Pattern registry source contract validation failed."
           }
-
-          Write-Host ""
-          Write-Host "[PASS] All 9 pattern definitions found."
 
 
       # ================================================================
@@ -456,54 +477,60 @@ jobs:
 
           $program = Join-Path $env:GITHUB_WORKSPACE $env:PROGRAM_FILE
 
-          $content = Get-Content `
-              -LiteralPath $program `
-              -Raw `
-              -Encoding UTF8
+          @'
+          import pathlib
+          import re
+          import sys
 
-          $requiredText = @(
+          program = pathlib.Path(sys.argv[1])
+
+          try:
+              content = program.read_text(encoding="utf-8-sig")
+          except Exception as exc:
+              print(f"[FAIL] Unable to read source: {exc}")
+              raise SystemExit(1)
+
+          required_contracts = [
               "ALLOW_FUTURE_LABELS = False",
               "future_data_allowed=False",
               "No negative shift is allowed.",
-              "No centered rolling window is allowed."
+              "No centered rolling window is allowed.",
+          ]
+
+          for contract in required_contracts:
+              if contract not in content:
+                  print(f"[FAIL] Required no-future contract missing: {contract}")
+                  raise SystemExit(1)
+
+              print(f"[PASS] {contract}")
+
+          negative_shift_pattern = re.compile(
+              r"\.shift\s*\(\s*-\d+",
+              re.IGNORECASE,
           )
 
-          foreach ($text in $requiredText) {
+          if negative_shift_pattern.search(content):
+              print("[FAIL] Negative pandas shift detected.")
+              raise SystemExit(1)
 
-              if (-not $content.Contains($text)) {
-                  throw "Required no-future contract missing: $text"
-              }
+          center_true_pattern = re.compile(
+              r"center\s*=\s*True",
+              re.IGNORECASE,
+          )
 
-              Write-Host "[PASS] $text"
+          if center_true_pattern.search(content):
+              print("[FAIL] Centered rolling window detected.")
+              raise SystemExit(1)
+
+          print("")
+          print("[PASS] No negative shift detected.")
+          print("[PASS] No centered rolling window detected.")
+          '@ |
+              py - "$program"
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "No-future-information source contract validation failed."
           }
-
-          $negativeShiftPattern = '\.shift\s*\(\s*-\d+'
-
-          if (
-              [regex]::IsMatch(
-                  $content,
-                  $negativeShiftPattern,
-                  [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
-              )
-          ) {
-              throw "Negative pandas shift detected in quantify_patterns.py"
-          }
-
-          $centerTruePattern = 'center\s*=\s*True'
-
-          if (
-              [regex]::IsMatch(
-                  $content,
-                  $centerTruePattern,
-                  [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
-              )
-          ) {
-              throw "Centered rolling window detected in quantify_patterns.py"
-          }
-
-          Write-Host ""
-          Write-Host "[PASS] No negative shift detected."
-          Write-Host "[PASS] No centered rolling window detected."
 
 
       # ================================================================
@@ -546,15 +573,12 @@ jobs:
           Write-Host "  $exitCode"
 
           "QUANTIFY_EXIT_CODE=$exitCode" |
-              Out-File `
-                  -FilePath $env:GITHUB_ENV `
-                  -Encoding utf8 `
-                  -Append
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
           if ($exitCode -ne 0) {
               Write-Host ""
               Write-Host "[INFO] quantify_patterns.py returned exit code $exitCode"
-              Write-Host "[INFO] OHLCV immutability verification will still run."
+              Write-Host "[INFO] OHLCV safety verification will still run."
           }
 
           exit 0
@@ -698,8 +722,7 @@ jobs:
                   -Encoding UTF8
 
           $beforeRows = @(
-              Import-Csv `
-                  -LiteralPath $beforePath
+              Import-Csv -LiteralPath $beforePath
           )
 
           if ($beforeRows.Count -ne $afterRows.Count) {
@@ -728,10 +751,7 @@ jobs:
                   continue
               }
 
-              if (
-                  [Int64]$before.Length -ne
-                  [Int64]$row.Length
-              ) {
+              if ([Int64]$before.Length -ne [Int64]$row.Length) {
                   $changed += $row.RelativePath
               }
           }
@@ -850,110 +870,144 @@ jobs:
               $env:PRODUCTION_ROOT `
               "data\reports\$env:REPORT_NAMESPACE\pattern_quantification_result.json"
 
-          try {
-              $result = Get-Content `
-                  -LiteralPath $path `
-                  -Raw `
-                  -Encoding UTF8 |
-                  ConvertFrom-Json
+          @'
+          import json
+          import pathlib
+          import sys
+
+          path = pathlib.Path(sys.argv[1])
+          expected_version = sys.argv[2]
+
+          try:
+              with path.open("r", encoding="utf-8-sig") as f:
+                  result = json.load(f)
+          except Exception as exc:
+              print(f"[FAIL] Unable to parse result JSON: {exc}")
+              raise SystemExit(1)
+
+          def require(condition, message):
+              if not condition:
+                  print(f"[FAIL] {message}")
+                  raise SystemExit(1)
+
+          require(
+              result.get("program") == "quantify_patterns.py",
+              f"Unexpected result program: {result.get('program')}",
+          )
+
+          require(
+              result.get("version") == expected_version,
+              f"Unexpected result version: {result.get('version')}",
+          )
+
+          require(
+              result.get("stage") == "PATTERN QUANTIFICATION",
+              f"Unexpected stage: {result.get('stage')}",
+          )
+
+          require(
+              result.get("status") == "PASS",
+              f"Quantification result status is not PASS: {result.get('status')}",
+          )
+
+          patterns = result.get("patterns", {})
+
+          require(
+              int(patterns.get("count", -1)) == 9,
+              f"Expected 9 patterns. Found={patterns.get('count')}",
+          )
+
+          require(
+              patterns.get("final_formulas_defined") is False,
+              "Clean V001 must not claim final pattern formulas are defined.",
+          )
+
+          require(
+              patterns.get("future_information_allowed") is False,
+              "Future information must not be allowed.",
+          )
+
+          feature_contract = result.get("common_feature_contract", {})
+
+          require(
+              feature_contract.get("future_candles_used") is False,
+              "Result indicates future candles were used.",
+          )
+
+          safety = result.get("safety", {})
+
+          require(
+              safety.get("ohlcv_read_only") is True,
+              "OHLCV read-only safety flag is not true.",
+          )
+
+          require(
+              safety.get("ohlcv_write_allowed") is False,
+              "OHLCV write safety flag is invalid.",
+          )
+
+          require(
+              safety.get("ohlcv_delete_allowed") is False,
+              "OHLCV delete safety flag is invalid.",
+          )
+
+          require(
+              safety.get("future_labels_allowed") is False,
+              "Future labels safety flag is invalid.",
+          )
+
+          require(
+              safety.get("backtest_allowed") is False,
+              "Backtest safety flag is invalid.",
+          )
+
+          require(
+              safety.get("prediction_allowed") is False,
+              "Prediction safety flag is invalid.",
+          )
+
+          require(
+              safety.get("trading_allowed") is False,
+              "Trading safety flag is invalid.",
+          )
+
+          require(
+              safety.get("source_sha256_unchanged") is True,
+              "Result indicates production OHLCV SHA256 changed.",
+          )
+
+          statistics = result.get("statistics", {})
+
+          print("[PASS] Program")
+          print("[PASS] Version")
+          print("[PASS] Stage")
+          print("[PASS] Result status")
+          print("[PASS] 9 pattern registry")
+          print("[PASS] Final formulas remain undefined")
+          print("[PASS] Future information forbidden")
+          print("[PASS] Production OHLCV read-only")
+          print("[PASS] Production OHLCV SHA256 unchanged")
+          print("")
+          print("Files discovered:")
+          print(f"  {statistics.get('files_discovered')}")
+          print("")
+          print("READY:")
+          print(f"  {statistics.get('files_ready')}")
+          print("")
+          print("WARN:")
+          print(f"  {statistics.get('files_warning')}")
+          print("")
+          print("ERROR:")
+          print(f"  {statistics.get('files_error')}")
+          print("")
+          print("Historical gaps:")
+          print(f"  {statistics.get('total_gaps')}")
+          '@ |
+              py - "$path" "$env:EXPECTED_VERSION"
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Result JSON validation failed."
           }
-          catch {
-              throw "Unable to parse result JSON: $($_.Exception.Message)"
-          }
-
-          if ($result.program -ne "quantify_patterns.py") {
-              throw "Unexpected result program: $($result.program)"
-          }
-
-          if ($result.version -ne $env:EXPECTED_VERSION) {
-              throw "Unexpected result version: $($result.version)"
-          }
-
-          if ($result.stage -ne "PATTERN QUANTIFICATION") {
-              throw "Unexpected stage: $($result.stage)"
-          }
-
-          if ($result.status -ne "PASS") {
-              throw "Quantification result status is not PASS: $($result.status)"
-          }
-
-          if ([int]$result.patterns.count -ne 9) {
-              throw "Expected 9 patterns. Found=$($result.patterns.count)"
-          }
-
-          if ($result.patterns.final_formulas_defined -ne $false) {
-              throw "Clean V001 must not claim final pattern formulas are defined."
-          }
-
-          if ($result.patterns.future_information_allowed -ne $false) {
-              throw "Future information must not be allowed."
-          }
-
-          if ($result.common_feature_contract.future_candles_used -ne $false) {
-              throw "Result indicates future candles were used."
-          }
-
-          if ($result.safety.ohlcv_read_only -ne $true) {
-              throw "OHLCV read-only safety flag is not true."
-          }
-
-          if ($result.safety.ohlcv_write_allowed -ne $false) {
-              throw "OHLCV write safety flag is invalid."
-          }
-
-          if ($result.safety.ohlcv_delete_allowed -ne $false) {
-              throw "OHLCV delete safety flag is invalid."
-          }
-
-          if ($result.safety.future_labels_allowed -ne $false) {
-              throw "Future labels safety flag is invalid."
-          }
-
-          if ($result.safety.backtest_allowed -ne $false) {
-              throw "Backtest safety flag is invalid."
-          }
-
-          if ($result.safety.prediction_allowed -ne $false) {
-              throw "Prediction safety flag is invalid."
-          }
-
-          if ($result.safety.trading_allowed -ne $false) {
-              throw "Trading safety flag is invalid."
-          }
-
-          if ($result.safety.source_sha256_unchanged -ne $true) {
-              throw "Result indicates production OHLCV SHA256 changed."
-          }
-
-          Write-Host "[PASS] Program"
-          Write-Host "[PASS] Version"
-          Write-Host "[PASS] Stage"
-          Write-Host "[PASS] Result status"
-          Write-Host "[PASS] 9 pattern registry"
-          Write-Host "[PASS] Final formulas remain undefined"
-          Write-Host "[PASS] Future information forbidden"
-          Write-Host "[PASS] Production OHLCV read-only"
-          Write-Host "[PASS] Production OHLCV SHA256 unchanged"
-
-          Write-Host ""
-          Write-Host "Files discovered:"
-          Write-Host "  $($result.statistics.files_discovered)"
-
-          Write-Host ""
-          Write-Host "READY:"
-          Write-Host "  $($result.statistics.files_ready)"
-
-          Write-Host ""
-          Write-Host "WARN:"
-          Write-Host "  $($result.statistics.files_warning)"
-
-          Write-Host ""
-          Write-Host "ERROR:"
-          Write-Host "  $($result.statistics.files_error)"
-
-          Write-Host ""
-          Write-Host "Historical gaps:"
-          Write-Host "  $($result.statistics.total_gaps)"
 
 
       # ================================================================
@@ -974,61 +1028,85 @@ jobs:
               $env:PRODUCTION_ROOT `
               "data\reports\$env:REPORT_NAMESPACE\pattern_registry.json"
 
-          $registry = Get-Content `
-              -LiteralPath $path `
-              -Raw `
-              -Encoding UTF8 |
-              ConvertFrom-Json
+          @'
+          import json
+          import pathlib
+          import sys
 
-          if ([int]$registry.pattern_count -ne 9) {
-              throw "Pattern registry count mismatch. Expected=9 Found=$($registry.pattern_count)"
-          }
+          path = pathlib.Path(sys.argv[1])
 
-          if ($registry.future_information_allowed -ne $false) {
-              throw "Pattern registry unexpectedly allows future information."
-          }
+          try:
+              with path.open("r", encoding="utf-8-sig") as f:
+                  registry = json.load(f)
+          except Exception as exc:
+              print(f"[FAIL] Unable to parse pattern registry: {exc}")
+              raise SystemExit(1)
 
-          $expected = @(
-              "256",
-              "밥그릇 3번자리",
-              "역매공파",
-              "공구리",
-              "돌파",
-              "눌림목",
-              "기준봉",
-              "하이힐",
-              "오돌이"
+          def require(condition, message):
+              if not condition:
+                  print(f"[FAIL] {message}")
+                  raise SystemExit(1)
+
+          require(
+              int(registry.get("pattern_count", -1)) == 9,
+              f"Pattern registry count mismatch. "
+              f"Expected=9 Found={registry.get('pattern_count')}",
           )
 
-          $actual = @(
-              $registry.patterns |
-              ForEach-Object {
-                  $_.korean_name
-              }
+          require(
+              registry.get("future_information_allowed") is False,
+              "Pattern registry unexpectedly allows future information.",
           )
 
-          foreach ($name in $expected) {
+          expected = [
+              "\u0032\u0035\u0036",
+              "\ubc25\uadf8\ub987\u0020\u0033\ubc88\uc790\ub9ac",
+              "\uc5ed\ub9e4\uacf5\ud30c",
+              "\uacf5\uad6c\ub9ac",
+              "\ub3cc\ud30c",
+              "\ub20c\ub9bc\ubaa9",
+              "\uae30\uc900\ubd09",
+              "\ud558\uc774\ud790",
+              "\uc624\ub3cc\uc774",
+          ]
 
-              if ($actual -notcontains $name) {
-                  throw "Required pattern missing from registry: $name"
-              }
+          patterns = registry.get("patterns", [])
 
-              Write-Host "[PASS] $name"
+          actual = [
+              pattern.get("korean_name")
+              for pattern in patterns
+          ]
+
+          for name in expected:
+              require(
+                  name in actual,
+                  f"Required pattern missing from registry: {name}",
+              )
+              print(f"[PASS] {name}")
+
+          for pattern in patterns:
+              name = pattern.get("korean_name")
+
+              require(
+                  pattern.get("future_data_allowed") is False,
+                  f"Pattern unexpectedly allows future data: {name}",
+              )
+
+              require(
+                  pattern.get("formula_status")
+                  == "PENDING_RESEARCH_DEFINITION",
+                  f"Unexpected formula status for {name}: "
+                  f"{pattern.get('formula_status')}",
+              )
+
+          print("")
+          print("[PASS] Pattern registry contract validated.")
+          '@ |
+              py - "$path"
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Pattern registry JSON validation failed."
           }
-
-          foreach ($pattern in $registry.patterns) {
-
-              if ($pattern.future_data_allowed -ne $false) {
-                  throw "Pattern unexpectedly allows future data: $($pattern.korean_name)"
-              }
-
-              if ($pattern.formula_status -ne "PENDING_RESEARCH_DEFINITION") {
-                  throw "Unexpected formula status for $($pattern.korean_name): $($pattern.formula_status)"
-              }
-          }
-
-          Write-Host ""
-          Write-Host "[PASS] Pattern registry contract validated."
 
 
       # ================================================================
@@ -1049,59 +1127,86 @@ jobs:
               $env:PRODUCTION_ROOT `
               "data\reports\$env:REPORT_NAMESPACE\pattern_feature_contract.json"
 
-          $contract = Get-Content `
-              -LiteralPath $path `
-              -Raw `
-              -Encoding UTF8 |
-              ConvertFrom-Json
+          @'
+          import json
+          import pathlib
+          import sys
 
-          if ($contract.contract.current_candle_allowed -ne $true) {
-              throw "Current candle must be allowed."
+          path = pathlib.Path(sys.argv[1])
+
+          try:
+              with path.open("r", encoding="utf-8-sig") as f:
+                  data = json.load(f)
+          except Exception as exc:
+              print(f"[FAIL] Unable to parse feature contract: {exc}")
+              raise SystemExit(1)
+
+          def require(condition, message):
+              if not condition:
+                  print(f"[FAIL] {message}")
+                  raise SystemExit(1)
+
+          contract = data.get("contract", {})
+
+          require(
+              contract.get("current_candle_allowed") is True,
+              "Current candle must be allowed.",
+          )
+
+          require(
+              contract.get("past_candles_allowed") is True,
+              "Past candles must be allowed.",
+          )
+
+          require(
+              contract.get("future_candles_allowed") is False,
+              "Future candles must not be allowed.",
+          )
+
+          require(
+              contract.get("negative_shift_allowed") is False,
+              "Negative shift must not be allowed.",
+          )
+
+          require(
+              contract.get("centered_rolling_allowed") is False,
+              "Centered rolling must not be allowed.",
+          )
+
+          require(
+              contract.get("future_labels_generated") is False,
+              "Future labels must not be generated.",
+          )
+
+          require(
+              contract.get("backtest_generated") is False,
+              "Backtest must not be generated.",
+          )
+
+          common_features = data.get("common_features", [])
+
+          require(
+              isinstance(common_features, list)
+              and len(common_features) > 0,
+              "Common feature contract is empty.",
+          )
+
+          print("[PASS] Current candle allowed")
+          print("[PASS] Past candles allowed")
+          print("[PASS] Future candles forbidden")
+          print("[PASS] Negative shift forbidden")
+          print("[PASS] Centered rolling forbidden")
+          print("[PASS] Future labels not generated")
+          print("[PASS] Backtest not generated")
+          print("")
+          print("Common features:")
+          print(f"  {len(common_features)}")
+          '@ |
+              py - "$path"
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Feature contract JSON validation failed."
           }
-
-          if ($contract.contract.past_candles_allowed -ne $true) {
-              throw "Past candles must be allowed."
-          }
-
-          if ($contract.contract.future_candles_allowed -ne $false) {
-              throw "Future candles must not be allowed."
-          }
-
-          if ($contract.contract.negative_shift_allowed -ne $false) {
-              throw "Negative shift must not be allowed."
-          }
-
-          if ($contract.contract.centered_rolling_allowed -ne $false) {
-              throw "Centered rolling must not be allowed."
-          }
-
-          if ($contract.contract.future_labels_generated -ne $false) {
-              throw "Future labels must not be generated."
-          }
-
-          if ($contract.contract.backtest_generated -ne $false) {
-              throw "Backtest must not be generated."
-          }
-
-          $featureCount = @(
-              $contract.common_features
-          ).Count
-
-          if ($featureCount -le 0) {
-              throw "Common feature contract is empty."
-          }
-
-          Write-Host "[PASS] Current candle allowed"
-          Write-Host "[PASS] Past candles allowed"
-          Write-Host "[PASS] Future candles forbidden"
-          Write-Host "[PASS] Negative shift forbidden"
-          Write-Host "[PASS] Centered rolling forbidden"
-          Write-Host "[PASS] Future labels not generated"
-          Write-Host "[PASS] Backtest not generated"
-
-          Write-Host ""
-          Write-Host "Common features:"
-          Write-Host "  $featureCount"
 
 
       # ================================================================
@@ -1122,60 +1227,108 @@ jobs:
               $env:PRODUCTION_ROOT `
               "data\validation\quantify_patterns_checkpoint.json"
 
-          $checkpoint = Get-Content `
-              -LiteralPath $path `
-              -Raw `
-              -Encoding UTF8 |
-              ConvertFrom-Json
+          @'
+          import json
+          import pathlib
+          import sys
 
-          if ($checkpoint.program -ne "quantify_patterns.py") {
-              throw "Unexpected checkpoint program: $($checkpoint.program)"
+          path = pathlib.Path(sys.argv[1])
+          expected_version = sys.argv[2]
+          expected_file_count = int(sys.argv[3])
+
+          try:
+              with path.open("r", encoding="utf-8-sig") as f:
+                  checkpoint = json.load(f)
+          except Exception as exc:
+              print(f"[FAIL] Unable to parse checkpoint: {exc}")
+              raise SystemExit(1)
+
+          def require(condition, message):
+              if not condition:
+                  print(f"[FAIL] {message}")
+                  raise SystemExit(1)
+
+          require(
+              checkpoint.get("program") == "quantify_patterns.py",
+              f"Unexpected checkpoint program: "
+              f"{checkpoint.get('program')}",
+          )
+
+          require(
+              checkpoint.get("version") == expected_version,
+              f"Unexpected checkpoint version: "
+              f"{checkpoint.get('version')}",
+          )
+
+          require(
+              checkpoint.get("stage") == "PATTERN QUANTIFICATION",
+              f"Unexpected checkpoint stage: "
+              f"{checkpoint.get('stage')}",
+          )
+
+          require(
+              checkpoint.get("final_status") == "PASS",
+              f"Checkpoint final_status is not PASS: "
+              f"{checkpoint.get('final_status')}",
+          )
+
+          require(
+              int(checkpoint.get("pattern_count", -1)) == 9,
+              "Checkpoint pattern count mismatch.",
+          )
+
+          require(
+              checkpoint.get("future_information_used") is False,
+              "Checkpoint indicates future information was used.",
+          )
+
+          source_file_count = int(
+              checkpoint.get("source_file_count", -1)
+          )
+
+          require(
+              source_file_count == expected_file_count,
+              f"Checkpoint source file count mismatch. "
+              f"Expected={expected_file_count} "
+              f"Found={source_file_count}",
+          )
+
+          completed = checkpoint.get("completed", {})
+
+          require(
+              isinstance(completed, dict),
+              "Checkpoint completed field is not an object.",
+          )
+
+          completed_count = len(completed)
+
+          require(
+              completed_count == expected_file_count,
+              f"Checkpoint completed entry count mismatch. "
+              f"Expected={expected_file_count} "
+              f"Found={completed_count}",
+          )
+
+          print("[PASS] Checkpoint program")
+          print("[PASS] Checkpoint version")
+          print("[PASS] Checkpoint stage")
+          print("[PASS] Final status")
+          print("[PASS] Pattern count")
+          print("[PASS] Future information unused")
+          print("[PASS] Source file count")
+          print("[PASS] Completed checkpoint entries")
+          print("")
+          print("Completed entries:")
+          print(f"  {completed_count}")
+          '@ |
+              py - `
+                  "$path" `
+                  "$env:EXPECTED_VERSION" `
+                  "$env:OHLCV_FILE_COUNT"
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Checkpoint validation failed."
           }
-
-          if ($checkpoint.version -ne $env:EXPECTED_VERSION) {
-              throw "Unexpected checkpoint version: $($checkpoint.version)"
-          }
-
-          if ($checkpoint.stage -ne "PATTERN QUANTIFICATION") {
-              throw "Unexpected checkpoint stage: $($checkpoint.stage)"
-          }
-
-          if ($checkpoint.final_status -ne "PASS") {
-              throw "Checkpoint final_status is not PASS: $($checkpoint.final_status)"
-          }
-
-          if ([int]$checkpoint.pattern_count -ne 9) {
-              throw "Checkpoint pattern count mismatch."
-          }
-
-          if ($checkpoint.future_information_used -ne $false) {
-              throw "Checkpoint indicates future information was used."
-          }
-
-          if ([int]$checkpoint.source_file_count -ne [int]$env:OHLCV_FILE_COUNT) {
-              throw "Checkpoint source file count mismatch. Expected=$env:OHLCV_FILE_COUNT Found=$($checkpoint.source_file_count)"
-          }
-
-          $completedCount = @(
-              $checkpoint.completed.PSObject.Properties
-          ).Count
-
-          if ($completedCount -ne [int]$env:OHLCV_FILE_COUNT) {
-              throw "Checkpoint completed entry count mismatch. Expected=$env:OHLCV_FILE_COUNT Found=$completedCount"
-          }
-
-          Write-Host "[PASS] Checkpoint program"
-          Write-Host "[PASS] Checkpoint version"
-          Write-Host "[PASS] Checkpoint stage"
-          Write-Host "[PASS] Final status"
-          Write-Host "[PASS] Pattern count"
-          Write-Host "[PASS] Future information unused"
-          Write-Host "[PASS] Source file count"
-          Write-Host "[PASS] Completed checkpoint entries"
-
-          Write-Host ""
-          Write-Host "Completed entries:"
-          Write-Host "  $completedCount"
 
 
       # ================================================================
@@ -1197,8 +1350,7 @@ jobs:
               "data\reports\$env:REPORT_NAMESPACE\pattern_quantification_source_manifest.csv"
 
           $manifest = @(
-              Import-Csv `
-                  -LiteralPath $manifestPath
+              Import-Csv -LiteralPath $manifestPath
           )
 
           if ($manifest.Count -ne [int]$env:OHLCV_FILE_COUNT) {
@@ -1264,12 +1416,7 @@ jobs:
 
           foreach ($pattern in $forbiddenPatterns) {
 
-              if (
-                  [regex]::IsMatch(
-                      $content,
-                      $pattern
-                  )
-              ) {
+              if ([regex]::IsMatch($content, $pattern)) {
                   throw "Potential executable forbidden Git mutation detected."
               }
           }
@@ -1302,32 +1449,68 @@ jobs:
               $env:PRODUCTION_ROOT `
               "data\reports\$env:REPORT_NAMESPACE\pattern_quantification_result.json"
 
-          $result = Get-Content `
-              -LiteralPath $resultPath `
-              -Raw `
-              -Encoding UTF8 |
-              ConvertFrom-Json
+          @'
+          import json
+          import pathlib
+          import sys
 
-          if ($result.status -ne "PASS") {
-              throw "Final result status is not PASS."
+          path = pathlib.Path(sys.argv[1])
+
+          with path.open("r", encoding="utf-8-sig") as f:
+              result = json.load(f)
+
+          def require(condition, message):
+              if not condition:
+                  print(f"[FAIL] {message}")
+                  raise SystemExit(1)
+
+          require(
+              result.get("status") == "PASS",
+              "Final result status is not PASS.",
+          )
+
+          safety = result.get("safety", {})
+
+          require(
+              safety.get("source_sha256_unchanged") is True,
+              "Production OHLCV immutability check failed.",
+          )
+
+          patterns = result.get("patterns", {})
+
+          require(
+              int(patterns.get("count", -1)) == 9,
+              "Nine-pattern registry check failed.",
+          )
+
+          require(
+              patterns.get("final_formulas_defined") is False,
+              "Clean V001 unexpectedly defines final pattern formulas.",
+          )
+
+          feature_contract = result.get(
+              "common_feature_contract",
+              {},
+          )
+
+          require(
+              feature_contract.get("future_candles_used") is False,
+              "Future-information gate failed.",
+          )
+
+          print("[PASS] Final result status")
+          print("[PASS] OHLCV immutability")
+          print("[PASS] Nine-pattern registry")
+          print("[PASS] Final formulas remain undefined")
+          print("[PASS] Future-information gate")
+          '@ |
+              py - "$resultPath"
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Final Clean V001 gate failed."
           }
 
-          if ($result.safety.source_sha256_unchanged -ne $true) {
-              throw "Production OHLCV immutability check failed."
-          }
-
-          if ([int]$result.patterns.count -ne 9) {
-              throw "Nine-pattern registry check failed."
-          }
-
-          if ($result.patterns.final_formulas_defined -ne $false) {
-              throw "Clean V001 unexpectedly defines final pattern formulas."
-          }
-
-          if ($result.common_feature_contract.future_candles_used -ne $false) {
-              throw "Future-information gate failed."
-          }
-
+          Write-Host ""
           Write-Host "============================================================"
           Write-Host "[PASS] quantify_patterns_test.yml"
           Write-Host "[PASS] quantify_patterns.py Clean V001"
@@ -1342,9 +1525,6 @@ jobs:
           Write-Host "[NEXT]"
           Write-Host "After this workflow passes, proceed to:"
           Write-Host "  quantify_patterns.yml"
-          Write-Host ""
-          Write-Host "Final pattern formulas remain intentionally undefined."
-          Write-Host "They will be researched and quantified independently."
 
 
       # ================================================================
