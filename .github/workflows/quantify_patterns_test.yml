@@ -1,0 +1,1432 @@
+name: quantify_patterns_test.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quantify_patterns_test:
+    name: quantify_patterns_test.yml
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 60
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+      PROJECT_NAME: "upbit-surge-monitor"
+      PROGRAM_FILE: "quantify_patterns.py"
+      EXPECTED_VERSION: "Clean V001"
+      REPORT_NAMESPACE: "pattern_quantification"
+
+    steps:
+
+      # ================================================================
+      # 01
+      # ================================================================
+
+      - name: 01 - Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          clean: false
+
+
+      # ================================================================
+      # 02
+      # ================================================================
+
+      - name: 02 - Show environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "ENVIRONMENT"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          Write-Host "Repository:"
+          Write-Host "  $env:GITHUB_REPOSITORY"
+
+          Write-Host ""
+          Write-Host "Workspace:"
+          Write-Host "  $env:GITHUB_WORKSPACE"
+
+          Write-Host ""
+          Write-Host "Runner:"
+          Write-Host "  $env:RUNNER_NAME"
+
+          Write-Host ""
+          Write-Host "Runner OS:"
+          Write-Host "  $env:RUNNER_OS"
+
+          Write-Host ""
+          Write-Host "Python:"
+          py --version
+
+          Write-Host ""
+          Write-Host "Git:"
+          git --version
+
+
+      # ================================================================
+      # 03
+      # ================================================================
+
+      - name: 03 - Verify quantify program
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY QUANTIFY PROGRAM"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $program = Join-Path $env:GITHUB_WORKSPACE $env:PROGRAM_FILE
+
+          if (-not (Test-Path -LiteralPath $program -PathType Leaf)) {
+              throw "Required program missing: $program"
+          }
+
+          Write-Host "[PASS] Program exists:"
+          Write-Host "       $program"
+
+          $content = Get-Content -LiteralPath $program -Raw -Encoding UTF8
+
+          if ($content -notmatch [regex]::Escape($env:EXPECTED_VERSION)) {
+              throw "Expected version '$env:EXPECTED_VERSION' not found in $env:PROGRAM_FILE"
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Expected version found:"
+          Write-Host "       $env:EXPECTED_VERSION"
+
+
+      # ================================================================
+      # 04
+      # ================================================================
+
+      - name: 04 - Discover production project root
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "DISCOVER PRODUCTION PROJECT ROOT"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $candidates = @()
+
+          if ($env:USERPROFILE) {
+              $candidates += Join-Path $env:USERPROFILE "Documents\upbit-surge-monitor"
+          }
+
+          $candidates += $env:GITHUB_WORKSPACE
+
+          $productionRoot = $null
+          $rootSource = $null
+
+          foreach ($candidate in $candidates) {
+
+              if ([string]::IsNullOrWhiteSpace($candidate)) {
+                  continue
+              }
+
+              $ohlcv = Join-Path $candidate "data\ohlcv"
+
+              if (Test-Path -LiteralPath $ohlcv -PathType Container) {
+
+                  $productionRoot = (
+                      Resolve-Path -LiteralPath $candidate
+                  ).Path
+
+                  if ($candidate -eq $env:GITHUB_WORKSPACE) {
+                      $rootSource = "github-workspace"
+                  }
+                  else {
+                      $rootSource = "user-documents"
+                  }
+
+                  break
+              }
+          }
+
+          if (-not $productionRoot) {
+              throw "Unable to locate production project root containing data\ohlcv."
+          }
+
+          Write-Host "[PATH] Production project root:"
+          Write-Host "       $productionRoot"
+
+          Write-Host ""
+          Write-Host "[PATH] Root source:"
+          Write-Host "       $rootSource"
+
+          "PRODUCTION_ROOT=$productionRoot" |
+              Out-File `
+                  -FilePath $env:GITHUB_ENV `
+                  -Encoding utf8 `
+                  -Append
+
+          "PRODUCTION_ROOT_SOURCE=$rootSource" |
+              Out-File `
+                  -FilePath $env:GITHUB_ENV `
+                  -Encoding utf8 `
+                  -Append
+
+
+      # ================================================================
+      # 05
+      # ================================================================
+
+      - name: 05 - Verify required directories
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY REQUIRED DIRECTORIES"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $required = @(
+              "data\ohlcv\h1",
+              "data\ohlcv\h4",
+              "data\ohlcv\d1"
+          )
+
+          foreach ($relative in $required) {
+
+              $fullPath = Join-Path $env:PRODUCTION_ROOT $relative
+
+              if (-not (Test-Path -LiteralPath $fullPath -PathType Container)) {
+                  throw "Required directory missing: $fullPath"
+              }
+
+              Write-Host "[PASS] $relative"
+          }
+
+
+      # ================================================================
+      # 06
+      # ================================================================
+
+      - name: 06 - Discover production OHLCV inventory
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "DISCOVER PRODUCTION OHLCV INVENTORY"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $timeframes = @(
+              "h1",
+              "h4",
+              "d1"
+          )
+
+          $total = 0
+
+          foreach ($tf in $timeframes) {
+
+              $directory = Join-Path $env:PRODUCTION_ROOT "data\ohlcv\$tf"
+
+              $files = @(
+                  Get-ChildItem `
+                      -LiteralPath $directory `
+                      -File `
+                      -Filter "*.csv" `
+                      -ErrorAction Stop
+              )
+
+              $count = $files.Count
+              $total += $count
+
+              Write-Host "$($tf.ToUpper()) : $count"
+          }
+
+          Write-Host ""
+          Write-Host "TOTAL : $total"
+
+          if ($total -le 0) {
+              throw "No production OHLCV CSV files discovered."
+          }
+
+          "OHLCV_FILE_COUNT=$total" |
+              Out-File `
+                  -FilePath $env:GITHUB_ENV `
+                  -Encoding utf8 `
+                  -Append
+
+
+      # ================================================================
+      # 07
+      # ================================================================
+
+      - name: 07 - Record OHLCV file set before test
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "RECORD OHLCV FILE SET BEFORE TEST"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $snapshotDir = Join-Path $env:RUNNER_TEMP "quantify_patterns_test"
+
+          New-Item `
+              -ItemType Directory `
+              -Force `
+              -Path $snapshotDir |
+              Out-Null
+
+          $beforeList = Join-Path $snapshotDir "ohlcv_files_before.txt"
+
+          $base = Join-Path $env:PRODUCTION_ROOT "data\ohlcv"
+
+          $files = @(
+              Get-ChildItem `
+                  -LiteralPath $base `
+                  -Recurse `
+                  -File `
+                  -Filter "*.csv" |
+              Sort-Object FullName
+          )
+
+          $relativePaths = @(
+              foreach ($file in $files) {
+
+                  $relative = $file.FullName.Substring(
+                      $env:PRODUCTION_ROOT.Length
+                  ).TrimStart('\')
+
+                  $relative
+              }
+          )
+
+          $relativePaths |
+              Set-Content `
+                  -LiteralPath $beforeList `
+                  -Encoding UTF8
+
+          Write-Host "Recorded files:"
+          Write-Host "  $($relativePaths.Count)"
+
+          Write-Host ""
+          Write-Host "Snapshot:"
+          Write-Host "  $beforeList"
+
+          "QUANTIFY_TEST_SNAPSHOT_DIR=$snapshotDir" |
+              Out-File `
+                  -FilePath $env:GITHUB_ENV `
+                  -Encoding utf8 `
+                  -Append
+
+
+      # ================================================================
+      # 08
+      # ================================================================
+
+      - name: 08 - Record OHLCV SHA256 before test
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "RECORD OHLCV SHA256 BEFORE TEST"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $output = Join-Path `
+              $env:QUANTIFY_TEST_SNAPSHOT_DIR `
+              "ohlcv_sha256_before.csv"
+
+          $base = Join-Path $env:PRODUCTION_ROOT "data\ohlcv"
+
+          $rows = @(
+              Get-ChildItem `
+                  -LiteralPath $base `
+                  -Recurse `
+                  -File `
+                  -Filter "*.csv" |
+              Sort-Object FullName |
+              ForEach-Object {
+
+                  $relative = $_.FullName.Substring(
+                      $env:PRODUCTION_ROOT.Length
+                  ).TrimStart('\')
+
+                  $hash = (
+                      Get-FileHash `
+                          -LiteralPath $_.FullName `
+                          -Algorithm SHA256
+                  ).Hash
+
+                  [PSCustomObject]@{
+                      RelativePath = $relative
+                      SHA256       = $hash
+                      Length       = $_.Length
+                  }
+              }
+          )
+
+          $rows |
+              Export-Csv `
+                  -LiteralPath $output `
+                  -NoTypeInformation `
+                  -Encoding UTF8
+
+          Write-Host "[PASS] SHA256 recorded:"
+          Write-Host "       $($rows.Count) files"
+
+
+      # ================================================================
+      # 09
+      # ================================================================
+
+      - name: 09 - Verify pattern registry source contract
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY PATTERN REGISTRY SOURCE CONTRACT"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $program = Join-Path $env:GITHUB_WORKSPACE $env:PROGRAM_FILE
+
+          $content = Get-Content `
+              -LiteralPath $program `
+              -Raw `
+              -Encoding UTF8
+
+          $requiredPatterns = @(
+              'korean_name="256"',
+              'korean_name="밥그릇 3번자리"',
+              'korean_name="역매공파"',
+              'korean_name="공구리"',
+              'korean_name="돌파"',
+              'korean_name="눌림목"',
+              'korean_name="기준봉"',
+              'korean_name="하이힐"',
+              'korean_name="오돌이"'
+          )
+
+          foreach ($pattern in $requiredPatterns) {
+
+              if (-not $content.Contains($pattern)) {
+                  throw "Required pattern definition missing: $pattern"
+              }
+
+              Write-Host "[PASS] $pattern"
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] All 9 pattern definitions found."
+
+
+      # ================================================================
+      # 10
+      # ================================================================
+
+      - name: 10 - Verify no-future-information source contract
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY NO-FUTURE-INFORMATION SOURCE CONTRACT"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $program = Join-Path $env:GITHUB_WORKSPACE $env:PROGRAM_FILE
+
+          $content = Get-Content `
+              -LiteralPath $program `
+              -Raw `
+              -Encoding UTF8
+
+          $requiredText = @(
+              "ALLOW_FUTURE_LABELS = False",
+              "future_data_allowed=False",
+              "No negative shift is allowed.",
+              "No centered rolling window is allowed."
+          )
+
+          foreach ($text in $requiredText) {
+
+              if (-not $content.Contains($text)) {
+                  throw "Required no-future contract missing: $text"
+              }
+
+              Write-Host "[PASS] $text"
+          }
+
+          $negativeShiftPattern = '\.shift\s*\(\s*-\d+'
+
+          if (
+              [regex]::IsMatch(
+                  $content,
+                  $negativeShiftPattern,
+                  [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+              )
+          ) {
+              throw "Negative pandas shift detected in quantify_patterns.py"
+          }
+
+          $centerTruePattern = 'center\s*=\s*True'
+
+          if (
+              [regex]::IsMatch(
+                  $content,
+                  $centerTruePattern,
+                  [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+              )
+          ) {
+              throw "Centered rolling window detected in quantify_patterns.py"
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] No negative shift detected."
+          Write-Host "[PASS] No centered rolling window detected."
+
+
+      # ================================================================
+      # 11
+      # ================================================================
+
+      - name: 11 - Run pattern quantification test
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "RUN PATTERN QUANTIFICATION TEST"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          Write-Host "[SAFETY] Production OHLCV: READ ONLY"
+          Write-Host "[SAFETY] OHLCV write       : FORBIDDEN"
+          Write-Host "[SAFETY] OHLCV delete      : FORBIDDEN"
+          Write-Host "[SAFETY] Recovery           : DISABLED"
+          Write-Host "[SAFETY] API download       : DISABLED"
+          Write-Host "[SAFETY] Future labels      : DISABLED"
+          Write-Host "[SAFETY] Backtest           : DISABLED"
+          Write-Host "[SAFETY] Prediction         : DISABLED"
+          Write-Host "[SAFETY] Trading            : DISABLED"
+          Write-Host ""
+
+          $program = Join-Path $env:GITHUB_WORKSPACE $env:PROGRAM_FILE
+
+          & py `
+              $program `
+              --project-root "$env:PRODUCTION_ROOT" `
+              --timeframes h1 h4 d1 `
+              --force
+
+          $exitCode = $LASTEXITCODE
+
+          Write-Host ""
+          Write-Host "Quantification exit code:"
+          Write-Host "  $exitCode"
+
+          "QUANTIFY_EXIT_CODE=$exitCode" |
+              Out-File `
+                  -FilePath $env:GITHUB_ENV `
+                  -Encoding utf8 `
+                  -Append
+
+          if ($exitCode -ne 0) {
+              Write-Host ""
+              Write-Host "[INFO] quantify_patterns.py returned exit code $exitCode"
+              Write-Host "[INFO] OHLCV immutability verification will still run."
+          }
+
+          exit 0
+
+
+      # ================================================================
+      # 12
+      # ================================================================
+
+      - name: 12 - Verify OHLCV file set unchanged
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY OHLCV FILE SET UNCHANGED"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $beforeList = Join-Path `
+              $env:QUANTIFY_TEST_SNAPSHOT_DIR `
+              "ohlcv_files_before.txt"
+
+          $afterList = Join-Path `
+              $env:QUANTIFY_TEST_SNAPSHOT_DIR `
+              "ohlcv_files_after.txt"
+
+          $base = Join-Path $env:PRODUCTION_ROOT "data\ohlcv"
+
+          $files = @(
+              Get-ChildItem `
+                  -LiteralPath $base `
+                  -Recurse `
+                  -File `
+                  -Filter "*.csv" |
+              Sort-Object FullName
+          )
+
+          $relativePaths = @(
+              foreach ($file in $files) {
+
+                  $relative = $file.FullName.Substring(
+                      $env:PRODUCTION_ROOT.Length
+                  ).TrimStart('\')
+
+                  $relative
+              }
+          )
+
+          $relativePaths |
+              Set-Content `
+                  -LiteralPath $afterList `
+                  -Encoding UTF8
+
+          $before = @(
+              Get-Content `
+                  -LiteralPath $beforeList `
+                  -Encoding UTF8
+          )
+
+          $after = @(
+              Get-Content `
+                  -LiteralPath $afterList `
+                  -Encoding UTF8
+          )
+
+          $difference = @(
+              Compare-Object `
+                  -ReferenceObject $before `
+                  -DifferenceObject $after
+          )
+
+          if ($difference.Count -gt 0) {
+
+              Write-Host ""
+              Write-Host "OHLCV file set changed:"
+              $difference | Format-Table | Out-String | Write-Host
+
+              throw "Production OHLCV file set changed during quantification test."
+          }
+
+          Write-Host "[PASS] Production OHLCV file set unchanged."
+          Write-Host "[PASS] File count: $($after.Count)"
+
+
+      # ================================================================
+      # 13
+      # ================================================================
+
+      - name: 13 - Verify OHLCV SHA256 unchanged
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY OHLCV SHA256 UNCHANGED"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $beforePath = Join-Path `
+              $env:QUANTIFY_TEST_SNAPSHOT_DIR `
+              "ohlcv_sha256_before.csv"
+
+          $afterPath = Join-Path `
+              $env:QUANTIFY_TEST_SNAPSHOT_DIR `
+              "ohlcv_sha256_after.csv"
+
+          $base = Join-Path $env:PRODUCTION_ROOT "data\ohlcv"
+
+          $afterRows = @(
+              Get-ChildItem `
+                  -LiteralPath $base `
+                  -Recurse `
+                  -File `
+                  -Filter "*.csv" |
+              Sort-Object FullName |
+              ForEach-Object {
+
+                  $relative = $_.FullName.Substring(
+                      $env:PRODUCTION_ROOT.Length
+                  ).TrimStart('\')
+
+                  $hash = (
+                      Get-FileHash `
+                          -LiteralPath $_.FullName `
+                          -Algorithm SHA256
+                  ).Hash
+
+                  [PSCustomObject]@{
+                      RelativePath = $relative
+                      SHA256       = $hash
+                      Length       = $_.Length
+                  }
+              }
+          )
+
+          $afterRows |
+              Export-Csv `
+                  -LiteralPath $afterPath `
+                  -NoTypeInformation `
+                  -Encoding UTF8
+
+          $beforeRows = @(
+              Import-Csv `
+                  -LiteralPath $beforePath
+          )
+
+          if ($beforeRows.Count -ne $afterRows.Count) {
+              throw "OHLCV SHA256 inventory count changed."
+          }
+
+          $beforeMap = @{}
+
+          foreach ($row in $beforeRows) {
+              $beforeMap[$row.RelativePath] = $row
+          }
+
+          $changed = @()
+
+          foreach ($row in $afterRows) {
+
+              if (-not $beforeMap.ContainsKey($row.RelativePath)) {
+                  $changed += $row.RelativePath
+                  continue
+              }
+
+              $before = $beforeMap[$row.RelativePath]
+
+              if ($before.SHA256 -ne $row.SHA256) {
+                  $changed += $row.RelativePath
+                  continue
+              }
+
+              if (
+                  [Int64]$before.Length -ne
+                  [Int64]$row.Length
+              ) {
+                  $changed += $row.RelativePath
+              }
+          }
+
+          if ($changed.Count -gt 0) {
+
+              Write-Host ""
+              Write-Host "Changed OHLCV files:"
+
+              foreach ($file in $changed) {
+                  Write-Host "  $file"
+              }
+
+              throw "Production OHLCV content changed during quantification test."
+          }
+
+          Write-Host "[PASS] All production OHLCV SHA256 values unchanged."
+          Write-Host "[PASS] Verified files: $($afterRows.Count)"
+
+
+      # ================================================================
+      # 14
+      # ================================================================
+
+      - name: 14 - Verify quantification process exit code
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY QUANTIFICATION PROCESS EXIT CODE"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          if ([string]::IsNullOrWhiteSpace($env:QUANTIFY_EXIT_CODE)) {
+              throw "QUANTIFY_EXIT_CODE was not recorded."
+          }
+
+          $exitCode = [int]$env:QUANTIFY_EXIT_CODE
+
+          Write-Host "Quantification exit code:"
+          Write-Host "  $exitCode"
+
+          if ($exitCode -ne 0) {
+              throw "quantify_patterns.py returned exit code $exitCode"
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] quantify_patterns.py returned exit code 0."
+
+
+      # ================================================================
+      # 15
+      # ================================================================
+
+      - name: 15 - Verify expected quantification outputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY EXPECTED QUANTIFICATION OUTPUTS"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $reportDir = Join-Path `
+              $env:PRODUCTION_ROOT `
+              "data\reports\$env:REPORT_NAMESPACE"
+
+          $validationDir = Join-Path `
+              $env:PRODUCTION_ROOT `
+              "data\validation"
+
+          $required = @(
+              (Join-Path $reportDir "pattern_quantification_result.json"),
+              (Join-Path $reportDir "pattern_quantification_summary.csv"),
+              (Join-Path $reportDir "pattern_quantification_detail.csv"),
+              (Join-Path $reportDir "pattern_quantification_source_manifest.csv"),
+              (Join-Path $reportDir "pattern_registry.json"),
+              (Join-Path $reportDir "pattern_feature_contract.json"),
+              (Join-Path $reportDir "README.txt"),
+              (Join-Path $validationDir "quantify_patterns_checkpoint.json")
+          )
+
+          foreach ($path in $required) {
+
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                  throw "Required quantification output missing: $path"
+              }
+
+              $item = Get-Item -LiteralPath $path
+
+              if ($item.Length -le 0) {
+                  throw "Quantification output is empty: $path"
+              }
+
+              Write-Host "[PASS] $path"
+          }
+
+
+      # ================================================================
+      # 16
+      # ================================================================
+
+      - name: 16 - Validate result JSON
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VALIDATE RESULT JSON"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $path = Join-Path `
+              $env:PRODUCTION_ROOT `
+              "data\reports\$env:REPORT_NAMESPACE\pattern_quantification_result.json"
+
+          try {
+              $result = Get-Content `
+                  -LiteralPath $path `
+                  -Raw `
+                  -Encoding UTF8 |
+                  ConvertFrom-Json
+          }
+          catch {
+              throw "Unable to parse result JSON: $($_.Exception.Message)"
+          }
+
+          if ($result.program -ne "quantify_patterns.py") {
+              throw "Unexpected result program: $($result.program)"
+          }
+
+          if ($result.version -ne $env:EXPECTED_VERSION) {
+              throw "Unexpected result version: $($result.version)"
+          }
+
+          if ($result.stage -ne "PATTERN QUANTIFICATION") {
+              throw "Unexpected stage: $($result.stage)"
+          }
+
+          if ($result.status -ne "PASS") {
+              throw "Quantification result status is not PASS: $($result.status)"
+          }
+
+          if ([int]$result.patterns.count -ne 9) {
+              throw "Expected 9 patterns. Found=$($result.patterns.count)"
+          }
+
+          if ($result.patterns.final_formulas_defined -ne $false) {
+              throw "Clean V001 must not claim final pattern formulas are defined."
+          }
+
+          if ($result.patterns.future_information_allowed -ne $false) {
+              throw "Future information must not be allowed."
+          }
+
+          if ($result.common_feature_contract.future_candles_used -ne $false) {
+              throw "Result indicates future candles were used."
+          }
+
+          if ($result.safety.ohlcv_read_only -ne $true) {
+              throw "OHLCV read-only safety flag is not true."
+          }
+
+          if ($result.safety.ohlcv_write_allowed -ne $false) {
+              throw "OHLCV write safety flag is invalid."
+          }
+
+          if ($result.safety.ohlcv_delete_allowed -ne $false) {
+              throw "OHLCV delete safety flag is invalid."
+          }
+
+          if ($result.safety.future_labels_allowed -ne $false) {
+              throw "Future labels safety flag is invalid."
+          }
+
+          if ($result.safety.backtest_allowed -ne $false) {
+              throw "Backtest safety flag is invalid."
+          }
+
+          if ($result.safety.prediction_allowed -ne $false) {
+              throw "Prediction safety flag is invalid."
+          }
+
+          if ($result.safety.trading_allowed -ne $false) {
+              throw "Trading safety flag is invalid."
+          }
+
+          if ($result.safety.source_sha256_unchanged -ne $true) {
+              throw "Result indicates production OHLCV SHA256 changed."
+          }
+
+          Write-Host "[PASS] Program"
+          Write-Host "[PASS] Version"
+          Write-Host "[PASS] Stage"
+          Write-Host "[PASS] Result status"
+          Write-Host "[PASS] 9 pattern registry"
+          Write-Host "[PASS] Final formulas remain undefined"
+          Write-Host "[PASS] Future information forbidden"
+          Write-Host "[PASS] Production OHLCV read-only"
+          Write-Host "[PASS] Production OHLCV SHA256 unchanged"
+
+          Write-Host ""
+          Write-Host "Files discovered:"
+          Write-Host "  $($result.statistics.files_discovered)"
+
+          Write-Host ""
+          Write-Host "READY:"
+          Write-Host "  $($result.statistics.files_ready)"
+
+          Write-Host ""
+          Write-Host "WARN:"
+          Write-Host "  $($result.statistics.files_warning)"
+
+          Write-Host ""
+          Write-Host "ERROR:"
+          Write-Host "  $($result.statistics.files_error)"
+
+          Write-Host ""
+          Write-Host "Historical gaps:"
+          Write-Host "  $($result.statistics.total_gaps)"
+
+
+      # ================================================================
+      # 17
+      # ================================================================
+
+      - name: 17 - Validate pattern registry JSON
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VALIDATE PATTERN REGISTRY JSON"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $path = Join-Path `
+              $env:PRODUCTION_ROOT `
+              "data\reports\$env:REPORT_NAMESPACE\pattern_registry.json"
+
+          $registry = Get-Content `
+              -LiteralPath $path `
+              -Raw `
+              -Encoding UTF8 |
+              ConvertFrom-Json
+
+          if ([int]$registry.pattern_count -ne 9) {
+              throw "Pattern registry count mismatch. Expected=9 Found=$($registry.pattern_count)"
+          }
+
+          if ($registry.future_information_allowed -ne $false) {
+              throw "Pattern registry unexpectedly allows future information."
+          }
+
+          $expected = @(
+              "256",
+              "밥그릇 3번자리",
+              "역매공파",
+              "공구리",
+              "돌파",
+              "눌림목",
+              "기준봉",
+              "하이힐",
+              "오돌이"
+          )
+
+          $actual = @(
+              $registry.patterns |
+              ForEach-Object {
+                  $_.korean_name
+              }
+          )
+
+          foreach ($name in $expected) {
+
+              if ($actual -notcontains $name) {
+                  throw "Required pattern missing from registry: $name"
+              }
+
+              Write-Host "[PASS] $name"
+          }
+
+          foreach ($pattern in $registry.patterns) {
+
+              if ($pattern.future_data_allowed -ne $false) {
+                  throw "Pattern unexpectedly allows future data: $($pattern.korean_name)"
+              }
+
+              if ($pattern.formula_status -ne "PENDING_RESEARCH_DEFINITION") {
+                  throw "Unexpected formula status for $($pattern.korean_name): $($pattern.formula_status)"
+              }
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] Pattern registry contract validated."
+
+
+      # ================================================================
+      # 18
+      # ================================================================
+
+      - name: 18 - Validate feature contract JSON
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VALIDATE FEATURE CONTRACT JSON"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $path = Join-Path `
+              $env:PRODUCTION_ROOT `
+              "data\reports\$env:REPORT_NAMESPACE\pattern_feature_contract.json"
+
+          $contract = Get-Content `
+              -LiteralPath $path `
+              -Raw `
+              -Encoding UTF8 |
+              ConvertFrom-Json
+
+          if ($contract.contract.current_candle_allowed -ne $true) {
+              throw "Current candle must be allowed."
+          }
+
+          if ($contract.contract.past_candles_allowed -ne $true) {
+              throw "Past candles must be allowed."
+          }
+
+          if ($contract.contract.future_candles_allowed -ne $false) {
+              throw "Future candles must not be allowed."
+          }
+
+          if ($contract.contract.negative_shift_allowed -ne $false) {
+              throw "Negative shift must not be allowed."
+          }
+
+          if ($contract.contract.centered_rolling_allowed -ne $false) {
+              throw "Centered rolling must not be allowed."
+          }
+
+          if ($contract.contract.future_labels_generated -ne $false) {
+              throw "Future labels must not be generated."
+          }
+
+          if ($contract.contract.backtest_generated -ne $false) {
+              throw "Backtest must not be generated."
+          }
+
+          $featureCount = @(
+              $contract.common_features
+          ).Count
+
+          if ($featureCount -le 0) {
+              throw "Common feature contract is empty."
+          }
+
+          Write-Host "[PASS] Current candle allowed"
+          Write-Host "[PASS] Past candles allowed"
+          Write-Host "[PASS] Future candles forbidden"
+          Write-Host "[PASS] Negative shift forbidden"
+          Write-Host "[PASS] Centered rolling forbidden"
+          Write-Host "[PASS] Future labels not generated"
+          Write-Host "[PASS] Backtest not generated"
+
+          Write-Host ""
+          Write-Host "Common features:"
+          Write-Host "  $featureCount"
+
+
+      # ================================================================
+      # 19
+      # ================================================================
+
+      - name: 19 - Validate checkpoint
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VALIDATE CHECKPOINT"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $path = Join-Path `
+              $env:PRODUCTION_ROOT `
+              "data\validation\quantify_patterns_checkpoint.json"
+
+          $checkpoint = Get-Content `
+              -LiteralPath $path `
+              -Raw `
+              -Encoding UTF8 |
+              ConvertFrom-Json
+
+          if ($checkpoint.program -ne "quantify_patterns.py") {
+              throw "Unexpected checkpoint program: $($checkpoint.program)"
+          }
+
+          if ($checkpoint.version -ne $env:EXPECTED_VERSION) {
+              throw "Unexpected checkpoint version: $($checkpoint.version)"
+          }
+
+          if ($checkpoint.stage -ne "PATTERN QUANTIFICATION") {
+              throw "Unexpected checkpoint stage: $($checkpoint.stage)"
+          }
+
+          if ($checkpoint.final_status -ne "PASS") {
+              throw "Checkpoint final_status is not PASS: $($checkpoint.final_status)"
+          }
+
+          if ([int]$checkpoint.pattern_count -ne 9) {
+              throw "Checkpoint pattern count mismatch."
+          }
+
+          if ($checkpoint.future_information_used -ne $false) {
+              throw "Checkpoint indicates future information was used."
+          }
+
+          if ([int]$checkpoint.source_file_count -ne [int]$env:OHLCV_FILE_COUNT) {
+              throw "Checkpoint source file count mismatch. Expected=$env:OHLCV_FILE_COUNT Found=$($checkpoint.source_file_count)"
+          }
+
+          $completedCount = @(
+              $checkpoint.completed.PSObject.Properties
+          ).Count
+
+          if ($completedCount -ne [int]$env:OHLCV_FILE_COUNT) {
+              throw "Checkpoint completed entry count mismatch. Expected=$env:OHLCV_FILE_COUNT Found=$completedCount"
+          }
+
+          Write-Host "[PASS] Checkpoint program"
+          Write-Host "[PASS] Checkpoint version"
+          Write-Host "[PASS] Checkpoint stage"
+          Write-Host "[PASS] Final status"
+          Write-Host "[PASS] Pattern count"
+          Write-Host "[PASS] Future information unused"
+          Write-Host "[PASS] Source file count"
+          Write-Host "[PASS] Completed checkpoint entries"
+
+          Write-Host ""
+          Write-Host "Completed entries:"
+          Write-Host "  $completedCount"
+
+
+      # ================================================================
+      # 20
+      # ================================================================
+
+      - name: 20 - Validate source manifest hashes
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VALIDATE SOURCE MANIFEST HASHES"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $manifestPath = Join-Path `
+              $env:PRODUCTION_ROOT `
+              "data\reports\$env:REPORT_NAMESPACE\pattern_quantification_source_manifest.csv"
+
+          $manifest = @(
+              Import-Csv `
+                  -LiteralPath $manifestPath
+          )
+
+          if ($manifest.Count -ne [int]$env:OHLCV_FILE_COUNT) {
+              throw "Source manifest count mismatch. Expected=$env:OHLCV_FILE_COUNT Found=$($manifest.Count)"
+          }
+
+          $checked = 0
+
+          foreach ($row in $manifest) {
+
+              $fullPath = Join-Path `
+                  $env:PRODUCTION_ROOT `
+                  $row.relative_path
+
+              if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+                  throw "Manifest source file missing: $fullPath"
+              }
+
+              $currentHash = (
+                  Get-FileHash `
+                      -LiteralPath $fullPath `
+                      -Algorithm SHA256
+              ).Hash
+
+              if ($currentHash -ne $row.sha256) {
+                  throw "Manifest SHA256 mismatch: $($row.relative_path)"
+              }
+
+              $checked++
+          }
+
+          Write-Host "[PASS] Source manifest hashes verified."
+          Write-Host "[PASS] Files checked: $checked"
+
+
+      # ================================================================
+      # 21
+      # ================================================================
+
+      - name: 21 - Verify no forbidden Git operations are executable
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "VERIFY NO FORBIDDEN GIT OPERATIONS ARE EXECUTABLE"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          $program = Join-Path $env:GITHUB_WORKSPACE $env:PROGRAM_FILE
+
+          $content = Get-Content `
+              -LiteralPath $program `
+              -Raw `
+              -Encoding UTF8
+
+          $forbiddenPatterns = @(
+              '(?im)^\s*(?:os\.system|subprocess\.[A-Za-z_]+)\s*\([^\r\n]*git\s+reset',
+              '(?im)^\s*(?:os\.system|subprocess\.[A-Za-z_]+)\s*\([^\r\n]*git\s+clean',
+              '(?im)^\s*(?:os\.system|subprocess\.[A-Za-z_]+)\s*\([^\r\n]*git\s+commit',
+              '(?im)^\s*(?:os\.system|subprocess\.[A-Za-z_]+)\s*\([^\r\n]*git\s+push'
+          )
+
+          foreach ($pattern in $forbiddenPatterns) {
+
+              if (
+                  [regex]::IsMatch(
+                      $content,
+                      $pattern
+                  )
+              ) {
+                  throw "Potential executable forbidden Git mutation detected."
+              }
+          }
+
+          Write-Host "[PASS] No executable git reset detected."
+          Write-Host "[PASS] No executable git clean detected."
+          Write-Host "[PASS] No executable git commit detected."
+          Write-Host "[PASS] No executable git push detected."
+
+
+      # ================================================================
+      # 22
+      # ================================================================
+
+      - name: 22 - Final Clean V001 test gate
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "FINAL CLEAN V001 TEST GATE"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          if ([int]$env:QUANTIFY_EXIT_CODE -ne 0) {
+              throw "Quantification process did not pass."
+          }
+
+          $resultPath = Join-Path `
+              $env:PRODUCTION_ROOT `
+              "data\reports\$env:REPORT_NAMESPACE\pattern_quantification_result.json"
+
+          $result = Get-Content `
+              -LiteralPath $resultPath `
+              -Raw `
+              -Encoding UTF8 |
+              ConvertFrom-Json
+
+          if ($result.status -ne "PASS") {
+              throw "Final result status is not PASS."
+          }
+
+          if ($result.safety.source_sha256_unchanged -ne $true) {
+              throw "Production OHLCV immutability check failed."
+          }
+
+          if ([int]$result.patterns.count -ne 9) {
+              throw "Nine-pattern registry check failed."
+          }
+
+          if ($result.patterns.final_formulas_defined -ne $false) {
+              throw "Clean V001 unexpectedly defines final pattern formulas."
+          }
+
+          if ($result.common_feature_contract.future_candles_used -ne $false) {
+              throw "Future-information gate failed."
+          }
+
+          Write-Host "============================================================"
+          Write-Host "[PASS] quantify_patterns_test.yml"
+          Write-Host "[PASS] quantify_patterns.py Clean V001"
+          Write-Host "[PASS] Production OHLCV unchanged"
+          Write-Host "[PASS] 9 research patterns registered"
+          Write-Host "[PASS] Common quantitative features prepared"
+          Write-Host "[PASS] Future-information leakage blocked"
+          Write-Host "[PASS] Checkpoint validated"
+          Write-Host "[PASS] Source manifest validated"
+          Write-Host "============================================================"
+          Write-Host ""
+          Write-Host "[NEXT]"
+          Write-Host "After this workflow passes, proceed to:"
+          Write-Host "  quantify_patterns.yml"
+          Write-Host ""
+          Write-Host "Final pattern formulas remain intentionally undefined."
+          Write-Host "They will be researched and quantified independently."
+
+
+      # ================================================================
+      # 23
+      # ================================================================
+
+      - name: 23 - Failure diagnostics
+        if: failure()
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "FAILURE DIAGNOSTICS"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          Write-Host "Workspace:"
+          Write-Host "  $env:GITHUB_WORKSPACE"
+
+          Write-Host ""
+          Write-Host "Production root:"
+          Write-Host "  $env:PRODUCTION_ROOT"
+
+          Write-Host ""
+          Write-Host "Quantification exit code:"
+          Write-Host "  $env:QUANTIFY_EXIT_CODE"
+
+          Write-Host ""
+          Write-Host "Report directory:"
+
+          $reportDir = Join-Path `
+              $env:PRODUCTION_ROOT `
+              "data\reports\$env:REPORT_NAMESPACE"
+
+          if (Test-Path -LiteralPath $reportDir) {
+
+              Get-ChildItem `
+                  -LiteralPath $reportDir `
+                  -Force |
+                  Format-Table `
+                      Name,
+                      Length,
+                      LastWriteTime `
+                      -AutoSize |
+                  Out-String |
+                  Write-Host
+          }
+          else {
+              Write-Host "  [MISSING] $reportDir"
+          }
+
+          Write-Host ""
+          Write-Host "Checkpoint:"
+
+          $checkpoint = Join-Path `
+              $env:PRODUCTION_ROOT `
+              "data\validation\quantify_patterns_checkpoint.json"
+
+          if (Test-Path -LiteralPath $checkpoint) {
+              Write-Host "  [FOUND] $checkpoint"
+          }
+          else {
+              Write-Host "  [MISSING] $checkpoint"
+          }
+
+
+      # ================================================================
+      # 24
+      # ================================================================
+
+      - name: 24 - Upload pattern quantification test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-quantification-test-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            ${{ env.PRODUCTION_ROOT }}/data/reports/pattern_quantification/**
+            ${{ env.PRODUCTION_ROOT }}/data/validation/quantify_patterns_checkpoint.json
+            ${{ env.QUANTIFY_TEST_SNAPSHOT_DIR }}/ohlcv_files_before.txt
+            ${{ env.QUANTIFY_TEST_SNAPSHOT_DIR }}/ohlcv_files_after.txt
+            ${{ env.QUANTIFY_TEST_SNAPSHOT_DIR }}/ohlcv_sha256_before.csv
+            ${{ env.QUANTIFY_TEST_SNAPSHOT_DIR }}/ohlcv_sha256_after.csv
