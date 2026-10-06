@@ -87,13 +87,17 @@ jobs:
           Write-Host "============================================================"
           Write-Host ""
 
-          $productionRoot = Join-Path $env:USERPROFILE "Documents\upbit-surge-monitor"
+          $productionRoot = Join-Path `
+              $env:USERPROFILE `
+              "Documents\upbit-surge-monitor"
 
           if (-not (Test-Path -LiteralPath $productionRoot -PathType Container)) {
               throw "Production project root missing: $productionRoot"
           }
 
-          $ohlcvRoot = Join-Path $productionRoot "data\ohlcv"
+          $ohlcvRoot = Join-Path `
+              $productionRoot `
+              "data\ohlcv"
 
           if (-not (Test-Path -LiteralPath $ohlcvRoot -PathType Container)) {
               throw "Production OHLCV root missing: $ohlcvRoot"
@@ -136,7 +140,9 @@ jobs:
           Write-Host "============================================================"
           Write-Host ""
 
-          $validator = Join-Path $env:GITHUB_WORKSPACE "validate_pattern_research_input.py"
+          $validator = Join-Path `
+              $env:GITHUB_WORKSPACE `
+              "validate_pattern_research_input.py"
 
           if (-not (Test-Path -LiteralPath $validator -PathType Leaf)) {
               throw "Validator program missing: $validator"
@@ -145,14 +151,15 @@ jobs:
           Write-Host "[PASS] Validator exists:"
           Write-Host "  $validator"
 
-          Write-Host ""
-
-          $content = Get-Content -LiteralPath $validator -Raw
+          $content = Get-Content `
+              -LiteralPath $validator `
+              -Raw
 
           if ($content -notmatch "Clean V001") {
               throw "Validator does not contain expected version: Clean V001"
           }
 
+          Write-Host ""
           Write-Host "[PASS] Clean V001 marker found."
 
 
@@ -178,7 +185,9 @@ jobs:
 
           foreach ($timeframe in $required) {
 
-              $directory = Join-Path $env:PRODUCTION_OHLCV_ROOT $timeframe
+              $directory = Join-Path `
+                  $env:PRODUCTION_OHLCV_ROOT `
+                  $timeframe
 
               if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
                   throw "Required timeframe directory missing: $directory"
@@ -212,7 +221,9 @@ jobs:
 
           foreach ($timeframe in $timeframes) {
 
-              $directory = Join-Path $env:PRODUCTION_OHLCV_ROOT $timeframe
+              $directory = Join-Path `
+                  $env:PRODUCTION_OHLCV_ROOT `
+                  $timeframe
 
               $files = @(
                   Get-ChildItem `
@@ -857,6 +868,15 @@ jobs:
 
       # ================================================================
       # 18. VALIDATE RESULT JSON
+      #
+      # IMPORTANT:
+      # PowerShell ConvertFrom-Json is intentionally NOT used here.
+      #
+      # The validation report can contain a very large issues array.
+      # Windows PowerShell JSON parsing can fail on large/deep reports.
+      #
+      # Python parses the original JSON directly and validates only the
+      # required contract fields.
       # ================================================================
 
       - name: 18 - Validate result JSON
@@ -869,68 +889,114 @@ jobs:
           Write-Host "============================================================"
           Write-Host ""
 
-          $path = Join-Path `
+          $resultPath = Join-Path `
               $env:PATTERN_VALIDATION_REPORT_DIR `
               "pattern_research_input_validation.json"
 
-          $json = Get-Content `
-              -LiteralPath $path `
-              -Raw |
-              ConvertFrom-Json
-
-          if ($null -eq $json.summary) {
-              throw "Result JSON missing summary."
+          if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
+              throw "Result JSON missing: $resultPath"
           }
 
-          Write-Host "Program:"
-          Write-Host "  $($json.summary.program)"
+          $pythonCode = @'
+          import json
+          import os
+          import sys
 
-          Write-Host ""
-          Write-Host "Version:"
-          Write-Host "  $($json.summary.version)"
+          path = os.environ["PATTERN_RESULT_JSON"]
 
-          Write-Host ""
-          Write-Host "Result:"
-          Write-Host "  $($json.summary.result)"
+          try:
+              with open(path, "r", encoding="utf-8-sig") as f:
+                  data = json.load(f)
+          except Exception as exc:
+              print(f"[FAIL] Unable to parse result JSON: {type(exc).__name__}: {exc}")
+              sys.exit(10)
 
-          Write-Host ""
-          Write-Host "Total files:"
-          Write-Host "  $($json.summary.total_files)"
+          if not isinstance(data, dict):
+              print("[FAIL] Result JSON root must be an object.")
+              sys.exit(11)
 
-          Write-Host ""
-          Write-Host "Passed files:"
-          Write-Host "  $($json.summary.passed_files)"
+          summary = data.get("summary")
 
-          Write-Host ""
-          Write-Host "Failed files:"
-          Write-Host "  $($json.summary.failed_files)"
+          if not isinstance(summary, dict):
+              print("[FAIL] Result JSON missing summary object.")
+              sys.exit(12)
 
-          Write-Host ""
-          Write-Host "Fatal issues:"
-          Write-Host "  $($json.summary.fatal_count)"
+          program = summary.get("program")
+          version = summary.get("version")
+          result = summary.get("result")
+          total_files = summary.get("total_files")
+          passed_files = summary.get("passed_files")
+          failed_files = summary.get("failed_files")
+          fatal_count = summary.get("fatal_count")
 
-          if ($json.summary.version -ne "Clean V001") {
-              throw "Unexpected validator version: $($json.summary.version)"
+          print(f"Program:")
+          print(f"  {program}")
+          print()
+          print(f"Version:")
+          print(f"  {version}")
+          print()
+          print(f"Result:")
+          print(f"  {result}")
+          print()
+          print(f"Total files:")
+          print(f"  {total_files}")
+          print()
+          print(f"Passed files:")
+          print(f"  {passed_files}")
+          print()
+          print(f"Failed files:")
+          print(f"  {failed_files}")
+          print()
+          print(f"Fatal issues:")
+          print(f"  {fatal_count}")
+
+          if version != "Clean V001":
+              print(f"[FAIL] Unexpected validator version: {version}")
+              sys.exit(20)
+
+          if result != "PASS":
+              print(f"[FAIL] Pattern research input validation result is not PASS: {result}")
+              sys.exit(21)
+
+          try:
+              total_files_int = int(total_files)
+              passed_files_int = int(passed_files)
+              failed_files_int = int(failed_files)
+              fatal_count_int = int(fatal_count)
+          except (TypeError, ValueError):
+              print("[FAIL] Summary counters are not valid integers.")
+              sys.exit(22)
+
+          if total_files_int <= 0:
+              print("[FAIL] Validation result contains zero files.")
+              sys.exit(23)
+
+          if failed_files_int != 0:
+              print(f"[FAIL] Validation result contains failed files: {failed_files_int}")
+              sys.exit(24)
+
+          if fatal_count_int != 0:
+              print(f"[FAIL] Validation result contains fatal issues: {fatal_count_int}")
+              sys.exit(25)
+
+          if passed_files_int != total_files_int:
+              print(
+                  "[FAIL] passed_files does not equal total_files: "
+                  f"{passed_files_int} != {total_files_int}"
+              )
+              sys.exit(26)
+
+          print()
+          print("[PASS] Result JSON validated.")
+          '@
+
+          $env:PATTERN_RESULT_JSON = $resultPath
+
+          $pythonCode | py -X utf8 -
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Result JSON validation failed with Python exit code $LASTEXITCODE"
           }
-
-          if ($json.summary.result -ne "PASS") {
-              throw "Pattern research input validation result is not PASS."
-          }
-
-          if ([int]$json.summary.total_files -le 0) {
-              throw "Validation result contains zero files."
-          }
-
-          if ([int]$json.summary.failed_files -ne 0) {
-              throw "Validation result contains failed files."
-          }
-
-          if ([int]$json.summary.fatal_count -ne 0) {
-              throw "Validation result contains fatal issues."
-          }
-
-          Write-Host ""
-          Write-Host "[PASS] Result JSON validated."
 
 
       # ================================================================
@@ -947,47 +1013,67 @@ jobs:
           Write-Host "============================================================"
           Write-Host ""
 
-          $path = Join-Path `
+          $checkpointPath = Join-Path `
               $env:PATTERN_VALIDATION_REPORT_DIR `
               "pattern_research_input_validation_checkpoint.json"
 
-          $checkpoint = Get-Content `
-              -LiteralPath $path `
-              -Raw |
-              ConvertFrom-Json
-
-          Write-Host "Result:"
-          Write-Host "  $($checkpoint.result)"
-
-          Write-Host ""
-          Write-Host "Research stage:"
-          Write-Host "  $($checkpoint.research_stage)"
-
-          Write-Host ""
-          Write-Host "Next stage allowed:"
-          Write-Host "  $($checkpoint.next_stage_allowed)"
-
-          Write-Host ""
-          Write-Host "Next stage:"
-          Write-Host "  $($checkpoint.next_stage)"
-
-          if ($checkpoint.result -ne "PASS") {
-              throw "Checkpoint result is not PASS."
+          if (-not (Test-Path -LiteralPath $checkpointPath -PathType Leaf)) {
+              throw "Checkpoint missing: $checkpointPath"
           }
 
-          if ($checkpoint.research_stage -ne "PATTERN_RESEARCH_INPUT_VALIDATION") {
-              throw "Unexpected research stage."
-          }
+          $pythonCode = @'
+          import json
+          import os
+          import sys
 
-          if ($checkpoint.next_stage_allowed -ne $true) {
-              throw "Checkpoint does not allow next research stage."
-          }
+          path = os.environ["PATTERN_CHECKPOINT_JSON"]
 
-          if ($checkpoint.next_stage -ne "PATTERN_QUANTIFICATION") {
-              throw "Unexpected next stage: $($checkpoint.next_stage)"
-          }
+          try:
+              with open(path, "r", encoding="utf-8-sig") as f:
+                  checkpoint = json.load(f)
+          except Exception as exc:
+              print(f"[FAIL] Unable to parse checkpoint JSON: {type(exc).__name__}: {exc}")
+              sys.exit(10)
 
-          $expectedPatterns = @(
+          if not isinstance(checkpoint, dict):
+              print("[FAIL] Checkpoint root must be an object.")
+              sys.exit(11)
+
+          result = checkpoint.get("result")
+          research_stage = checkpoint.get("research_stage")
+          next_stage_allowed = checkpoint.get("next_stage_allowed")
+          next_stage = checkpoint.get("next_stage")
+          patterns = checkpoint.get("patterns")
+
+          print("Result:")
+          print(f"  {result}")
+          print()
+          print("Research stage:")
+          print(f"  {research_stage}")
+          print()
+          print("Next stage allowed:")
+          print(f"  {next_stage_allowed}")
+          print()
+          print("Next stage:")
+          print(f"  {next_stage}")
+
+          if result != "PASS":
+              print(f"[FAIL] Checkpoint result is not PASS: {result}")
+              sys.exit(20)
+
+          if research_stage != "PATTERN_RESEARCH_INPUT_VALIDATION":
+              print(f"[FAIL] Unexpected research stage: {research_stage}")
+              sys.exit(21)
+
+          if next_stage_allowed is not True:
+              print("[FAIL] Checkpoint does not allow next research stage.")
+              sys.exit(22)
+
+          if next_stage != "PATTERN_QUANTIFICATION":
+              print(f"[FAIL] Unexpected next stage: {next_stage}")
+              sys.exit(23)
+
+          expected_patterns = [
               "256",
               "밥그릇 3번자리",
               "역매공파",
@@ -996,35 +1082,48 @@ jobs:
               "눌림목",
               "기준봉",
               "하이힐",
-              "오돌이"
-          )
+              "오돌이",
+          ]
 
-          $actualPatterns = @(
-              $checkpoint.patterns
-          )
+          if not isinstance(patterns, list):
+              print("[FAIL] Checkpoint patterns must be a list.")
+              sys.exit(24)
 
-          if ($actualPatterns.Count -ne $expectedPatterns.Count) {
-              throw "Unexpected research pattern count."
+          if patterns != expected_patterns:
+              print("[FAIL] Research pattern contract mismatch.")
+              print()
+              print("Expected:")
+              for index, value in enumerate(expected_patterns, start=1):
+                  print(f"  {index:02d}. {value}")
+
+              print()
+              print("Found:")
+              for index, value in enumerate(patterns, start=1):
+                  print(f"  {index:02d}. {value}")
+
+              sys.exit(25)
+
+          print()
+          print("Patterns:")
+
+          for index, pattern in enumerate(patterns, start=1):
+              print(f"  {index:02d}. {pattern}")
+
+          print()
+          print("[PASS] Checkpoint validated.")
+          '@
+
+          $env:PATTERN_CHECKPOINT_JSON = $checkpointPath
+
+          $pythonCode | py -X utf8 -
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Checkpoint validation failed with Python exit code $LASTEXITCODE"
           }
-
-          for ($i = 0; $i -lt $expectedPatterns.Count; $i++) {
-
-              if ($actualPatterns[$i] -ne $expectedPatterns[$i]) {
-
-                  throw (
-                      "Pattern contract mismatch at index ${i}: " +
-                      "Expected='$($expectedPatterns[$i])' " +
-                      "Found='$($actualPatterns[$i])'"
-                  )
-              }
-          }
-
-          Write-Host ""
-          Write-Host "[PASS] Checkpoint validated."
 
 
       # ================================================================
-      # 20. VALIDATE MANIFEST HASHES
+      # 20. VALIDATE REPORT MANIFEST HASHES
       # ================================================================
 
       - name: 20 - Validate report manifest hashes
@@ -1041,68 +1140,106 @@ jobs:
               $env:PATTERN_VALIDATION_REPORT_DIR `
               "pattern_research_input_validation_manifest.json"
 
-          $manifest = Get-Content `
-              -LiteralPath $manifestPath `
-              -Raw |
-              ConvertFrom-Json
-
-          if ($manifest.version -ne "Clean V001") {
-              throw "Unexpected manifest version: $($manifest.version)"
+          if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+              throw "Manifest missing: $manifestPath"
           }
 
-          if ($null -eq $manifest.files) {
-              throw "Manifest contains no file records."
+          $pythonCode = @'
+          import hashlib
+          import json
+          import os
+          import sys
+
+          manifest_path = os.environ["PATTERN_MANIFEST_JSON"]
+          report_dir = os.environ["PATTERN_VALIDATION_REPORT_DIR"]
+
+          try:
+              with open(manifest_path, "r", encoding="utf-8-sig") as f:
+                  manifest = json.load(f)
+          except Exception as exc:
+              print(f"[FAIL] Unable to parse manifest JSON: {type(exc).__name__}: {exc}")
+              sys.exit(10)
+
+          if not isinstance(manifest, dict):
+              print("[FAIL] Manifest root must be an object.")
+              sys.exit(11)
+
+          version = manifest.get("version")
+
+          if version != "Clean V001":
+              print(f"[FAIL] Unexpected manifest version: {version}")
+              sys.exit(20)
+
+          records = manifest.get("files")
+
+          if not isinstance(records, list) or not records:
+              print("[FAIL] Manifest contains no file records.")
+              sys.exit(21)
+
+          validated = 0
+
+          for record in records:
+              if not isinstance(record, dict):
+                  print("[FAIL] Invalid manifest file record.")
+                  sys.exit(22)
+
+              name = record.get("name")
+              expected_hash = record.get("sha256")
+              expected_size = record.get("size_bytes")
+
+              if not name:
+                  print("[FAIL] Manifest record missing file name.")
+                  sys.exit(23)
+
+              path = os.path.join(report_dir, name)
+
+              if not os.path.isfile(path):
+                  print(f"[FAIL] Manifest file missing: {path}")
+                  sys.exit(24)
+
+              digest = hashlib.sha256()
+
+              with open(path, "rb") as f:
+                  for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                      digest.update(chunk)
+
+              actual_hash = digest.hexdigest().lower()
+
+              if str(expected_hash).lower() != actual_hash:
+                  print(f"[FAIL] Manifest SHA256 mismatch: {name}")
+                  print(f"  Expected: {expected_hash}")
+                  print(f"  Actual  : {actual_hash}")
+                  sys.exit(25)
+
+              actual_size = os.path.getsize(path)
+
+              try:
+                  expected_size_int = int(expected_size)
+              except (TypeError, ValueError):
+                  print(f"[FAIL] Invalid manifest size for: {name}")
+                  sys.exit(26)
+
+              if actual_size != expected_size_int:
+                  print(f"[FAIL] Manifest size mismatch: {name}")
+                  print(f"  Expected: {expected_size_int}")
+                  print(f"  Actual  : {actual_size}")
+                  sys.exit(27)
+
+              print(f"[PASS] {name}")
+              validated += 1
+
+          print()
+          print(f"Validated manifest records: {validated}")
+          print("[PASS] Manifest hashes validated.")
+          '@
+
+          $env:PATTERN_MANIFEST_JSON = $manifestPath
+
+          $pythonCode | py -X utf8 -
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Manifest validation failed with Python exit code $LASTEXITCODE"
           }
-
-          foreach ($record in $manifest.files) {
-
-              $path = Join-Path `
-                  $env:PATTERN_VALIDATION_REPORT_DIR `
-                  $record.name
-
-              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-                  throw "Manifest file missing: $path"
-              }
-
-              $actualHash = (
-                  Get-FileHash `
-                      -LiteralPath $path `
-                      -Algorithm SHA256
-              ).Hash.ToLower()
-
-              $expectedHash = (
-                  [string]$record.sha256
-              ).ToLower()
-
-              if ($actualHash -ne $expectedHash) {
-
-                  throw (
-                      "Manifest SHA256 mismatch: " +
-                      "$($record.name)"
-                  )
-              }
-
-              $actualSize = (
-                  Get-Item `
-                      -LiteralPath $path
-              ).Length
-
-              if (
-                  [int64]$actualSize -ne
-                  [int64]$record.size_bytes
-              ) {
-
-                  throw (
-                      "Manifest size mismatch: " +
-                      "$($record.name)"
-                  )
-              }
-
-              Write-Host "[PASS] $($record.name)"
-          }
-
-          Write-Host ""
-          Write-Host "[PASS] Manifest hashes validated."
 
 
       # ================================================================
@@ -1165,59 +1302,111 @@ jobs:
               $env:PATTERN_VALIDATION_REPORT_DIR `
               "pattern_research_input_validation_checkpoint.json"
 
-          $result = Get-Content `
-              -LiteralPath $resultPath `
-              -Raw |
-              ConvertFrom-Json
+          $pythonCode = @'
+          import json
+          import os
+          import sys
 
-          $checkpoint = Get-Content `
-              -LiteralPath $checkpointPath `
-              -Raw |
-              ConvertFrom-Json
+          result_path = os.environ["PATTERN_RESULT_JSON"]
+          checkpoint_path = os.environ["PATTERN_CHECKPOINT_JSON"]
 
-          if ($result.summary.result -ne "PASS") {
-              throw "Final gate failed: result != PASS"
+          try:
+              with open(result_path, "r", encoding="utf-8-sig") as f:
+                  result_data = json.load(f)
+
+              with open(checkpoint_path, "r", encoding="utf-8-sig") as f:
+                  checkpoint = json.load(f)
+
+          except Exception as exc:
+              print(f"[FAIL] Final gate JSON parse error: {type(exc).__name__}: {exc}")
+              sys.exit(10)
+
+          summary = result_data.get("summary")
+
+          if not isinstance(summary, dict):
+              print("[FAIL] Final gate: summary missing.")
+              sys.exit(11)
+
+          if summary.get("result") != "PASS":
+              print("[FAIL] Final gate: result != PASS")
+              sys.exit(20)
+
+          try:
+              failed_files = int(summary.get("failed_files"))
+              fatal_count = int(summary.get("fatal_count"))
+          except (TypeError, ValueError):
+              print("[FAIL] Final gate: invalid summary counters.")
+              sys.exit(21)
+
+          if failed_files != 0:
+              print("[FAIL] Final gate: failed_files != 0")
+              sys.exit(22)
+
+          if fatal_count != 0:
+              print("[FAIL] Final gate: fatal_count != 0")
+              sys.exit(23)
+
+          if checkpoint.get("result") != "PASS":
+              print("[FAIL] Final gate: checkpoint result != PASS")
+              sys.exit(24)
+
+          if checkpoint.get("next_stage_allowed") is not True:
+              print("[FAIL] Final gate: next_stage_allowed != true")
+              sys.exit(25)
+
+          if checkpoint.get("next_stage") != "PATTERN_QUANTIFICATION":
+              print(
+                  "[FAIL] Final gate: next_stage != PATTERN_QUANTIFICATION"
+              )
+              sys.exit(26)
+
+          expected_patterns = [
+              "256",
+              "밥그릇 3번자리",
+              "역매공파",
+              "공구리",
+              "돌파",
+              "눌림목",
+              "기준봉",
+              "하이힐",
+              "오돌이",
+          ]
+
+          if checkpoint.get("patterns") != expected_patterns:
+              print("[FAIL] Final gate: pattern contract mismatch.")
+              sys.exit(27)
+
+          print("Program:")
+          print("  validate_pattern_research_input.py")
+          print()
+          print("Version:")
+          print("  Clean V001")
+          print()
+          print("Validation:")
+          print("  PASS")
+          print()
+          print("Production OHLCV:")
+          print("  UNCHANGED")
+          print()
+          print("Research patterns:")
+          print(f"  {len(expected_patterns)}")
+          print()
+          print("Next stage:")
+          print("  PATTERN_QUANTIFICATION")
+          print()
+          print("============================================================")
+          print("CLEAN V001 TEST GATE: PASS")
+          print("============================================================")
+          '@
+
+          $env:PATTERN_RESULT_JSON = $resultPath
+          $env:PATTERN_CHECKPOINT_JSON = $checkpointPath
+
+          $pythonCode | py -X utf8 -
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Final Clean V001 test gate failed with Python exit code $LASTEXITCODE"
           }
-
-          if ([int]$result.summary.failed_files -ne 0) {
-              throw "Final gate failed: failed_files != 0"
-          }
-
-          if ([int]$result.summary.fatal_count -ne 0) {
-              throw "Final gate failed: fatal_count != 0"
-          }
-
-          if ($checkpoint.next_stage_allowed -ne $true) {
-              throw "Final gate failed: next_stage_allowed != true"
-          }
-
-          if ($checkpoint.next_stage -ne "PATTERN_QUANTIFICATION") {
-              throw "Final gate failed: next_stage != PATTERN_QUANTIFICATION"
-          }
-
-          Write-Host "Program:"
-          Write-Host "  validate_pattern_research_input.py"
-
-          Write-Host ""
-          Write-Host "Version:"
-          Write-Host "  Clean V001"
-
-          Write-Host ""
-          Write-Host "Validation:"
-          Write-Host "  PASS"
-
-          Write-Host ""
-          Write-Host "Production OHLCV:"
-          Write-Host "  UNCHANGED"
-
-          Write-Host ""
-          Write-Host "Next stage:"
-          Write-Host "  PATTERN_QUANTIFICATION"
-
-          Write-Host ""
-          Write-Host "============================================================"
-          Write-Host "CLEAN V001 TEST GATE: PASS"
-          Write-Host "============================================================"
 
 
       # ================================================================
