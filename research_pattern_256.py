@@ -1055,9 +1055,11 @@ def load_ohlcv(
     valid_rows = len(working)
 
     if valid_rows < MIN_REQUIRED_ROWS:
-        raise ValueError(
-            f"Insufficient valid OHLCV rows: "
-            f"{source.path} rows={valid_rows}"
+        safe_print(
+            "[SHORT_HISTORY] "
+            f"{source.timeframe} {source.market} "
+            f"valid_rows={valid_rows} "
+            f"recommended_minimum={MIN_REQUIRED_ROWS}"
         )
 
     return LoadedOHLCV(
