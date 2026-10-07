@@ -10,8 +10,8 @@
 #
 #   research_pattern_256.py - Clean V001
 #
-# This workflow runs the independently tested Pattern 256
-# research against the production OHLCV dataset.
+# Pattern 256 independent quantitative research against
+# production OHLCV.
 #
 # IMPORTANT
 # ------------------------------------------------------------
@@ -33,27 +33,6 @@
 # SAFETY
 # ------------------------------------------------------------
 # Production OHLCV MUST remain unchanged.
-#
-# This workflow verifies:
-#
-#   1. Production root
-#   2. research_pattern_256.py
-#   3. Python syntax
-#   4. h1 / h4 / d1 OHLCV inventory
-#   5. OHLCV file set BEFORE research
-#   6. OHLCV SHA256 BEFORE research
-#   7. Pattern 256 production research
-#   8. OHLCV file set AFTER research
-#   9. OHLCV SHA256 AFTER research
-#  10. Result JSON
-#  11. Research contract
-#  12. Summary CSV
-#  13. Detail CSV
-#  14. Candidate CSV
-#  15. Source manifest
-#  16. Checkpoint
-#  17. Result/summary/detail consistency
-#  18. Final production gate
 #
 # This workflow MUST NOT:
 #
@@ -77,38 +56,17 @@
 #
 # ============================================================
 
-
 name: research_pattern_256.yml
-
-
-# ============================================================
-# 1. TRIGGER
-# ============================================================
 
 on:
   workflow_dispatch:
 
-
-# ============================================================
-# 2. PERMISSIONS
-# ============================================================
-
 permissions:
   contents: read
-
-
-# ============================================================
-# 3. CONCURRENCY
-# ============================================================
 
 concurrency:
   group: research_pattern_256_production
   cancel-in-progress: false
-
-
-# ============================================================
-# 4. JOB
-# ============================================================
 
 jobs:
 
@@ -144,7 +102,6 @@ jobs:
       README_FILE: "README.txt"
 
       CHECKPOINT_FILE: "research_pattern_256_checkpoint.json"
-
 
     steps:
 
@@ -214,45 +171,26 @@ jobs:
 
           $preferredRoot = "C:\Users\USER\Documents\upbit-surge-monitor"
 
-          if (-not (
-              Test-Path `
-                  -LiteralPath $preferredRoot `
-                  -PathType Container
-          )) {
+          if (-not (Test-Path -LiteralPath $preferredRoot -PathType Container)) {
               throw "Production project root missing: $preferredRoot"
           }
 
-          $ohlcvRoot = Join-Path `
-              $preferredRoot `
-              "data\ohlcv"
+          $ohlcvRoot = Join-Path $preferredRoot "data\ohlcv"
 
-          if (-not (
-              Test-Path `
-                  -LiteralPath $ohlcvRoot `
-                  -PathType Container
-          )) {
+          if (-not (Test-Path -LiteralPath $ohlcvRoot -PathType Container)) {
               throw "Production OHLCV root missing: $ohlcvRoot"
           }
 
           foreach ($timeframe in @("h1", "h4", "d1")) {
 
-              $path = Join-Path `
-                  $ohlcvRoot `
-                  $timeframe
+              $path = Join-Path $ohlcvRoot $timeframe
 
-              if (-not (
-                  Test-Path `
-                      -LiteralPath $path `
-                      -PathType Container
-              )) {
+              if (-not (Test-Path -LiteralPath $path -PathType Container)) {
                   throw "Production timeframe directory missing: $path"
               }
           }
 
-          $productionRoot = (
-              Resolve-Path `
-                  -LiteralPath $preferredRoot
-          ).Path
+          $productionRoot = (Resolve-Path -LiteralPath $preferredRoot).Path
 
           Write-Host "[PASS] Production project root:"
           Write-Host "  $productionRoot"
@@ -286,16 +224,11 @@ jobs:
               $env:GITHUB_WORKSPACE `
               $env:PROGRAM_FILE
 
-          if (-not (
-              Test-Path `
-                  -LiteralPath $workspaceProgram `
-                  -PathType Leaf
-          )) {
+          if (-not (Test-Path -LiteralPath $workspaceProgram -PathType Leaf)) {
               throw "Research program missing from checkout: $workspaceProgram"
           }
 
-          $item = Get-Item `
-              -LiteralPath $workspaceProgram
+          $item = Get-Item -LiteralPath $workspaceProgram
 
           if ($item.Length -le 0) {
               throw "Research program is empty."
@@ -317,12 +250,6 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          Write-Host ""
-          Write-Host "============================================================"
-          Write-Host "VERIFY CLEAN V001 SOURCE CONTRACT"
-          Write-Host "============================================================"
-          Write-Host ""
-
           $program = Join-Path `
               $env:GITHUB_WORKSPACE `
               $env:PROGRAM_FILE
@@ -332,10 +259,7 @@ jobs:
           import sys
 
           path = pathlib.Path(sys.argv[1])
-
-          source = path.read_text(
-              encoding="utf-8-sig"
-          )
+          source = path.read_text(encoding="utf-8-sig")
 
           required = (
               'PROGRAM_NAME = "research_pattern_256.py"',
@@ -360,10 +284,8 @@ jobs:
 
           if missing:
               print("[FAIL] Missing required source markers:")
-
               for marker in missing:
                   print(f"  {marker}")
-
               raise SystemExit(1)
 
           print("[PASS] Clean V001 source contract.")
@@ -382,12 +304,6 @@ jobs:
       - name: 06 - Python syntax compile
         run: |
           $ErrorActionPreference = "Stop"
-
-          Write-Host ""
-          Write-Host "============================================================"
-          Write-Host "PYTHON SYNTAX COMPILE"
-          Write-Host "============================================================"
-          Write-Host ""
 
           $program = Join-Path `
               $env:GITHUB_WORKSPACE `
@@ -410,12 +326,6 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          Write-Host ""
-          Write-Host "============================================================"
-          Write-Host "VERIFY PRODUCTION OHLCV INVENTORY"
-          Write-Host "============================================================"
-          Write-Host ""
-
           $base = Join-Path `
               $env:PRODUCTION_ROOT `
               "data\ohlcv"
@@ -424,9 +334,7 @@ jobs:
 
           foreach ($timeframe in @("h1", "h4", "d1")) {
 
-              $directory = Join-Path `
-                  $base `
-                  $timeframe
+              $directory = Join-Path $base $timeframe
 
               $files = @(
                   Get-ChildItem `
@@ -461,12 +369,6 @@ jobs:
       - name: 08 - Record production OHLCV BEFORE snapshot
         run: |
           $ErrorActionPreference = "Stop"
-
-          Write-Host ""
-          Write-Host "============================================================"
-          Write-Host "RECORD PRODUCTION OHLCV BEFORE SNAPSHOT"
-          Write-Host "============================================================"
-          Write-Host ""
 
           $snapshotDir = Join-Path `
               $env:RUNNER_TEMP `
@@ -564,12 +466,6 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          Write-Host ""
-          Write-Host "============================================================"
-          Write-Host "VERIFY NO FUTURE-INFORMATION SOURCE VIOLATIONS"
-          Write-Host "============================================================"
-          Write-Host ""
-
           $program = Join-Path `
               $env:GITHUB_WORKSPACE `
               $env:PROGRAM_FILE
@@ -580,15 +476,8 @@ jobs:
           import sys
 
           path = pathlib.Path(sys.argv[1])
-
-          source = path.read_text(
-              encoding="utf-8-sig"
-          )
-
-          tree = ast.parse(
-              source,
-              filename=str(path),
-          )
+          source = path.read_text(encoding="utf-8-sig")
+          tree = ast.parse(source, filename=str(path))
 
           violations = []
 
@@ -599,10 +488,8 @@ jobs:
 
               if isinstance(node.func, ast.Attribute):
                   name = node.func.attr
-
               elif isinstance(node.func, ast.Name):
                   name = node.func.id
-
               else:
                   continue
 
@@ -623,17 +510,11 @@ jobs:
                           isinstance(value, ast.UnaryOp)
                           and isinstance(value.op, ast.USub)
                           and isinstance(value.operand, ast.Constant)
-                          and isinstance(
-                              value.operand.value,
-                              (int, float),
-                          )
+                          and isinstance(value.operand.value, (int, float))
                           and value.operand.value > 0
                       ):
                           violations.append(
-                              (
-                                  node.lineno,
-                                  "negative shift",
-                              )
+                              (node.lineno, "negative shift")
                           )
 
               if name == "rolling":
@@ -644,30 +525,19 @@ jobs:
                           continue
 
                       if (
-                          isinstance(
-                              keyword.value,
-                              ast.Constant,
-                          )
+                          isinstance(keyword.value, ast.Constant)
                           and keyword.value.value is True
                       ):
                           violations.append(
-                              (
-                                  node.lineno,
-                                  "centered rolling",
-                              )
+                              (node.lineno, "centered rolling")
                           )
 
           if violations:
 
-              print(
-                  "[FAIL] Future-information "
-                  "source violations:"
-              )
+              print("[FAIL] Future-information source violations:")
 
               for line, message in violations:
-                  print(
-                      f"  line={line} type={message}"
-                  )
+                  print(f"  line={line} type={message}")
 
               raise SystemExit(1)
 
@@ -689,17 +559,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          Write-Host ""
-          Write-Host "============================================================"
-          Write-Host "FINAL PRE-EXECUTION PRODUCTION SAFETY GUARD"
-          Write-Host "============================================================"
-          Write-Host ""
-
-          if (
-              [string]::IsNullOrWhiteSpace(
-                  $env:PRODUCTION_ROOT
-              )
-          ) {
+          if ([string]::IsNullOrWhiteSpace($env:PRODUCTION_ROOT)) {
               throw "PRODUCTION_ROOT is empty."
           }
 
@@ -715,11 +575,7 @@ jobs:
               $env:PRODUCTION_ROOT `
               "data\ohlcv"
 
-          if (-not (
-              Test-Path `
-                  -LiteralPath $ohlcvRoot `
-                  -PathType Container
-          )) {
+          if (-not (Test-Path -LiteralPath $ohlcvRoot -PathType Container)) {
               throw "Production OHLCV root missing."
           }
 
@@ -781,12 +637,6 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          Write-Host ""
-          Write-Host "============================================================"
-          Write-Host "VERIFY PRODUCTION OHLCV FILE SET UNCHANGED"
-          Write-Host "============================================================"
-          Write-Host ""
-
           $beforePath = Join-Path `
               $env:PATTERN_256_PROD_SNAPSHOT_DIR `
               "ohlcv_files_before.txt"
@@ -810,7 +660,6 @@ jobs:
 
           $afterRelative = @(
               foreach ($file in $afterFiles) {
-
                   $file.FullName.Substring(
                       $env:PRODUCTION_ROOT.Length
                   ).TrimStart('\')
@@ -862,12 +711,6 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          Write-Host ""
-          Write-Host "============================================================"
-          Write-Host "VERIFY PRODUCTION OHLCV SHA256 UNCHANGED"
-          Write-Host "============================================================"
-          Write-Host ""
-
           $beforePath = Join-Path `
               $env:PATTERN_256_PROD_SNAPSHOT_DIR `
               "ohlcv_sha256_before.csv"
@@ -914,8 +757,7 @@ jobs:
                   -Encoding UTF8
 
           $beforeRows = @(
-              Import-Csv `
-                  -LiteralPath $beforePath
+              Import-Csv -LiteralPath $beforePath
           )
 
           if ($beforeRows.Count -ne $afterRows.Count) {
@@ -932,11 +774,7 @@ jobs:
 
           foreach ($row in $afterRows) {
 
-              if (-not (
-                  $beforeMap.ContainsKey(
-                      $row.RelativePath
-                  )
-              )) {
+              if (-not $beforeMap.ContainsKey($row.RelativePath)) {
                   $changed += $row.RelativePath
                   continue
               }
@@ -948,11 +786,7 @@ jobs:
                   continue
               }
 
-              if (
-                  [Int64]$before.Length `
-                  -ne `
-                  [Int64]$row.Length
-              ) {
+              if ([Int64]$before.Length -ne [Int64]$row.Length) {
                   $changed += $row.RelativePath
               }
           }
@@ -981,17 +815,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          Write-Host ""
-          Write-Host "============================================================"
-          Write-Host "VERIFY PRODUCTION RESEARCH EXIT CODE"
-          Write-Host "============================================================"
-          Write-Host ""
-
-          if (
-              [string]::IsNullOrWhiteSpace(
-                  $env:PATTERN_256_PROD_EXIT_CODE
-              )
-          ) {
+          if ([string]::IsNullOrWhiteSpace($env:PATTERN_256_PROD_EXIT_CODE)) {
               throw "Production research exit code was not recorded."
           }
 
@@ -1015,12 +839,6 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          Write-Host ""
-          Write-Host "============================================================"
-          Write-Host "VERIFY PRODUCTION RESEARCH OUTPUTS"
-          Write-Host "============================================================"
-          Write-Host ""
-
           $reportDir = Join-Path `
               $env:PRODUCTION_ROOT `
               "data\reports\$env:REPORT_NAMESPACE"
@@ -1042,16 +860,11 @@ jobs:
 
           foreach ($path in $required) {
 
-              if (-not (
-                  Test-Path `
-                      -LiteralPath $path `
-                      -PathType Leaf
-              )) {
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
                   throw "Required production output missing: $path"
               }
 
-              $item = Get-Item `
-                  -LiteralPath $path
+              $item = Get-Item -LiteralPath $path
 
               if ($item.Length -le 0) {
                   throw "Production output is empty: $path"
@@ -1069,12 +882,6 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          Write-Host ""
-          Write-Host "============================================================"
-          Write-Host "VALIDATE PRODUCTION RESULT JSON"
-          Write-Host "============================================================"
-          Write-Host ""
-
           $path = Join-Path `
               $env:PRODUCTION_ROOT `
               "data\reports\$env:REPORT_NAMESPACE\$env:RESULT_FILE"
@@ -1087,10 +894,7 @@ jobs:
           path = pathlib.Path(sys.argv[1])
           expected_version = sys.argv[2]
 
-          with path.open(
-              "r",
-              encoding="utf-8-sig",
-          ) as f:
+          with path.open("r", encoding="utf-8-sig") as f:
               result = json.load(f)
 
           def require(condition, message):
@@ -1099,20 +903,17 @@ jobs:
                   raise SystemExit(1)
 
           require(
-              result.get("program")
-              == "research_pattern_256.py",
+              result.get("program") == "research_pattern_256.py",
               "Unexpected program.",
           )
 
           require(
-              result.get("version")
-              == expected_version,
+              result.get("version") == expected_version,
               "Unexpected version.",
           )
 
           require(
-              result.get("stage")
-              == "PATTERN 256 INDEPENDENT RESEARCH",
+              result.get("stage") == "PATTERN 256 INDEPENDENT RESEARCH",
               "Unexpected stage.",
           )
 
@@ -1121,10 +922,7 @@ jobs:
               "Production result status is not PASS.",
           )
 
-          pattern = result.get(
-              "pattern",
-              {},
-          )
+          pattern = result.get("pattern", {})
 
           require(
               pattern.get("id") == "256",
@@ -1132,161 +930,82 @@ jobs:
           )
 
           require(
-              pattern.get("independent_research")
-              is True,
+              pattern.get("independent_research") is True,
               "Independent research flag failed.",
           )
 
           require(
-              pattern.get("final_formula_defined")
-              is False,
+              pattern.get("final_formula_defined") is False,
               "Final formula must remain undefined.",
           )
 
-          future = result.get(
-              "future_information",
-              {},
-          )
+          future = result.get("future_information", {})
 
-          require(
-              future.get("future_candles_used")
-              is False,
-              "Future candles were used.",
-          )
+          expected_future = {
+              "future_candles_used": False,
+              "negative_shift_used": False,
+              "centered_rolling_used": False,
+              "future_labels_generated": False,
+              "future_returns_generated": False,
+              "future_max_generated": False,
+              "future_min_generated": False,
+              "thirty_percent_label_generated": False,
+          }
 
-          require(
-              future.get("negative_shift_used")
-              is False,
-              "Negative shift was used.",
-          )
-
-          require(
-              future.get("centered_rolling_used")
-              is False,
-              "Centered rolling was used.",
-          )
-
-          require(
-              future.get("future_labels_generated")
-              is False,
-              "Future labels were generated.",
-          )
-
-          require(
-              future.get("future_returns_generated")
-              is False,
-              "Future returns were generated.",
-          )
-
-          require(
-              future.get("future_max_generated")
-              is False,
-              "Future max was generated.",
-          )
-
-          require(
-              future.get("future_min_generated")
-              is False,
-              "Future min was generated.",
-          )
-
-          require(
-              future.get(
-                  "thirty_percent_label_generated"
+          for key, expected in expected_future.items():
+              require(
+                  future.get(key) is expected,
+                  f"Future-information gate failed: {key}",
               )
-              is False,
-              "30 percent future label was generated.",
-          )
 
-          safety = result.get(
-              "safety",
-              {},
-          )
+          safety = result.get("safety", {})
 
           require(
-              safety.get("ohlcv_read_only")
-              is True,
+              safety.get("ohlcv_read_only") is True,
               "OHLCV read-only gate failed.",
           )
 
           require(
-              safety.get(
-                  "source_sha256_unchanged"
-              )
-              is True,
+              safety.get("source_sha256_unchanged") is True,
               "Source SHA256 gate failed.",
           )
 
           require(
-              safety.get("prediction_executed")
-              is False,
+              safety.get("prediction_executed") is False,
               "Prediction gate failed.",
           )
 
           require(
-              safety.get("trading_executed")
-              is False,
+              safety.get("trading_executed") is False,
               "Trading gate failed.",
           )
 
-          processing = result.get(
-              "processing",
-              {},
-          )
+          processing = result.get("processing", {})
 
           require(
-              int(
-                  processing.get(
-                      "files_error",
-                      -1,
-                  )
-              ) == 0,
+              int(processing.get("files_error", -1)) == 0,
               "Source processing errors exist.",
           )
 
-          statistics = result.get(
-              "statistics",
-              {},
-          )
+          statistics = result.get("statistics", {})
 
           require(
-              int(
-                  statistics.get(
-                      "files_processed",
-                      0,
-                  )
-              ) > 0,
+              int(statistics.get("files_processed", 0)) > 0,
               "No source files processed.",
           )
 
           require(
-              int(
-                  statistics.get(
-                      "total_rows",
-                      0,
-                  )
-              ) > 0,
+              int(statistics.get("total_rows", 0)) > 0,
               "No OHLCV rows processed.",
           )
 
           print("[PASS] Production result JSON.")
-          print(
-              "[PASS] Files processed:",
-              statistics.get("files_processed"),
-          )
-          print(
-              "[PASS] Total rows:",
-              statistics.get("total_rows"),
-          )
-          print(
-              "[PASS] Candidate rows:",
-              statistics.get("candidate_rows"),
-          )
+          print("[PASS] Files processed:", statistics.get("files_processed"))
+          print("[PASS] Total rows:", statistics.get("total_rows"))
+          print("[PASS] Candidate rows:", statistics.get("candidate_rows"))
           print(
               "[PASS] Strong candidates:",
-              statistics.get(
-                  "strong_candidate_rows"
-              ),
+              statistics.get("strong_candidate_rows"),
           )
           '@ |
               py - `
@@ -1306,12 +1025,6 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          Write-Host ""
-          Write-Host "============================================================"
-          Write-Host "VALIDATE PRODUCTION RESEARCH CONTRACT"
-          Write-Host "============================================================"
-          Write-Host ""
-
           $path = Join-Path `
               $env:PRODUCTION_ROOT `
               "data\reports\$env:REPORT_NAMESPACE\$env:CONTRACT_FILE"
@@ -1324,10 +1037,7 @@ jobs:
           path = pathlib.Path(sys.argv[1])
           expected_version = sys.argv[2]
 
-          with path.open(
-              "r",
-              encoding="utf-8-sig",
-          ) as f:
+          with path.open("r", encoding="utf-8-sig") as f:
               data = json.load(f)
 
           def require(condition, message):
@@ -1336,33 +1046,26 @@ jobs:
                   raise SystemExit(1)
 
           require(
-              data.get("program")
-              == "research_pattern_256.py",
+              data.get("program") == "research_pattern_256.py",
               "Unexpected contract program.",
           )
 
           require(
-              data.get("version")
-              == expected_version,
+              data.get("version") == expected_version,
               "Unexpected contract version.",
           )
 
           require(
-              data.get("pattern_id")
-              == "256",
+              data.get("pattern_id") == "256",
               "Unexpected pattern ID.",
           )
 
           require(
-              data.get("final_formula_defined")
-              is False,
+              data.get("final_formula_defined") is False,
               "Final formula contract failed.",
           )
 
-          contract = data.get(
-              "contract",
-              {},
-          )
+          contract = data.get("contract", {})
 
           expected = {
               "current_candle_allowed": True,
@@ -1380,19 +1083,12 @@ jobs:
           }
 
           for key, value in expected.items():
-
               require(
                   contract.get(key) is value,
-                  (
-                      f"Contract mismatch: "
-                      f"{key}={contract.get(key)}"
-                  ),
+                  f"Contract mismatch: {key}={contract.get(key)}",
               )
 
-          dimensions = data.get(
-              "research_dimensions",
-              [],
-          )
+          dimensions = data.get("research_dimensions", [])
 
           expected_dimensions = {
               "MA_CONVERGENCE",
@@ -1409,27 +1105,18 @@ jobs:
           }
 
           require(
-              actual_dimensions
-              == expected_dimensions,
+              actual_dimensions == expected_dimensions,
               "Research dimensions mismatch.",
           )
 
           total_score = sum(
-              float(
-                  item.get(
-                      "max_score",
-                      0,
-                  )
-              )
+              float(item.get("max_score", 0))
               for item in dimensions
           )
 
           require(
               total_score == 100.0,
-              (
-                  "Research maximum score "
-                  f"is not 100: {total_score}"
-              ),
+              f"Research maximum score is not 100: {total_score}",
           )
 
           print("[PASS] Production research contract.")
@@ -1453,12 +1140,6 @@ jobs:
       - name: 18 - Validate production summary CSV
         run: |
           $ErrorActionPreference = "Stop"
-
-          Write-Host ""
-          Write-Host "============================================================"
-          Write-Host "VALIDATE PRODUCTION SUMMARY CSV"
-          Write-Host "============================================================"
-          Write-Host ""
 
           $path = Join-Path `
               $env:PRODUCTION_ROOT `
@@ -1498,107 +1179,58 @@ jobs:
           ) as f:
 
               reader = csv.DictReader(f)
-
-              columns = set(
-                  reader.fieldnames or []
-              )
-
+              columns = set(reader.fieldnames or [])
               missing = required - columns
 
               if missing:
-                  print(
-                      "[FAIL] Missing summary columns:"
-                  )
-
+                  print("[FAIL] Missing summary columns:")
                   for column in sorted(missing):
                       print(f"  {column}")
-
                   raise SystemExit(1)
 
               rows = list(reader)
 
           if not rows:
-              raise SystemExit(
-                  "[FAIL] Summary CSV is empty."
-              )
+              raise SystemExit("[FAIL] Summary CSV is empty.")
 
           timeframes = {
               row.get("timeframe")
               for row in rows
           }
 
-          for timeframe in (
-              "h1",
-              "h4",
-              "d1",
-          ):
+          for timeframe in ("h1", "h4", "d1"):
               if timeframe not in timeframes:
                   raise SystemExit(
-                      "[FAIL] Missing timeframe: "
-                      f"{timeframe}"
+                      f"[FAIL] Missing timeframe: {timeframe}"
                   )
 
           for row in rows:
 
               if row.get("status") != "PASS":
                   raise SystemExit(
-                      "[FAIL] Non-PASS summary row: "
-                      f"{row}"
+                      f"[FAIL] Non-PASS summary row: {row}"
                   )
 
-              total = int(
-                  float(
-                      row.get("rows") or 0
-                  )
-              )
-
-              eligible = int(
-                  float(
-                      row.get(
-                          "eligible_rows"
-                      ) or 0
-                  )
-              )
-
-              candidate = int(
-                  float(
-                      row.get(
-                          "candidate_rows"
-                      ) or 0
-                  )
-              )
-
+              total = int(float(row.get("rows") or 0))
+              eligible = int(float(row.get("eligible_rows") or 0))
+              candidate = int(float(row.get("candidate_rows") or 0))
               strong = int(
-                  float(
-                      row.get(
-                          "strong_candidate_rows"
-                      ) or 0
-                  )
+                  float(row.get("strong_candidate_rows") or 0)
               )
 
               if total <= 0:
-                  raise SystemExit(
-                      "[FAIL] Invalid total rows."
-                  )
+                  raise SystemExit("[FAIL] Invalid total rows.")
 
               if eligible > total:
-                  raise SystemExit(
-                      "[FAIL] Eligible > total."
-                  )
+                  raise SystemExit("[FAIL] Eligible > total.")
 
               if candidate > eligible:
-                  raise SystemExit(
-                      "[FAIL] Candidate > eligible."
-                  )
+                  raise SystemExit("[FAIL] Candidate > eligible.")
 
               if strong > candidate:
-                  raise SystemExit(
-                      "[FAIL] Strong > candidate."
-                  )
+                  raise SystemExit("[FAIL] Strong > candidate.")
 
-          print(
-              f"[PASS] Summary rows: {len(rows)}"
-          )
+          print(f"[PASS] Summary rows: {len(rows)}")
           print("[PASS] h1 / h4 / d1 present.")
           print("[PASS] Summary counts consistent.")
           '@ |
@@ -1616,12 +1248,6 @@ jobs:
       - name: 19 - Validate production detail CSV
         run: |
           $ErrorActionPreference = "Stop"
-
-          Write-Host ""
-          Write-Host "============================================================"
-          Write-Host "VALIDATE PRODUCTION DETAIL CSV"
-          Write-Host "============================================================"
-          Write-Host ""
 
           $path = Join-Path `
               $env:PRODUCTION_ROOT `
@@ -1656,22 +1282,13 @@ jobs:
           ) as f:
 
               reader = csv.DictReader(f)
-
-              columns = set(
-                  reader.fieldnames or []
-              )
-
+              columns = set(reader.fieldnames or [])
               missing = required - columns
 
               if missing:
-
-                  print(
-                      "[FAIL] Missing detail columns:"
-                  )
-
+                  print("[FAIL] Missing detail columns:")
                   for column in sorted(missing):
                       print(f"  {column}")
-
                   raise SystemExit(1)
 
               row_count = 0
@@ -1695,29 +1312,20 @@ jobs:
 
                   if stage not in valid_stages:
                       raise SystemExit(
-                          "[FAIL] Invalid stage: "
-                          f"{stage}"
+                          f"[FAIL] Invalid stage: {stage}"
                       )
 
                   score_text = row.get(
                       "pattern_256_research_score"
                   )
 
-                  if score_text not in (
-                      None,
-                      "",
-                  ):
+                  if score_text not in (None, ""):
 
-                      score = float(
-                          score_text
-                      )
+                      score = float(score_text)
 
-                      if not (
-                          0.0 <= score <= 100.0
-                      ):
+                      if not (0.0 <= score <= 100.0):
                           raise SystemExit(
-                              "[FAIL] Score outside "
-                              f"0..100: {score}"
+                              f"[FAIL] Score outside 0..100: {score}"
                           )
 
                   candidate = (
@@ -1748,8 +1356,7 @@ jobs:
 
                       if not candidate:
                           raise SystemExit(
-                              "[FAIL] Strong candidate "
-                              "without candidate flag."
+                              "[FAIL] Strong candidate without candidate flag."
                           )
 
           if row_count <= 0:
@@ -1757,15 +1364,9 @@ jobs:
                   "[FAIL] Detail CSV has no rows."
               )
 
-          print(
-              f"[PASS] Detail rows: {row_count}"
-          )
-          print(
-              f"[PASS] Candidate rows: {candidate_count}"
-          )
-          print(
-              f"[PASS] Strong rows: {strong_count}"
-          )
+          print(f"[PASS] Detail rows: {row_count}")
+          print(f"[PASS] Candidate rows: {candidate_count}")
+          print(f"[PASS] Strong rows: {strong_count}")
           '@ |
               py - "$path"
 
@@ -1781,12 +1382,6 @@ jobs:
       - name: 20 - Validate production candidate CSV
         run: |
           $ErrorActionPreference = "Stop"
-
-          Write-Host ""
-          Write-Host "============================================================"
-          Write-Host "VALIDATE PRODUCTION CANDIDATE CSV"
-          Write-Host "============================================================"
-          Write-Host ""
 
           $path = Join-Path `
               $env:PRODUCTION_ROOT `
@@ -1817,22 +1412,13 @@ jobs:
           ) as f:
 
               reader = csv.DictReader(f)
-
-              columns = set(
-                  reader.fieldnames or []
-              )
-
+              columns = set(reader.fieldnames or [])
               missing = required - columns
 
               if missing:
-
-                  print(
-                      "[FAIL] Missing candidate columns:"
-                  )
-
+                  print("[FAIL] Missing candidate columns:")
                   for column in sorted(missing):
                       print(f"  {column}")
-
                   raise SystemExit(1)
 
               count = 0
@@ -1853,8 +1439,7 @@ jobs:
 
                   if not candidate:
                       raise SystemExit(
-                          "[FAIL] Candidate CSV contains "
-                          "non-candidate row."
+                          "[FAIL] Candidate CSV contains non-candidate row."
                       )
 
                   score = float(
@@ -1865,18 +1450,14 @@ jobs:
 
                   if score < 60.0:
                       raise SystemExit(
-                          "[FAIL] Candidate score "
-                          f"below 60: {score}"
+                          f"[FAIL] Candidate score below 60: {score}"
                       )
 
-          print(
-              f"[PASS] Candidate rows: {count}"
-          )
+          print(f"[PASS] Candidate rows: {count}")
 
           if count == 0:
               print(
-                  "[INFO] Zero candidates is "
-                  "scientifically valid."
+                  "[INFO] Zero candidates is scientifically valid."
               )
           '@ |
               py - "$path"
@@ -1893,12 +1474,6 @@ jobs:
       - name: 21 - Validate production source manifest
         run: |
           $ErrorActionPreference = "Stop"
-
-          Write-Host ""
-          Write-Host "============================================================"
-          Write-Host "VALIDATE PRODUCTION SOURCE MANIFEST"
-          Write-Host "============================================================"
-          Write-Host ""
 
           $path = Join-Path `
               $env:PRODUCTION_ROOT `
@@ -1932,22 +1507,13 @@ jobs:
           ) as f:
 
               reader = csv.DictReader(f)
-
-              columns = set(
-                  reader.fieldnames or []
-              )
-
+              columns = set(reader.fieldnames or [])
               missing = required - columns
 
               if missing:
-
-                  print(
-                      "[FAIL] Missing manifest columns:"
-                  )
-
+                  print("[FAIL] Missing manifest columns:")
                   for column in sorted(missing):
                       print(f"  {column}")
-
                   raise SystemExit(1)
 
               rows = list(reader)
@@ -1983,8 +1549,7 @@ jobs:
 
               if unchanged != "true":
                   raise SystemExit(
-                      "[FAIL] SHA256 unchanged "
-                      "flag failed: "
+                      "[FAIL] SHA256 unchanged flag failed: "
                       f"{row.get('relative_path')}"
                   )
 
@@ -2007,12 +1572,6 @@ jobs:
       - name: 22 - Validate production checkpoint
         run: |
           $ErrorActionPreference = "Stop"
-
-          Write-Host ""
-          Write-Host "============================================================"
-          Write-Host "VALIDATE PRODUCTION CHECKPOINT"
-          Write-Host "============================================================"
-          Write-Host ""
 
           $path = Join-Path `
               $env:PRODUCTION_ROOT `
@@ -2038,9 +1597,7 @@ jobs:
                   raise SystemExit(1)
 
           require(
-              checkpoint.get(
-                  "checkpoint_version"
-              ) == 1,
+              checkpoint.get("checkpoint_version") == 1,
               "Unexpected checkpoint version.",
           )
 
@@ -2051,14 +1608,12 @@ jobs:
           )
 
           require(
-              checkpoint.get("version")
-              == expected_version,
+              checkpoint.get("version") == expected_version,
               "Unexpected checkpoint version string.",
           )
 
           require(
-              checkpoint.get("pattern_id")
-              == "256",
+              checkpoint.get("pattern_id") == "256",
               "Unexpected checkpoint pattern.",
           )
 
@@ -2068,10 +1623,7 @@ jobs:
           )
 
           require(
-              isinstance(
-                  completed,
-                  dict,
-              ),
+              isinstance(completed, dict),
               "completed_sources is not object.",
           )
 
@@ -2083,16 +1635,12 @@ jobs:
           for key, entry in completed.items():
 
               require(
-                  isinstance(
-                      entry,
-                      dict,
-                  ),
+                  isinstance(entry, dict),
                   f"Invalid checkpoint entry: {key}",
               )
 
               require(
-                  entry.get("status")
-                  == "PASS",
+                  entry.get("status") == "PASS",
                   f"Checkpoint entry failed: {key}",
               )
 
@@ -2101,10 +1649,7 @@ jobs:
               )
 
               require(
-                  isinstance(
-                      source_sha256,
-                      str,
-                  )
+                  isinstance(source_sha256, str)
                   and len(source_sha256) == 64,
                   f"Invalid checkpoint SHA256: {key}",
               )
@@ -2131,12 +1676,6 @@ jobs:
       - name: 23 - Cross-check production research outputs
         run: |
           $ErrorActionPreference = "Stop"
-
-          Write-Host ""
-          Write-Host "============================================================"
-          Write-Host "CROSS-CHECK PRODUCTION RESEARCH OUTPUTS"
-          Write-Host "============================================================"
-          Write-Host ""
 
           $reportDir = Join-Path `
               $env:PRODUCTION_ROOT `
@@ -2180,70 +1719,47 @@ jobs:
               encoding="utf-8-sig",
               newline="",
           ) as f:
-              summary = list(
-                  csv.DictReader(f)
-              )
+              summary = list(csv.DictReader(f))
 
           with detail_path.open(
               "r",
               encoding="utf-8-sig",
               newline="",
           ) as f:
-              detail = list(
-                  csv.DictReader(f)
-              )
+              detail = list(csv.DictReader(f))
 
           with candidate_path.open(
               "r",
               encoding="utf-8-sig",
               newline="",
           ) as f:
-              candidates = list(
-                  csv.DictReader(f)
-              )
+              candidates = list(csv.DictReader(f))
 
-          statistics = result.get(
-              "statistics",
-              {},
-          )
+          statistics = result.get("statistics", {})
 
           result_total = int(
-              statistics.get(
-                  "total_rows",
-                  -1,
-              )
+              statistics.get("total_rows", -1)
           )
 
           result_candidates = int(
-              statistics.get(
-                  "candidate_rows",
-                  -1,
-              )
+              statistics.get("candidate_rows", -1)
           )
 
           summary_total = sum(
-              int(
-                  float(
-                      row.get("rows") or 0
-                  )
-              )
+              int(float(row.get("rows") or 0))
               for row in summary
           )
 
           summary_candidates = sum(
               int(
                   float(
-                      row.get(
-                          "candidate_rows"
-                      ) or 0
+                      row.get("candidate_rows") or 0
                   )
               )
               for row in summary
           )
 
-          detail_total = len(
-              detail
-          )
+          detail_total = len(detail)
 
           detail_candidates = sum(
               1
@@ -2257,9 +1773,7 @@ jobs:
               == "true"
           )
 
-          candidate_total = len(
-              candidates
-          )
+          candidate_total = len(candidates)
 
           checks = (
               (
@@ -2271,18 +1785,15 @@ jobs:
                   "result total != detail total",
               ),
               (
-                  result_candidates
-                  == summary_candidates,
+                  result_candidates == summary_candidates,
                   "result candidates != summary candidates",
               ),
               (
-                  result_candidates
-                  == detail_candidates,
+                  result_candidates == detail_candidates,
                   "result candidates != detail candidates",
               ),
               (
-                  result_candidates
-                  == candidate_total,
+                  result_candidates == candidate_total,
                   "result candidates != candidate CSV",
               ),
           )
@@ -2294,12 +1805,8 @@ jobs:
                   raise SystemExit(1)
 
           print("[PASS] Production output cross-check.")
-          print(
-              f"[PASS] Total rows: {result_total}"
-          )
-          print(
-              f"[PASS] Candidates: {result_candidates}"
-          )
+          print(f"[PASS] Total rows: {result_total}")
+          print(f"[PASS] Candidates: {result_candidates}")
           '@ |
               py - `
                   "$resultPath" `
@@ -2320,12 +1827,6 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          Write-Host ""
-          Write-Host "============================================================"
-          Write-Host "VERIFY NO FORBIDDEN GIT OPERATIONS"
-          Write-Host "============================================================"
-          Write-Host ""
-
           $program = Join-Path `
               $env:GITHUB_WORKSPACE `
               $env:PROGRAM_FILE
@@ -2344,12 +1845,7 @@ jobs:
 
           foreach ($pattern in $patterns) {
 
-              if (
-                  [regex]::IsMatch(
-                      $content,
-                      $pattern
-                  )
-              ) {
+              if ([regex]::IsMatch($content, $pattern)) {
                   throw "Forbidden executable Git mutation detected."
               }
           }
@@ -2368,16 +1864,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          Write-Host ""
-          Write-Host "============================================================"
-          Write-Host "FINAL CLEAN V001 PRODUCTION GATE"
-          Write-Host "============================================================"
-          Write-Host ""
-
-          if (
-              [int]$env:PATTERN_256_PROD_EXIT_CODE `
-              -ne 0
-          ) {
+          if ([int]$env:PATTERN_256_PROD_EXIT_CODE -ne 0) {
               throw "Production research process failed."
           }
 
@@ -2408,10 +1895,7 @@ jobs:
               "Production status is not PASS.",
           )
 
-          pattern = result.get(
-              "pattern",
-              {},
-          )
+          pattern = result.get("pattern", {})
 
           require(
               pattern.get("id") == "256",
@@ -2419,98 +1903,67 @@ jobs:
           )
 
           require(
-              pattern.get("independent_research")
-              is True,
+              pattern.get("independent_research") is True,
               "Independent research gate failed.",
           )
 
           require(
-              pattern.get("final_formula_defined")
-              is False,
+              pattern.get("final_formula_defined") is False,
               "Final formula safety gate failed.",
           )
 
-          future = result.get(
-              "future_information",
-              {},
-          )
+          future = result.get("future_information", {})
 
           require(
-              future.get("future_candles_used")
-              is False,
+              future.get("future_candles_used") is False,
               "Future candle gate failed.",
           )
 
           require(
-              future.get("negative_shift_used")
-              is False,
+              future.get("negative_shift_used") is False,
               "Negative shift gate failed.",
           )
 
           require(
-              future.get("centered_rolling_used")
-              is False,
+              future.get("centered_rolling_used") is False,
               "Centered rolling gate failed.",
           )
 
           require(
-              future.get("future_labels_generated")
-              is False,
+              future.get("future_labels_generated") is False,
               "Future label gate failed.",
           )
 
           require(
-              future.get(
-                  "thirty_percent_label_generated"
-              )
-              is False,
+              future.get("thirty_percent_label_generated") is False,
               "30 percent future label gate failed.",
           )
 
-          safety = result.get(
-              "safety",
-              {},
-          )
+          safety = result.get("safety", {})
 
           require(
-              safety.get(
-                  "source_sha256_unchanged"
-              )
-              is True,
+              safety.get("source_sha256_unchanged") is True,
               "OHLCV integrity gate failed.",
           )
 
           require(
-              safety.get("prediction_executed")
-              is False,
+              safety.get("prediction_executed") is False,
               "Prediction safety gate failed.",
           )
 
           require(
-              safety.get("trading_executed")
-              is False,
+              safety.get("trading_executed") is False,
               "Trading safety gate failed.",
           )
 
-          processing = result.get(
-              "processing",
-              {},
-          )
+          processing = result.get("processing", {})
 
           require(
-              int(
-                  processing.get(
-                      "files_error",
-                      -1,
-                  )
-              ) == 0,
+              int(processing.get("files_error", -1)) == 0,
               "Source processing error gate failed.",
           )
 
-          statistics = result.get(
-              "statistics",
-              {},
-          )
+          statistics = result.get("statistics", {})
 
           print("")
           print("============================================================")
@@ -2538,24 +1991,16 @@ jobs:
           print("[PASS] Result/summary/detail cross-check")
           print("")
           print("Files processed:")
-          print(
-              f"  {statistics.get('files_processed')}"
-          )
+          print(f"  {statistics.get('files_processed')}")
           print("")
           print("Total rows:")
-          print(
-              f"  {statistics.get('total_rows')}"
-          )
+          print(f"  {statistics.get('total_rows')}")
           print("")
           print("Candidate rows:")
-          print(
-              f"  {statistics.get('candidate_rows')}"
-          )
+          print(f"  {statistics.get('candidate_rows')}")
           print("")
           print("Strong candidate rows:")
-          print(
-              f"  {statistics.get('strong_candidate_rows')}"
-          )
+          print(f"  {statistics.get('strong_candidate_rows')}")
           print("")
           print("[NEXT]")
           print(
@@ -2578,6 +2023,7 @@ jobs:
 
       # ======================================================
       # 26
+      # FIXED
       # ======================================================
 
       - name: 26 - Create production verification bundle
@@ -2599,7 +2045,8 @@ jobs:
               Remove-Item `
                   -LiteralPath $bundle `
                   -Recurse `
-                  -Force
+                  -Force `
+                  -ErrorAction SilentlyContinue
           }
 
           New-Item `
@@ -2608,38 +2055,53 @@ jobs:
               -Force |
               Out-Null
 
+          #
+          # Snapshot copy
+          #
+          # IMPORTANT:
+          # PowerShell 5.1 parser-safe nested IF structure.
+          #
           $snapshotDir = $env:PATTERN_256_PROD_SNAPSHOT_DIR
 
-          if (
-              -not [string]::IsNullOrWhiteSpace(
-                  $snapshotDir
-              )
-              -and
-              (Test-Path -LiteralPath $snapshotDir)
-          ) {
+          if (-not [string]::IsNullOrWhiteSpace($snapshotDir)) {
 
-              Copy-Item `
-                  -Path (Join-Path $snapshotDir "*") `
-                  -Destination $bundle `
-                  -Force `
-                  -ErrorAction SilentlyContinue
+              if (Test-Path -LiteralPath $snapshotDir -PathType Container) {
+
+                  Get-ChildItem `
+                      -LiteralPath $snapshotDir `
+                      -Force `
+                      -ErrorAction SilentlyContinue |
+                      ForEach-Object {
+
+                          Copy-Item `
+                              -LiteralPath $_.FullName `
+                              -Destination $bundle `
+                              -Recurse `
+                              -Force `
+                              -ErrorAction SilentlyContinue
+                      }
+
+                  Write-Host "[PASS] Snapshot evidence copied."
+              }
+              else {
+                  Write-Host "[WARN] Snapshot directory does not exist:"
+                  Write-Host "  $snapshotDir"
+              }
+          }
+          else {
+              Write-Host "[WARN] Snapshot directory environment variable is empty."
           }
 
-          if (
-              -not [string]::IsNullOrWhiteSpace(
-                  $env:PRODUCTION_ROOT
-              )
-          ) {
+          #
+          # Production reports + checkpoint
+          #
+          if (-not [string]::IsNullOrWhiteSpace($env:PRODUCTION_ROOT)) {
 
               $reportDir = Join-Path `
                   $env:PRODUCTION_ROOT `
                   "data\reports\$env:REPORT_NAMESPACE"
 
-              if (
-                  Test-Path `
-                      -LiteralPath $reportDir `
-                      -PathType Container
-              ) {
+              if (Test-Path -LiteralPath $reportDir -PathType Container) {
 
                   $reportBundle = Join-Path `
                       $bundle `
@@ -2663,24 +2125,43 @@ jobs:
                               -Force `
                               -ErrorAction SilentlyContinue
                       }
+
+                  Write-Host "[PASS] Production research reports copied."
+              }
+              else {
+                  Write-Host "[WARN] Production report directory missing:"
+                  Write-Host "  $reportDir"
               }
 
               $checkpoint = Join-Path `
                   $env:PRODUCTION_ROOT `
                   "data\validation\$env:CHECKPOINT_FILE"
 
-              if (
-                  Test-Path `
-                      -LiteralPath $checkpoint `
-                      -PathType Leaf
-              ) {
+              if (Test-Path -LiteralPath $checkpoint -PathType Leaf) {
+
                   Copy-Item `
                       -LiteralPath $checkpoint `
                       -Destination $bundle `
                       -Force `
                       -ErrorAction SilentlyContinue
+
+                  Write-Host "[PASS] Production checkpoint copied."
+              }
+              else {
+                  Write-Host "[WARN] Production checkpoint missing:"
+                  Write-Host "  $checkpoint"
               }
           }
+          else {
+              Write-Host "[WARN] PRODUCTION_ROOT is empty."
+          }
+
+          #
+          # Metadata
+          #
+          $metadataPath = Join-Path `
+              $bundle `
+              "production_metadata.txt"
 
           $metadata = @(
               "workflow=research_pattern_256.yml",
@@ -2689,26 +2170,55 @@ jobs:
               "run_number=$env:GITHUB_RUN_NUMBER",
               "runner=$env:RUNNER_NAME",
               "production_root=$env:PRODUCTION_ROOT",
-              "research_exit_code=$env:PATTERN_256_PROD_EXIT_CODE"
+              "research_exit_code=$env:PATTERN_256_PROD_EXIT_CODE",
+              "snapshot_dir=$env:PATTERN_256_PROD_SNAPSHOT_DIR",
+              "artifact_dir=$bundle"
           )
 
           $metadata |
               Set-Content `
-                  -LiteralPath (
-                      Join-Path `
-                          $bundle `
-                          "production_metadata.txt"
-                  ) `
+                  -LiteralPath $metadataPath `
                   -Encoding UTF8
 
+          #
+          # Guarantee at least one artifact file exists.
+          #
+          if (-not (Test-Path -LiteralPath $metadataPath -PathType Leaf)) {
+              throw "Unable to create production verification metadata."
+          }
+
+          #
+          # Export artifact directory.
+          #
           "PATTERN_256_PROD_ARTIFACT_DIR=$bundle" |
               Out-File `
                   -FilePath $env:GITHUB_ENV `
                   -Encoding utf8 `
                   -Append
 
+          Write-Host ""
           Write-Host "[PASS] Verification bundle prepared:"
           Write-Host "  $bundle"
+
+          Write-Host ""
+          Write-Host "[PASS] Artifact environment variable recorded."
+
+          Write-Host ""
+          Write-Host "Bundle contents:"
+
+          Get-ChildItem `
+              -LiteralPath $bundle `
+              -Recurse `
+              -Force `
+              -ErrorAction SilentlyContinue |
+              Select-Object `
+                  FullName,
+                  Length,
+                  LastWriteTime |
+              Format-Table `
+                  -AutoSize |
+              Out-String |
+              Write-Host
 
 
       # ======================================================
@@ -2734,13 +2244,13 @@ jobs:
           Write-Host "  $env:PATTERN_256_PROD_EXIT_CODE"
 
           Write-Host ""
+          Write-Host "Artifact directory:"
+          Write-Host "  $env:PATTERN_256_PROD_ARTIFACT_DIR"
+
+          Write-Host ""
           Write-Host "Report directory:"
 
-          if (
-              -not [string]::IsNullOrWhiteSpace(
-                  $env:PRODUCTION_ROOT
-              )
-          ) {
+          if (-not [string]::IsNullOrWhiteSpace($env:PRODUCTION_ROOT)) {
 
               $reportDir = Join-Path `
                   $env:PRODUCTION_ROOT `
@@ -2790,12 +2300,31 @@ jobs:
           Write-Host "Snapshot directory:"
           Write-Host "  $env:PATTERN_256_PROD_SNAPSHOT_DIR"
 
+          if (-not [string]::IsNullOrWhiteSpace($env:PATTERN_256_PROD_SNAPSHOT_DIR)) {
+
+              if (Test-Path -LiteralPath $env:PATTERN_256_PROD_SNAPSHOT_DIR) {
+
+                  Get-ChildItem `
+                      -LiteralPath $env:PATTERN_256_PROD_SNAPSHOT_DIR `
+                      -Force `
+                      -ErrorAction SilentlyContinue |
+                      Format-Table `
+                          Name,
+                          Length,
+                          LastWriteTime `
+                          -AutoSize |
+                      Out-String |
+                      Write-Host
+              }
+          }
+
           Write-Host ""
           Write-Host "============================================================"
 
 
       # ======================================================
       # 28
+      # FIXED
       # ======================================================
 
       - name: 28 - Upload production research verification artifacts
@@ -2803,6 +2332,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: research-pattern-256-production-${{ github.run_id }}
-          path: ${{ env.PATTERN_256_PROD_ARTIFACT_DIR }}
+          path: ${{ env.PATTERN_256_PROD_ARTIFACT_DIR || runner.temp }}
           if-no-files-found: warn
-          retention-days: 30
+          retention-days: 7
