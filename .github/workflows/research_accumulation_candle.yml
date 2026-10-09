@@ -1,0 +1,1434 @@
+
+# ============================================================
+# Upbit Surge Monitor
+# .github/workflows/research_accumulation_candle.yml
+# Clean V001
+# ============================================================
+
+name: research_accumulation_candle.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upbit-production-ohlcv-research
+  cancel-in-progress: false
+
+jobs:
+  research_accumulation_candle:
+    name: research_accumulation_candle.yml
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 480
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+      PRODUCTION_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+      RESEARCH_PROGRAM_NAME: research_accumulation_candle.py
+      RESEARCH_REPORT_DIR: data\reports\accumulation_candle_research
+      RESEARCH_CHECKPOINT: data\validation\research_accumulation_candle_checkpoint.json
+
+    steps:
+
+      # ======================================================
+      # 01 - CHECKOUT
+      # ======================================================
+
+      - name: 01 - Checkout repository
+        uses: actions/checkout@v4
+
+
+      # ======================================================
+      # 02 - ENVIRONMENT
+      # ======================================================
+
+      - name: 02 - Show production environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "ACCUMULATION CANDLE PRODUCTION RESEARCH"
+          Write-Host "Clean V001"
+          Write-Host "============================================================"
+
+          Write-Host "Runner: $env:RUNNER_NAME"
+          Write-Host "Workspace: $env:GITHUB_WORKSPACE"
+          Write-Host "Production root: $env:PRODUCTION_ROOT"
+
+          & py --version
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Python launcher is unavailable."
+          }
+
+          & git --version
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Git is unavailable."
+          }
+
+          Write-Host "[PASS] Environment validated"
+
+
+      # ======================================================
+      # 03 - VERIFY PROGRAM
+      # ======================================================
+
+      - name: 03 - Verify research program
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $program = Join-Path `
+              $env:GITHUB_WORKSPACE `
+              $env:RESEARCH_PROGRAM_NAME
+
+          if (-not (Test-Path -LiteralPath $program -PathType Leaf)) {
+              throw "Research program missing: $program"
+          }
+
+          $program = (Resolve-Path -LiteralPath $program).Path
+
+          "RESEARCH_PROGRAM=$program" |
+              Out-File `
+                  -FilePath $env:GITHUB_ENV `
+                  -Encoding utf8 `
+                  -Append
+
+          Write-Host "[PASS] Research program found"
+          Write-Host $program
+
+
+      # ======================================================
+      # 04 - VERIFY PROGRAM IDENTITY
+      # ======================================================
+
+      - name: 04 - Verify Clean V001 program markers
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $text = Get-Content `
+              -LiteralPath $env:RESEARCH_PROGRAM `
+              -Raw `
+              -Encoding UTF8
+
+          $required = @(
+              'PROGRAM_NAME = "research_accumulation_candle.py"',
+              'VERSION = "Clean V001"',
+              'STAGE = "ACCUMULATION CANDLE INDEPENDENT RESEARCH"',
+              'PATTERN_ID = "ACCUMULATION_CANDLE"',
+              'OHLCV_READ_ONLY = True',
+              'FUTURE_CANDLES_ALLOWED = False',
+              'NEGATIVE_SHIFT_ALLOWED = False',
+              'CENTERED_ROLLING_ALLOWED = False',
+              'FUTURE_LABELS_GENERATED = False',
+              'FUTURE_RETURNS_GENERATED = False',
+              'FUTURE_MAX_GENERATED = False',
+              'FUTURE_MIN_GENERATED = False',
+              'THIRTY_PERCENT_LABEL_GENERATED = False',
+              'BACKTEST_GENERATED = False',
+              'PREDICTION_GENERATED = False',
+              'TRADING_SIGNAL_GENERATED = False',
+              'FINAL_FORMULA_DEFINED = False'
+          )
+
+          foreach ($marker in $required) {
+              if (-not $text.Contains($marker)) {
+                  throw "Required program marker missing: $marker"
+              }
+
+              Write-Host "[PASS] $marker"
+          }
+
+          # Avoid Korean literal encoding issues in Windows PowerShell.
+          $patternName = [regex]::Match(
+              $text,
+              '(?m)^\s*PATTERN_NAME_KO\s*=\s*["''][^"'']+["'']\s*$'
+          )
+
+          if (-not $patternName.Success) {
+              throw "PATTERN_NAME_KO declaration missing or empty."
+          }
+
+          Write-Host "[PASS] Pattern name declaration"
+
+
+      # ======================================================
+      # 05 - PYTHON SYNTAX
+      # ======================================================
+
+      - name: 05 - Validate Python syntax
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          & py -m py_compile $env:RESEARCH_PROGRAM
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Research program syntax validation failed."
+          }
+
+          Write-Host "[PASS] Python syntax"
+
+
+      # ======================================================
+      # 06 - FUTURE INFORMATION SCAN
+      # ======================================================
+
+      - name: 06 - Static future-information safety scan
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $text = Get-Content `
+              -LiteralPath $env:RESEARCH_PROGRAM `
+              -Raw `
+              -Encoding UTF8
+
+          $forbiddenPatterns = @(
+              '\.shift\s*\(\s*-\d+',
+              '\.shift\s*\(\s*periods\s*=\s*-\d+',
+              'center\s*=\s*True',
+              'center\s*=\s*true'
+          )
+
+          foreach ($pattern in $forbiddenPatterns) {
+              if ($text -match $pattern) {
+                  throw "Future-information pattern detected: $pattern"
+              }
+          }
+
+          Write-Host "[PASS] Static future-information scan"
+
+
+      # ======================================================
+      # 07 - VERIFY PRODUCTION ROOT
+      # ======================================================
+
+      - name: 07 - Verify production root
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if (-not (
+              Test-Path `
+                  -LiteralPath $env:PRODUCTION_ROOT `
+                  -PathType Container
+          )) {
+              throw "Production root missing: $env:PRODUCTION_ROOT"
+          }
+
+          $root = (Resolve-Path `
+              -LiteralPath $env:PRODUCTION_ROOT).Path
+
+          $ohlcv = Join-Path $root "data\ohlcv"
+
+          if (-not (
+              Test-Path `
+                  -LiteralPath $ohlcv `
+                  -PathType Container
+          )) {
+              throw "Production OHLCV directory missing."
+          }
+
+          Write-Host "[PASS] Production root validated"
+          Write-Host $root
+
+
+      # ======================================================
+      # 08 - VERIFY SOURCE DIRECTORIES
+      # ======================================================
+
+      - name: 08 - Validate production OHLCV sources
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $total = 0
+
+          foreach ($tf in @("h1", "h4", "d1")) {
+              $dir = Join-Path `
+                  $env:PRODUCTION_ROOT `
+                  "data\ohlcv\$tf"
+
+              if (-not (Test-Path -LiteralPath $dir -PathType Container)) {
+                  throw "Missing OHLCV timeframe: $tf"
+              }
+
+              $files = @(
+                  Get-ChildItem `
+                      -LiteralPath $dir `
+                      -Filter "*.csv" `
+                      -File
+              )
+
+              if ($files.Count -eq 0) {
+                  throw "No OHLCV CSV files for timeframe: $tf"
+              }
+
+              $total += $files.Count
+
+              Write-Host "[PASS] $tf : $($files.Count) files"
+          }
+
+          Write-Host "[PASS] Total OHLCV sources: $total"
+
+
+      # ======================================================
+      # 09 - PREPARE VERIFICATION DIRECTORY
+      # ======================================================
+
+      - name: 09 - Prepare verification directory
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $dir = Join-Path `
+              $env:RUNNER_TEMP `
+              "research_accumulation_candle_production_$env:GITHUB_RUN_ID"
+
+          New-Item `
+              -ItemType Directory `
+              -Path $dir `
+              -Force |
+              Out-Null
+
+          $dir = (Resolve-Path -LiteralPath $dir).Path
+
+          "VERIFY_DIR=$dir" |
+              Out-File `
+                  -FilePath $env:GITHUB_ENV `
+                  -Encoding utf8 `
+                  -Append
+
+          Write-Host "[PASS] Verification directory prepared"
+          Write-Host $dir
+
+
+      # ======================================================
+      # 10 - BEFORE SNAPSHOT
+      # ======================================================
+
+      - name: 10 - Snapshot production OHLCV before research
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = Join-Path `
+              $env:PRODUCTION_ROOT `
+              "data\ohlcv"
+
+          $files = @(
+              Get-ChildItem `
+                  -LiteralPath $root `
+                  -Recurse `
+                  -Filter "*.csv" `
+                  -File |
+              Sort-Object FullName
+          )
+
+          if ($files.Count -eq 0) {
+              throw "No OHLCV CSV sources."
+          }
+
+          $rows = @(
+              foreach ($file in $files) {
+                  $relative = $file.FullName.Substring(
+                      $root.Length
+                  ).TrimStart('\')
+
+                  $hash = Get-FileHash `
+                      -LiteralPath $file.FullName `
+                      -Algorithm SHA256
+
+                  [PSCustomObject]@{
+                      relative_path = $relative
+                      size_bytes    = [int64]$file.Length
+                      sha256        = $hash.Hash
+                  }
+              }
+          )
+
+          $beforePath = Join-Path `
+              $env:VERIFY_DIR `
+              "ohlcv_sha256_before.csv"
+
+          $rows |
+              Export-Csv `
+                  -LiteralPath $beforePath `
+                  -NoTypeInformation `
+                  -Encoding UTF8
+
+          "SNAPSHOT_READY=1" |
+              Out-File `
+                  -FilePath $env:GITHUB_ENV `
+                  -Encoding utf8 `
+                  -Append
+
+          Write-Host "[PASS] Before snapshot completed"
+          Write-Host "Files: $($rows.Count)"
+
+
+      # ======================================================
+      # 11 - RUN PRODUCTION RESEARCH
+      # ======================================================
+
+      - name: 11 - Run accumulation candle production research
+        id: research_run
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          $exitCode = 999
+
+          try {
+              Write-Host "============================================================"
+              Write-Host "RUNNING ACCUMULATION CANDLE PRODUCTION RESEARCH"
+              Write-Host "============================================================"
+
+              & py `
+                  $env:RESEARCH_PROGRAM `
+                  --project-root "$env:PRODUCTION_ROOT" `
+                  --timeframes h1 h4 d1
+
+              if ($null -eq $LASTEXITCODE) {
+                  $exitCode = 998
+              }
+              else {
+                  $exitCode = [int]$LASTEXITCODE
+              }
+          }
+          catch {
+              Write-Host "::error::Research execution exception"
+              Write-Host $_
+              $exitCode = 997
+          }
+          finally {
+              "RESEARCH_EXIT_CODE=$exitCode" |
+                  Out-File `
+                      -FilePath $env:GITHUB_ENV `
+                      -Encoding utf8 `
+                      -Append
+
+              Write-Host "Research exit code: $exitCode"
+          }
+
+          if ($exitCode -ne 0) {
+              Write-Host "::error::Research failed with exit code $exitCode"
+              exit 1
+          }
+
+          Write-Host "[PASS] Production research execution"
+
+
+      # ======================================================
+      # 12 - AFTER SNAPSHOT
+      # ======================================================
+
+      - name: 12 - Snapshot production OHLCV after research
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ($env:SNAPSHOT_READY -ne "1") {
+              throw "Before snapshot was not completed."
+          }
+
+          $root = Join-Path `
+              $env:PRODUCTION_ROOT `
+              "data\ohlcv"
+
+          $files = @(
+              Get-ChildItem `
+                  -LiteralPath $root `
+                  -Recurse `
+                  -Filter "*.csv" `
+                  -File |
+              Sort-Object FullName
+          )
+
+          $rows = @(
+              foreach ($file in $files) {
+                  $relative = $file.FullName.Substring(
+                      $root.Length
+                  ).TrimStart('\')
+
+                  $hash = Get-FileHash `
+                      -LiteralPath $file.FullName `
+                      -Algorithm SHA256
+
+                  [PSCustomObject]@{
+                      relative_path = $relative
+                      size_bytes    = [int64]$file.Length
+                      sha256        = $hash.Hash
+                  }
+              }
+          )
+
+          $afterPath = Join-Path `
+              $env:VERIFY_DIR `
+              "ohlcv_sha256_after.csv"
+
+          $rows |
+              Export-Csv `
+                  -LiteralPath $afterPath `
+                  -NoTypeInformation `
+                  -Encoding UTF8
+
+          Write-Host "[PASS] After snapshot completed"
+          Write-Host "Files: $($rows.Count)"
+
+
+      # ======================================================
+      # 13 - COMPARE FILE SET AND SHA256
+      # ======================================================
+
+      - name: 13 - Verify production OHLCV integrity
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ($env:SNAPSHOT_READY -ne "1") {
+              throw "Source snapshot unavailable."
+          }
+
+          $beforePath = Join-Path `
+              $env:VERIFY_DIR `
+              "ohlcv_sha256_before.csv"
+
+          $afterPath = Join-Path `
+              $env:VERIFY_DIR `
+              "ohlcv_sha256_after.csv"
+
+          if (-not (Test-Path -LiteralPath $beforePath)) {
+              throw "Before snapshot missing."
+          }
+
+          if (-not (Test-Path -LiteralPath $afterPath)) {
+              throw "After snapshot missing."
+          }
+
+          $before = @(
+              Import-Csv -LiteralPath $beforePath
+          )
+
+          $after = @(
+              Import-Csv -LiteralPath $afterPath
+          )
+
+          if ($before.Count -ne $after.Count) {
+              throw "Production OHLCV file count changed."
+          }
+
+          $afterMap = @{}
+
+          foreach ($row in $after) {
+              if ($afterMap.ContainsKey($row.relative_path)) {
+                  throw "Duplicate source path in after snapshot."
+              }
+
+              $afterMap[$row.relative_path] = $row
+          }
+
+          foreach ($row in $before) {
+              if (-not $afterMap.ContainsKey($row.relative_path)) {
+                  throw "OHLCV source missing: $($row.relative_path)"
+              }
+
+              $current = $afterMap[$row.relative_path]
+
+              if (
+                  [int64]$row.size_bytes -ne
+                  [int64]$current.size_bytes
+              ) {
+                  throw "OHLCV file size changed: $($row.relative_path)"
+              }
+
+              if ($row.sha256 -ne $current.sha256) {
+                  throw "OHLCV SHA256 changed: $($row.relative_path)"
+              }
+          }
+
+          "OHLCV_INTEGRITY_PASS=1" |
+              Out-File `
+                  -FilePath $env:GITHUB_ENV `
+                  -Encoding utf8 `
+                  -Append
+
+          Write-Host "[PASS] Production OHLCV file set unchanged"
+          Write-Host "[PASS] Production OHLCV sizes unchanged"
+          Write-Host "[PASS] Production OHLCV SHA256 unchanged"
+
+
+      # ======================================================
+      # 14 - VERIFY RESEARCH EXIT CODE
+      # ======================================================
+
+      - name: 14 - Require production research success
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ([string]::IsNullOrWhiteSpace($env:RESEARCH_EXIT_CODE)) {
+              throw "Production research was not executed."
+          }
+
+          if ([int]$env:RESEARCH_EXIT_CODE -ne 0) {
+              throw "Production research failed: $env:RESEARCH_EXIT_CODE"
+          }
+
+          if ($env:OHLCV_INTEGRITY_PASS -ne "1") {
+              throw "Production OHLCV integrity gate failed."
+          }
+
+          Write-Host "[PASS] Production research exit code 0"
+          Write-Host "[PASS] Production OHLCV integrity"
+
+
+      # ======================================================
+      # 15 - VERIFY OUTPUT FILES
+      # ======================================================
+
+      - name: 15 - Verify production research outputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $reportDir = Join-Path `
+              $env:PRODUCTION_ROOT `
+              $env:RESEARCH_REPORT_DIR
+
+          $checkpoint = Join-Path `
+              $env:PRODUCTION_ROOT `
+              $env:RESEARCH_CHECKPOINT
+
+          $required = @(
+              (Join-Path $reportDir "accumulation_candle_research_result.json"),
+              (Join-Path $reportDir "accumulation_candle_research_summary.csv"),
+              (Join-Path $reportDir "accumulation_candle_research_detail.csv"),
+              (Join-Path $reportDir "accumulation_candle_candidates.csv"),
+              (Join-Path $reportDir "accumulation_candle_source_manifest.csv"),
+              (Join-Path $reportDir "accumulation_candle_research_contract.json"),
+              (Join-Path $reportDir "README.txt"),
+              $checkpoint
+          )
+
+          foreach ($path in $required) {
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                  throw "Required output missing: $path"
+              }
+
+              Write-Host "[PASS] $path"
+          }
+
+
+      # ======================================================
+      # 16 - VERIFY RESULT JSON
+      # ======================================================
+
+      - name: 16 - Validate production result JSON
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $path = Join-Path `
+              (Join-Path $env:PRODUCTION_ROOT $env:RESEARCH_REPORT_DIR) `
+              "accumulation_candle_research_result.json"
+
+          $result = Get-Content `
+              -LiteralPath $path `
+              -Raw `
+              -Encoding UTF8 |
+              ConvertFrom-Json
+
+          if ($result.program -ne "research_accumulation_candle.py") {
+              throw "Result program mismatch."
+          }
+
+          if ($result.version -ne "Clean V001") {
+              throw "Result version mismatch."
+          }
+
+          if ($result.stage -ne "ACCUMULATION CANDLE INDEPENDENT RESEARCH") {
+              throw "Result stage mismatch."
+          }
+
+          if ($result.status -ne "PASS") {
+              throw "Production research status is not PASS."
+          }
+
+          if ($result.pattern.id -ne "ACCUMULATION_CANDLE") {
+              throw "Pattern ID mismatch."
+          }
+
+          if ($result.pattern.independent_research -ne $true) {
+              throw "Independent research flag invalid."
+          }
+
+          if ($result.pattern.final_formula_defined -ne $false) {
+              throw "Final formula must remain undefined."
+          }
+
+          if ([int64]$result.processing.files_discovered -le 0) {
+              throw "No files discovered."
+          }
+
+          if (
+              [int64]$result.processing.files_discovered -ne
+              [int64]$result.processing.files_processed
+          ) {
+              throw "Discovered/processed source mismatch."
+          }
+
+          if ([int64]$result.processing.files_error -ne 0) {
+              throw "Source processing errors detected."
+          }
+
+          if ([int64]$result.statistics.total_rows -le 0) {
+              throw "No research rows."
+          }
+
+          if (
+              [int64]$result.statistics.strong_candidate_rows -gt
+              [int64]$result.statistics.candidate_rows
+          ) {
+              throw "Strong candidates exceed candidates."
+          }
+
+          if ($result.safety.ohlcv_read_only -ne $true) {
+              throw "OHLCV read-only flag invalid."
+          }
+
+          if ($result.safety.source_sha256_unchanged -ne $true) {
+              throw "Source SHA256 flag invalid."
+          }
+
+          if ($result.safety.prediction_executed -ne $false) {
+              throw "Prediction was executed."
+          }
+
+          if ($result.safety.trading_executed -ne $false) {
+              throw "Trading was executed."
+          }
+
+          if ($result.future_information.future_candles_used -ne $false) {
+              throw "Future candles were used."
+          }
+
+          if ($result.future_information.negative_shift_used -ne $false) {
+              throw "Negative shift was used."
+          }
+
+          if ($result.future_information.centered_rolling_used -ne $false) {
+              throw "Centered rolling was used."
+          }
+
+          if ($result.future_information.future_labels_generated -ne $false) {
+              throw "Future labels were generated."
+          }
+
+          if ($result.future_information.future_returns_generated -ne $false) {
+              throw "Future returns were generated."
+          }
+
+          if ($result.future_information.future_max_generated -ne $false) {
+              throw "Future maximum values were generated."
+          }
+
+          if ($result.future_information.future_min_generated -ne $false) {
+              throw "Future minimum values were generated."
+          }
+
+          if ($result.future_information.thirty_percent_label_generated -ne $false) {
+              throw "30 percent future label was generated."
+          }
+
+          if ([double]$result.research.maximum_score -ne 100.0) {
+              throw "Maximum research score mismatch."
+          }
+
+          if ([double]$result.research.candidate_threshold -ne 60.0) {
+              throw "Candidate threshold mismatch."
+          }
+
+          if ([double]$result.research.strong_candidate_threshold -ne 75.0) {
+              throw "Strong candidate threshold mismatch."
+          }
+
+          $maWindows = @(
+              $result.research.long_moving_averages |
+              ForEach-Object { [int]$_ }
+          )
+
+          foreach ($ma in @(112, 224, 448)) {
+              if ($maWindows -notcontains $ma) {
+                  throw "Required moving average missing: $ma"
+              }
+          }
+
+          Write-Host "[PASS] Production result JSON validated"
+
+
+      # ======================================================
+      # 17 - VERIFY CONTRACT
+      # ======================================================
+
+      - name: 17 - Validate production research contract
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $path = Join-Path `
+              (Join-Path $env:PRODUCTION_ROOT $env:RESEARCH_REPORT_DIR) `
+              "accumulation_candle_research_contract.json"
+
+          $contract = Get-Content `
+              -LiteralPath $path `
+              -Raw `
+              -Encoding UTF8 |
+              ConvertFrom-Json
+
+          if ($contract.program -ne "research_accumulation_candle.py") {
+              throw "Contract program mismatch."
+          }
+
+          if ($contract.version -ne "Clean V001") {
+              throw "Contract version mismatch."
+          }
+
+          if ($contract.stage -ne "ACCUMULATION CANDLE INDEPENDENT RESEARCH") {
+              throw "Contract stage mismatch."
+          }
+
+          if ($contract.pattern_id -ne "ACCUMULATION_CANDLE") {
+              throw "Contract pattern ID mismatch."
+          }
+
+          if ($contract.final_formula_defined -ne $false) {
+              throw "Final formula must remain undefined."
+          }
+
+          if ($contract.contract.ohlcv_read_only -ne $true) {
+              throw "OHLCV read-only contract invalid."
+          }
+
+          $blockedFlags = @(
+              "future_candles_allowed",
+              "negative_shift_allowed",
+              "centered_rolling_allowed",
+              "future_labels_generated",
+              "future_returns_generated",
+              "future_max_generated",
+              "future_min_generated",
+              "thirty_percent_label_generated",
+              "backtest_generated",
+              "prediction_generated",
+              "trading_signal_generated"
+          )
+
+          foreach ($flag in $blockedFlags) {
+              if ($contract.contract.$flag -ne $false) {
+                  throw "Forbidden contract flag: $flag"
+              }
+          }
+
+          if ([double]$contract.maximum_research_score -ne 100.0) {
+              throw "Contract maximum score mismatch."
+          }
+
+          if ([double]$contract.candidate_score_threshold -ne 60.0) {
+              throw "Contract candidate threshold mismatch."
+          }
+
+          if ([double]$contract.strong_candidate_score_threshold -ne 75.0) {
+              throw "Contract strong threshold mismatch."
+          }
+
+          $expected = @(
+              "VOLUME_EXPANSION",
+              "CANDLE_BODY_STRENGTH",
+              "CLOSE_LOCATION",
+              "WICK_STRUCTURE",
+              "RANGE_EXPANSION",
+              "BASE_CONTEXT"
+          )
+
+          $actual = @(
+              $contract.research_dimensions |
+              ForEach-Object { $_.name }
+          )
+
+          if ($actual.Count -ne $expected.Count) {
+              throw "Research dimension count mismatch."
+          }
+
+          foreach ($dimension in $expected) {
+              if ($actual -notcontains $dimension) {
+                  throw "Missing research dimension: $dimension"
+              }
+          }
+
+          $scoreTotal = 0.0
+
+          foreach ($dimension in $contract.research_dimensions) {
+              $scoreTotal += [double]$dimension.max_score
+          }
+
+          if ([math]::Abs($scoreTotal - 100.0) -gt 0.000001) {
+              throw "Research dimension scores do not total 100."
+          }
+
+          $maWindows = @(
+              $contract.moving_average_windows |
+              ForEach-Object { [int]$_ }
+          )
+
+          foreach ($ma in @(112, 224, 448)) {
+              if ($maWindows -notcontains $ma) {
+                  throw "Contract moving average missing: $ma"
+              }
+          }
+
+          Write-Host "[PASS] Production contract validated"
+
+
+      # ======================================================
+      # 18 - VERIFY SUMMARY
+      # ======================================================
+
+      - name: 18 - Validate production summary CSV
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $path = Join-Path `
+              (Join-Path $env:PRODUCTION_ROOT $env:RESEARCH_REPORT_DIR) `
+              "accumulation_candle_research_summary.csv"
+
+          $rows = @(
+              Import-Csv -LiteralPath $path
+          )
+
+          if ($rows.Count -eq 0) {
+              throw "Summary CSV is empty."
+          }
+
+          $required = @(
+              "timeframe",
+              "market",
+              "rows",
+              "eligible_rows",
+              "candidate_rows",
+              "strong_candidate_rows",
+              "candidate_rate_pct",
+              "strong_candidate_rate_pct",
+              "score_mean",
+              "score_median",
+              "score_p90",
+              "score_p95",
+              "score_max",
+              "status"
+          )
+
+          $columns = @($rows[0].PSObject.Properties.Name)
+
+          foreach ($column in $required) {
+              if ($columns -notcontains $column) {
+                  throw "Summary column missing: $column"
+              }
+          }
+
+          foreach ($row in $rows) {
+              if ($row.status -ne "PASS") {
+                  throw "Summary contains non-PASS source."
+              }
+
+              if ([int64]$row.rows -le 0) {
+                  throw "Invalid summary row count."
+              }
+
+              if (
+                  [int64]$row.strong_candidate_rows -gt
+                  [int64]$row.candidate_rows
+              ) {
+                  throw "Strong candidate count exceeds candidates."
+              }
+
+              $score = [double]$row.score_max
+
+              if ($score -lt 0 -or $score -gt 100.000001) {
+                  throw "Summary score outside valid range."
+              }
+          }
+
+          Write-Host "[PASS] Production summary validated"
+          Write-Host "Summary rows: $($rows.Count)"
+
+
+      # ======================================================
+      # 19 - VERIFY DETAIL
+      # ======================================================
+
+      - name: 19 - Validate production detail CSV
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $path = Join-Path `
+              (Join-Path $env:PRODUCTION_ROOT $env:RESEARCH_REPORT_DIR) `
+              "accumulation_candle_research_detail.csv"
+
+          $reader = [System.IO.StreamReader]::new(
+              $path,
+              [System.Text.Encoding]::UTF8
+          )
+
+          try {
+              $header = $reader.ReadLine()
+          }
+          finally {
+              $reader.Dispose()
+          }
+
+          if ([string]::IsNullOrWhiteSpace($header)) {
+              throw "Detail CSV header missing."
+          }
+
+          $required = @(
+              "timeframe",
+              "market",
+              "timestamp",
+              "open",
+              "high",
+              "low",
+              "close",
+              "volume",
+              "volume_ratio_prev_20",
+              "volume_ratio_prev_60",
+              "body_pct_of_range",
+              "upper_wick_pct_of_range",
+              "lower_wick_pct_of_range",
+              "close_location_pct",
+              "range_ratio_prev_20",
+              "range_ratio_prev_60",
+              "ma_112",
+              "ma_224",
+              "ma_448",
+              "ma_reverse_alignment_112_224_448",
+              "base_width_prev_20_pct",
+              "score_volume_expansion",
+              "score_candle_body_strength",
+              "score_close_location",
+              "score_wick_structure",
+              "score_range_expansion",
+              "score_base_context",
+              "accumulation_candle_research_score",
+              "accumulation_candle_eligible",
+              "accumulation_candle_candidate",
+              "accumulation_candle_strong_candidate",
+              "accumulation_candle_research_stage"
+          )
+
+          $columns = @(
+              $header.TrimStart([char]0xFEFF).Split(",") |
+              ForEach-Object { $_.Trim('"') }
+          )
+
+          foreach ($column in $required) {
+              if ($columns -notcontains $column) {
+                  throw "Detail column missing: $column"
+              }
+          }
+
+          Write-Host "[PASS] Production detail CSV columns validated"
+
+
+      # ======================================================
+      # 20 - VERIFY CANDIDATES
+      # ======================================================
+
+      - name: 20 - Validate production candidate CSV
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $path = Join-Path `
+              (Join-Path $env:PRODUCTION_ROOT $env:RESEARCH_REPORT_DIR) `
+              "accumulation_candle_candidates.csv"
+
+          $reader = [System.IO.StreamReader]::new(
+              $path,
+              [System.Text.Encoding]::UTF8
+          )
+
+          try {
+              $header = $reader.ReadLine()
+          }
+          finally {
+              $reader.Dispose()
+          }
+
+          if ([string]::IsNullOrWhiteSpace($header)) {
+              throw "Candidate CSV header missing."
+          }
+
+          $columns = @(
+              $header.TrimStart([char]0xFEFF).Split(",") |
+              ForEach-Object { $_.Trim('"') }
+          )
+
+          foreach ($column in @(
+              "timeframe",
+              "market",
+              "timestamp",
+              "accumulation_candle_research_score",
+              "accumulation_candle_candidate",
+              "accumulation_candle_research_stage"
+          )) {
+              if ($columns -notcontains $column) {
+                  throw "Candidate column missing: $column"
+              }
+          }
+
+          Write-Host "[PASS] Production candidate CSV columns validated"
+
+
+      # ======================================================
+      # 21 - VERIFY SOURCE MANIFEST
+      # ======================================================
+
+      - name: 21 - Validate production source manifest
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $path = Join-Path `
+              (Join-Path $env:PRODUCTION_ROOT $env:RESEARCH_REPORT_DIR) `
+              "accumulation_candle_source_manifest.csv"
+
+          $rows = @(
+              Import-Csv -LiteralPath $path
+          )
+
+          if ($rows.Count -eq 0) {
+              throw "Source manifest is empty."
+          }
+
+          foreach ($row in $rows) {
+              if ($row.status -ne "PASS") {
+                  throw "Source manifest contains non-PASS entry."
+              }
+
+              if ($row.sha256_unchanged -ne "True") {
+                  throw "Source SHA256 unchanged flag invalid."
+              }
+
+              if ($row.sha256_before -ne $row.sha256_after) {
+                  throw "Source SHA256 mismatch."
+              }
+
+              if ([int64]$row.original_rows -le 0) {
+                  throw "Invalid original row count."
+              }
+
+              if ([int64]$row.valid_rows -le 0) {
+                  throw "Invalid valid row count."
+              }
+          }
+
+          Write-Host "[PASS] Production source manifest validated"
+          Write-Host "Sources: $($rows.Count)"
+
+
+      # ======================================================
+      # 22 - VERIFY CHECKPOINT
+      # ======================================================
+
+      - name: 22 - Validate production checkpoint
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $path = Join-Path `
+              $env:PRODUCTION_ROOT `
+              $env:RESEARCH_CHECKPOINT
+
+          $checkpoint = Get-Content `
+              -LiteralPath $path `
+              -Raw `
+              -Encoding UTF8 |
+              ConvertFrom-Json
+
+          if ([int]$checkpoint.checkpoint_version -ne 1) {
+              throw "Checkpoint version mismatch."
+          }
+
+          if ($checkpoint.program -ne "research_accumulation_candle.py") {
+              throw "Checkpoint program mismatch."
+          }
+
+          if ($checkpoint.version -ne "Clean V001") {
+              throw "Checkpoint Clean version mismatch."
+          }
+
+          if ($checkpoint.pattern_id -ne "ACCUMULATION_CANDLE") {
+              throw "Checkpoint pattern mismatch."
+          }
+
+          $sources = @(
+              $checkpoint.completed_sources.PSObject.Properties
+          )
+
+          if ($sources.Count -eq 0) {
+              throw "Checkpoint contains no completed sources."
+          }
+
+          foreach ($source in $sources) {
+              if ($source.Value.status -ne "PASS") {
+                  throw "Checkpoint contains non-PASS source."
+              }
+
+              if ([string]::IsNullOrWhiteSpace(
+                  $source.Value.source_sha256
+              )) {
+                  throw "Checkpoint source SHA256 missing."
+              }
+          }
+
+          Write-Host "[PASS] Production checkpoint validated"
+          Write-Host "Completed sources: $($sources.Count)"
+
+
+      # ======================================================
+      # 23 - CROSS-CHECK OUTPUTS
+      # ======================================================
+
+      - name: 23 - Cross-check production research outputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $dir = Join-Path `
+              $env:PRODUCTION_ROOT `
+              $env:RESEARCH_REPORT_DIR
+
+          $result = Get-Content `
+              -LiteralPath (
+                  Join-Path $dir "accumulation_candle_research_result.json"
+              ) `
+              -Raw `
+              -Encoding UTF8 |
+              ConvertFrom-Json
+
+          $summary = @(
+              Import-Csv -LiteralPath (
+                  Join-Path $dir "accumulation_candle_research_summary.csv"
+              )
+          )
+
+          $manifest = @(
+              Import-Csv -LiteralPath (
+                  Join-Path $dir "accumulation_candle_source_manifest.csv"
+              )
+          )
+
+          if (
+              [int64]$result.statistics.summary_rows -ne
+              [int64]$summary.Count
+          ) {
+              throw "Result/summary row count mismatch."
+          }
+
+          if (
+              [int64]$result.processing.files_processed -ne
+              [int64]$manifest.Count
+          ) {
+              throw "Result/manifest source count mismatch."
+          }
+
+          $summaryRows = 0L
+          $summaryEligible = 0L
+          $summaryCandidates = 0L
+          $summaryStrong = 0L
+
+          foreach ($row in $summary) {
+              $summaryRows += [int64]$row.rows
+              $summaryEligible += [int64]$row.eligible_rows
+              $summaryCandidates += [int64]$row.candidate_rows
+              $summaryStrong += [int64]$row.strong_candidate_rows
+          }
+
+          if (
+              $summaryRows -ne
+              [int64]$result.statistics.total_rows
+          ) {
+              throw "Summary/total research rows mismatch."
+          }
+
+          if (
+              $summaryEligible -ne
+              [int64]$result.statistics.eligible_rows
+          ) {
+              throw "Summary/eligible count mismatch."
+          }
+
+          if (
+              $summaryCandidates -ne
+              [int64]$result.statistics.candidate_rows
+          ) {
+              throw "Summary/candidate count mismatch."
+          }
+
+          if (
+              $summaryStrong -ne
+              [int64]$result.statistics.strong_candidate_rows
+          ) {
+              throw "Summary/strong candidate count mismatch."
+          }
+
+          Write-Host "[PASS] Production output cross-check"
+          Write-Host "Total rows: $summaryRows"
+          Write-Host "Eligible: $summaryEligible"
+          Write-Host "Candidates: $summaryCandidates"
+          Write-Host "Strong candidates: $summaryStrong"
+
+
+      # ======================================================
+      # 24 - FINAL PRODUCTION GATE
+      # ======================================================
+
+      - name: 24 - Final Clean V001 production gate
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ($env:RESEARCH_EXIT_CODE -ne "0") {
+              throw "Research execution gate failed."
+          }
+
+          if ($env:OHLCV_INTEGRITY_PASS -ne "1") {
+              throw "OHLCV integrity gate failed."
+          }
+
+          $dir = Join-Path `
+              $env:PRODUCTION_ROOT `
+              $env:RESEARCH_REPORT_DIR
+
+          $result = Get-Content `
+              -LiteralPath (
+                  Join-Path $dir "accumulation_candle_research_result.json"
+              ) `
+              -Raw `
+              -Encoding UTF8 |
+              ConvertFrom-Json
+
+          $contract = Get-Content `
+              -LiteralPath (
+                  Join-Path $dir "accumulation_candle_research_contract.json"
+              ) `
+              -Raw `
+              -Encoding UTF8 |
+              ConvertFrom-Json
+
+          if ($result.status -ne "PASS") {
+              throw "Research result status is not PASS."
+          }
+
+          if ($result.pattern.final_formula_defined -ne $false) {
+              throw "Research final formula must remain undefined."
+          }
+
+          if ($contract.final_formula_defined -ne $false) {
+              throw "Contract final formula must remain undefined."
+          }
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "ACCUMULATION CANDLE PRODUCTION RESEARCH PASS"
+          Write-Host "============================================================"
+          Write-Host ""
+          Write-Host "[PASS] Clean V001"
+          Write-Host "[PASS] Production research completed"
+          Write-Host "[PASS] Production OHLCV READ ONLY"
+          Write-Host "[PASS] Production OHLCV file set unchanged"
+          Write-Host "[PASS] Production OHLCV SHA256 unchanged"
+          Write-Host "[PASS] Future information blocked"
+          Write-Host "[PASS] Negative shift blocked"
+          Write-Host "[PASS] Centered rolling blocked"
+          Write-Host "[PASS] Future labels blocked"
+          Write-Host "[PASS] Prediction blocked"
+          Write-Host "[PASS] Trading blocked"
+          Write-Host "[PASS] MA 112 / 224 / 448 included"
+          Write-Host "[PASS] Result and contract validated"
+          Write-Host "[PASS] Source manifest validated"
+          Write-Host "[PASS] Checkpoint validated"
+          Write-Host "[PASS] Output statistics cross-checked"
+          Write-Host "[PASS] Final formula remains undefined"
+          Write-Host ""
+          Write-Host "[NEXT]"
+          Write-Host "256 + accumulation candle cross-validation"
+
+
+      # ======================================================
+      # 25 - FAILURE DIAGNOSTICS
+      # ======================================================
+
+      - name: 25 - Failure diagnostics
+        if: failure()
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          Write-Host "============================================================"
+          Write-Host "PRODUCTION FAILURE DIAGNOSTICS"
+          Write-Host "============================================================"
+
+          Write-Host "Research exit code: $env:RESEARCH_EXIT_CODE"
+          Write-Host "Snapshot ready: $env:SNAPSHOT_READY"
+          Write-Host "OHLCV integrity: $env:OHLCV_INTEGRITY_PASS"
+          Write-Host "Production root: $env:PRODUCTION_ROOT"
+          Write-Host "Verification directory: $env:VERIFY_DIR"
+
+          $reportDir = Join-Path `
+              $env:PRODUCTION_ROOT `
+              $env:RESEARCH_REPORT_DIR
+
+          if (Test-Path -LiteralPath $reportDir) {
+              Get-ChildItem `
+                  -LiteralPath $reportDir `
+                  -Force |
+                  Select-Object Name, Length, LastWriteTime |
+                  Format-Table -AutoSize |
+                  Out-String |
+                  Write-Host
+          }
+
+          $checkpoint = Join-Path `
+              $env:PRODUCTION_ROOT `
+              $env:RESEARCH_CHECKPOINT
+
+          if (Test-Path -LiteralPath $checkpoint -PathType Leaf) {
+              Get-Item `
+                  -LiteralPath $checkpoint |
+                  Select-Object FullName, Length, LastWriteTime |
+                  Format-List |
+                  Out-String |
+                  Write-Host
+          }
+
+
+      # ======================================================
+      # 26 - UPLOAD VERIFICATION ARTIFACTS
+      # ======================================================
+
+      - name: 26 - Upload production verification artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: research-accumulation-candle-production-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 6
+          path: |
+            ${{ runner.temp }}\research_accumulation_candle_production_${{ github.run_id }}\ohlcv_sha256_before.csv
+            ${{ runner.temp }}\research_accumulation_candle_production_${{ github.run_id }}\ohlcv_sha256_after.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\accumulation_candle_research\accumulation_candle_research_result.json
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\accumulation_candle_research\accumulation_candle_research_summary.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\accumulation_candle_research\accumulation_candle_candidates.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\accumulation_candle_research\accumulation_candle_source_manifest.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\accumulation_candle_research\accumulation_candle_research_contract.json
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\accumulation_candle_research\README.txt
+            C:\Users\USER\Documents\upbit-surge-monitor\data\validation\research_accumulation_candle_checkpoint.json
