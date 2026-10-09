@@ -1672,7 +1672,7 @@ def build_research_features(
             "range_mean_prev_20"
         ].notna()
     )
-        df[
+    df[
         "accumulation_candle_candidate"
     ] = (
         df[
