@@ -655,11 +655,37 @@ def load_ohlcv(
         list(REQUIRED_OHLCV_COLUMNS),
     ].copy()
 
-    working["timestamp"] = pd.to_datetime(
-        working["timestamp"],
-        errors="coerce",
-        utc=True,
-    )
+    # Numeric Unix epochs must be interpreted using their actual
+    # unit. Pandas may otherwise interpret millisecond values as
+    # microseconds and silently move dates into January 1970.
+    raw_timestamp = working["timestamp"].astype("string").str.strip()
+    numeric_timestamp = pd.to_numeric(raw_timestamp, errors="coerce")
+    numeric_mask = numeric_timestamp.notna() & raw_timestamp.ne("")
+    parsed_timestamp = pd.Series(pd.NaT, index=working.index, dtype="datetime64[ns, UTC]")
+
+    if numeric_mask.any():
+        values = numeric_timestamp.loc[numeric_mask]
+        magnitudes = values.abs()
+        # Unix seconds / milliseconds / microseconds / nanoseconds.
+        for unit, mask in (
+            ("s", magnitudes < 1e11),
+            ("ms", (magnitudes >= 1e11) & (magnitudes < 1e14)),
+            ("us", (magnitudes >= 1e14) & (magnitudes < 1e17)),
+            ("ns", magnitudes >= 1e17),
+        ):
+            if mask.any():
+                parsed_timestamp.loc[values.index[mask]] = pd.to_datetime(
+                    values.loc[mask], unit=unit, errors="coerce", utc=True,
+                )
+
+    if (~numeric_mask).any():
+        parsed_timestamp.loc[~numeric_mask] = pd.to_datetime(
+            raw_timestamp.loc[~numeric_mask], errors="coerce", utc=True,
+            format="mixed",
+        )
+
+    working["timestamp"] = parsed_timestamp
+
 
     numeric_columns = (
         "open",
@@ -809,8 +835,7 @@ def rolling_min(
 # 14. BASE FEATURES
 # ============================================================
 
-def build_base_features(
-    frame: pd.DataFrame,
+def build_base_features(    frame: pd.DataFrame,
 ) -> pd.DataFrame:
 
     df = frame.copy()
@@ -1647,8 +1672,7 @@ def build_research_features(
             "range_mean_prev_20"
         ].notna()
     )
-
-    df[
+        df[
         "accumulation_candle_candidate"
     ] = (
         df[
@@ -2485,8 +2509,7 @@ def parse_args(
 
     parser = argparse.ArgumentParser(
         description=(
-            "Independent accumulation-candle "
-            "quantitative research."
+            "Independent accumulation-candle "            "quantitative research."
         )
     )
 
