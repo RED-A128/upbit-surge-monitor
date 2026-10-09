@@ -1,0 +1,1001 @@
+
+# ============================================================
+# Upbit Surge Monitor
+# research_pattern_256_accumulation_crosscheck_test.yml
+# Clean V001
+# ============================================================
+
+name: research_pattern_256_accumulation_crosscheck_test.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upbit-pattern-256-accumulation-crosscheck
+  cancel-in-progress: false
+
+jobs:
+  research_pattern_256_accumulation_crosscheck_test:
+    name: research_pattern_256_accumulation_crosscheck_test.yml
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 480
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+
+      PRODUCTION_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+
+      PROGRAM_FILE: research_pattern_256_accumulation_crosscheck.py
+
+      REPORT_NAMESPACE: pattern_256_accumulation_crosscheck
+
+      RESULT_FILE: crosscheck_result.json
+      SUMMARY_FILE: crosscheck_summary.csv
+      DETAIL_FILE: crosscheck_detail.csv
+      CANDIDATE_FILE: crosscheck_candidates.csv
+      MANIFEST_FILE: crosscheck_source_manifest.csv
+      CONTRACT_FILE: crosscheck_contract.json
+      CHECKPOINT_FILE: research_pattern_256_accumulation_crosscheck_checkpoint.json
+
+      LOOKBACK_BARS: "20"
+
+    steps:
+
+      # ======================================================
+      # 01 - CHECKOUT
+      # ======================================================
+
+      - name: 01 - Checkout repository
+        uses: actions/checkout@v4
+
+
+      # ======================================================
+      # 02 - ENVIRONMENT
+      # ======================================================
+
+      - name: 02 - Show environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "========================================"
+          Write-Host "256 + ACCUMULATION CROSSCHECK TEST"
+          Write-Host "Clean V001"
+          Write-Host "========================================"
+
+          Write-Host "Runner: $env:RUNNER_NAME"
+          Write-Host "Workspace: $env:GITHUB_WORKSPACE"
+          Write-Host "Production: $env:PRODUCTION_ROOT"
+
+          & py --version
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Python launcher unavailable."
+          }
+
+          Write-Host "[PASS] Environment"
+
+
+      # ======================================================
+      # 03 - PROGRAM
+      # ======================================================
+
+      - name: 03 - Verify crosscheck program
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $program = Join-Path `
+              $env:GITHUB_WORKSPACE `
+              $env:PROGRAM_FILE
+
+          if (-not (Test-Path -LiteralPath $program -PathType Leaf)) {
+              throw "Program missing: $program"
+          }
+
+          $program = (Resolve-Path -LiteralPath $program).Path
+
+          "CROSSCHECK_PROGRAM=$program" |
+              Out-File `
+                  -FilePath $env:GITHUB_ENV `
+                  -Encoding utf8 `
+                  -Append
+
+          Write-Host "[PASS] Program found"
+
+
+      # ======================================================
+      # 04 - MARKERS
+      # ======================================================
+
+      - name: 04 - Verify Clean V001 program markers
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $content = Get-Content `
+              -LiteralPath $env:CROSSCHECK_PROGRAM `
+              -Raw `
+              -Encoding UTF8
+
+          $markers = @(
+              'PROGRAM_NAME = "research_pattern_256_accumulation_crosscheck.py"',
+              'VERSION = "Clean V001"',
+              'STAGE = "PATTERN 256 ACCUMULATION CROSSCHECK"',
+              'OHLCV_READ_ONLY = True',
+              'SOURCE_REPORTS_READ_ONLY = True',
+              'FUTURE_CANDLES_ALLOWED = False',
+              'NEGATIVE_SHIFT_ALLOWED = False',
+              'CENTERED_ROLLING_ALLOWED = False',
+              'FUTURE_LABELS_GENERATED = False',
+              'FUTURE_RETURNS_GENERATED = False',
+              'THIRTY_PERCENT_LABEL_GENERATED = False',
+              'BACKTEST_GENERATED = False',
+              'PREDICTION_GENERATED = False',
+              'TRADING_SIGNAL_GENERATED = False',
+              'FINAL_FORMULA_DEFINED = False'
+          )
+
+          foreach ($marker in $markers) {
+              if (-not $content.Contains($marker)) {
+                  throw "Required marker missing: $marker"
+              }
+
+              Write-Host "[PASS] $marker"
+          }
+
+
+      # ======================================================
+      # 05 - SYNTAX
+      # ======================================================
+
+      - name: 05 - Validate Python syntax
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          & py -m py_compile $env:CROSSCHECK_PROGRAM
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Python syntax validation failed."
+          }
+
+          Write-Host "[PASS] Python syntax"
+
+
+      # ======================================================
+      # 06 - SAFETY
+      # ======================================================
+
+      - name: 06 - Static future-information safety scan
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $content = Get-Content `
+              -LiteralPath $env:CROSSCHECK_PROGRAM `
+              -Raw `
+              -Encoding UTF8
+
+          $patterns = @(
+              '\.shift\s*\(\s*-\d+',
+              '\.shift\s*\(\s*periods\s*=\s*-\d+',
+              'center\s*=\s*True',
+              'center\s*=\s*true'
+          )
+
+          foreach ($pattern in $patterns) {
+              if ($content -match $pattern) {
+                  throw "Forbidden future-information pattern: $pattern"
+              }
+          }
+
+          Write-Host "[PASS] Future-information static scan"
+
+
+      # ======================================================
+      # 07 - PRODUCTION ROOT
+      # ======================================================
+
+      - name: 07 - Resolve production project root
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if (-not (
+              Test-Path `
+                  -LiteralPath $env:PRODUCTION_ROOT `
+                  -PathType Container
+          )) {
+              throw "Production root missing."
+          }
+
+          $root = (Resolve-Path `
+              -LiteralPath $env:PRODUCTION_ROOT).Path
+
+          Write-Host "[PASS] Production root: $root"
+
+
+      # ======================================================
+      # 08 - SOURCE FILES
+      # ======================================================
+
+      - name: 08 - Verify independent research sources
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $sources = @(
+              "data\reports\pattern_research_256\pattern_256_research_detail.csv",
+              "data\reports\accumulation_candle_research\accumulation_candle_research_detail.csv"
+          )
+
+          foreach ($relative in $sources) {
+              $path = Join-Path $env:PRODUCTION_ROOT $relative
+
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                  throw "Research source missing: $path"
+              }
+
+              if ((Get-Item -LiteralPath $path).Length -le 0) {
+                  throw "Research source empty: $path"
+              }
+
+              Write-Host "[PASS] $relative"
+          }
+
+
+      # ======================================================
+      # 09 - VERIFICATION DIRECTORY
+      # ======================================================
+
+      - name: 09 - Prepare verification directory
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $dir = Join-Path `
+              $env:RUNNER_TEMP `
+              "crosscheck_test_$env:GITHUB_RUN_ID"
+
+          New-Item `
+              -ItemType Directory `
+              -Path $dir `
+              -Force |
+              Out-Null
+
+          "VERIFY_DIR=$dir" |
+              Out-File `
+                  -FilePath $env:GITHUB_ENV `
+                  -Encoding utf8 `
+                  -Append
+
+          Write-Host "[PASS] Verification directory"
+
+
+      # ======================================================
+      # 10 - SOURCE SNAPSHOT
+      # ======================================================
+
+      - name: 10 - Snapshot source SHA256 before crosscheck
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $sources = @(
+              "data\reports\pattern_research_256\pattern_256_research_detail.csv",
+              "data\reports\accumulation_candle_research\accumulation_candle_research_detail.csv"
+          )
+
+          $rows = @(
+              foreach ($relative in $sources) {
+                  $path = Join-Path $env:PRODUCTION_ROOT $relative
+
+                  $hash = Get-FileHash `
+                      -LiteralPath $path `
+                      -Algorithm SHA256
+
+                  [PSCustomObject]@{
+                      source = $relative
+                      size_bytes = (Get-Item -LiteralPath $path).Length
+                      sha256 = $hash.Hash
+                  }
+              }
+          )
+
+          $path = Join-Path $env:VERIFY_DIR "sources_before.csv"
+
+          $rows |
+              Export-Csv `
+                  -LiteralPath $path `
+                  -NoTypeInformation `
+                  -Encoding UTF8
+
+          "SOURCE_SNAPSHOT_READY=1" |
+              Out-File `
+                  -FilePath $env:GITHUB_ENV `
+                  -Encoding utf8 `
+                  -Append
+
+          Write-Host "[PASS] Source snapshot before"
+
+
+      # ======================================================
+      # 11 - RUN CROSSCHECK
+      # ======================================================
+
+      - name: 11 - Run 256 accumulation crosscheck
+        id: crosscheck_run
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          $exitCode = 999
+
+          try {
+              & py `
+                  $env:CROSSCHECK_PROGRAM `
+                  --project-root "$env:PRODUCTION_ROOT" `
+                  --timeframes h1 h4 d1 `
+                  --lookback-bars 20 `
+                  --force
+
+              if ($null -eq $LASTEXITCODE) {
+                  $exitCode = 998
+              }
+              else {
+                  $exitCode = [int]$LASTEXITCODE
+              }
+          }
+          catch {
+              Write-Host $_
+              $exitCode = 997
+          }
+          finally {
+              "CROSSCHECK_EXIT_CODE=$exitCode" |
+                  Out-File `
+                      -FilePath $env:GITHUB_ENV `
+                      -Encoding utf8 `
+                      -Append
+
+              Write-Host "Crosscheck exit code: $exitCode"
+          }
+
+          if ($exitCode -ne 0) {
+              exit 1
+          }
+
+          Write-Host "[PASS] Crosscheck execution"
+
+
+      # ======================================================
+      # 12 - SOURCE INTEGRITY
+      # ======================================================
+
+      - name: 12 - Verify independent research SHA256 unchanged
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ($env:SOURCE_SNAPSHOT_READY -ne "1") {
+              throw "Source snapshot unavailable."
+          }
+
+          $beforePath = Join-Path `
+              $env:VERIFY_DIR `
+              "sources_before.csv"
+
+          $before = @(
+              Import-Csv -LiteralPath $beforePath
+          )
+
+          foreach ($row in $before) {
+              $sourcePath = Join-Path `
+                  $env:PRODUCTION_ROOT `
+                  $row.source
+
+              if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+                  throw "Source removed: $($row.source)"
+              }
+
+              $file = Get-Item -LiteralPath $sourcePath
+
+              if ([int64]$row.size_bytes -ne [int64]$file.Length) {
+                  throw "Source size changed: $($row.source)"
+              }
+
+              $hash = Get-FileHash `
+                  -LiteralPath $sourcePath `
+                  -Algorithm SHA256
+
+              if ($row.sha256 -ne $hash.Hash) {
+                  throw "Source SHA256 changed: $($row.source)"
+              }
+          }
+
+          "SOURCE_INTEGRITY_PASS=1" |
+              Out-File `
+                  -FilePath $env:GITHUB_ENV `
+                  -Encoding utf8 `
+                  -Append
+
+          Write-Host "[PASS] Independent research SHA256 unchanged"
+
+
+      # ======================================================
+      # 13 - REQUIRE SUCCESS
+      # ======================================================
+
+      - name: 13 - Require crosscheck process success
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ($env:CROSSCHECK_EXIT_CODE -ne "0") {
+              throw "Crosscheck process failed or was not executed."
+          }
+
+          if ($env:SOURCE_INTEGRITY_PASS -ne "1") {
+              throw "Source integrity validation failed."
+          }
+
+          Write-Host "[PASS] Crosscheck process and integrity"
+
+
+      # ======================================================
+      # 14 - OUTPUT FILES
+      # ======================================================
+
+      - name: 14 - Verify required crosscheck outputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $dir = Join-Path `
+              $env:PRODUCTION_ROOT `
+              "data\reports\$env:REPORT_NAMESPACE"
+
+          $files = @(
+              $env:RESULT_FILE,
+              $env:SUMMARY_FILE,
+              $env:DETAIL_FILE,
+              $env:CANDIDATE_FILE,
+              $env:MANIFEST_FILE,
+              $env:CONTRACT_FILE,
+              "README.txt"
+          )
+
+          foreach ($file in $files) {
+              $path = Join-Path $dir $file
+
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                  throw "Missing output: $file"
+              }
+
+              if ((Get-Item -LiteralPath $path).Length -le 0) {
+                  throw "Empty output: $file"
+              }
+
+              Write-Host "[PASS] $file"
+          }
+
+          $checkpoint = Join-Path `
+              $env:PRODUCTION_ROOT `
+              "data\validation\$env:CHECKPOINT_FILE"
+
+          if (-not (Test-Path -LiteralPath $checkpoint -PathType Leaf)) {
+              throw "Checkpoint missing."
+          }
+
+          Write-Host "[PASS] Checkpoint exists"
+
+
+      # ======================================================
+      # 15 - RESULT JSON
+      # ======================================================
+
+      - name: 15 - Validate crosscheck result JSON
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $path = Join-Path `
+              $env:PRODUCTION_ROOT `
+              "data\reports\$env:REPORT_NAMESPACE\$env:RESULT_FILE"
+
+          $result = Get-Content `
+              -LiteralPath $path `
+              -Raw `
+              -Encoding UTF8 |
+              ConvertFrom-Json
+
+          if ($result.program -ne $env:PROGRAM_FILE) {
+              throw "Program mismatch."
+          }
+
+          if ($result.version -ne "Clean V001") {
+              throw "Version mismatch."
+          }
+
+          if ($result.status -ne "PASS") {
+              throw "Result status not PASS."
+          }
+
+          if ($result.stage -ne "PATTERN 256 ACCUMULATION CROSSCHECK") {
+              throw "Stage mismatch."
+          }
+
+          if ($result.final_formula_defined -ne $false) {
+              throw "Final formula must remain undefined."
+          }
+
+          if ($result.safety.source_sha256_unchanged -ne $true) {
+              throw "Source SHA256 safety flag invalid."
+          }
+
+          if ($result.safety.future_information_used -ne $false) {
+              throw "Future information flag invalid."
+          }
+
+          if ($result.safety.backtest_executed -ne $false) {
+              throw "Backtest executed unexpectedly."
+          }
+
+          if ($result.safety.trading_executed -ne $false) {
+              throw "Trading executed unexpectedly."
+          }
+
+          $stats = $result.statistics
+
+          if ([int64]$stats.matched_rows -le 0) {
+              throw "No matched rows."
+          }
+
+          $total = (
+              [int64]$stats.neither_rows +
+              [int64]$stats.pattern_256_only_rows +
+              [int64]$stats.accumulation_only_rows +
+              [int64]$stats.both_rows
+          )
+
+          if ($total -ne [int64]$stats.matched_rows) {
+              throw "Classification total mismatch."
+          }
+
+          if (
+              [int64]$stats.both_strong_rows -gt
+              [int64]$stats.both_rows
+          ) {
+              throw "Strong overlap exceeds overlap."
+          }
+
+          Write-Host "[PASS] Crosscheck result JSON"
+
+
+      # ======================================================
+      # 16 - CONTRACT
+      # ======================================================
+
+      - name: 16 - Validate crosscheck contract
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $path = Join-Path `
+              $env:PRODUCTION_ROOT `
+              "data\reports\$env:REPORT_NAMESPACE\$env:CONTRACT_FILE"
+
+          $contract = Get-Content `
+              -LiteralPath $path `
+              -Raw `
+              -Encoding UTF8 |
+              ConvertFrom-Json
+
+          if ($contract.program -ne $env:PROGRAM_FILE) {
+              throw "Contract program mismatch."
+          }
+
+          if ($contract.version -ne "Clean V001") {
+              throw "Contract version mismatch."
+          }
+
+          if ($contract.final_formula_defined -ne $false) {
+              throw "Final formula defined unexpectedly."
+          }
+
+          if ([int]$contract.precedence.lookback_bars -ne 20) {
+              throw "Lookback mismatch."
+          }
+
+          if ($contract.precedence.current_bar_excluded -ne $true) {
+              throw "Current bar exclusion invalid."
+          }
+
+          if ($contract.precedence.uses_future_information -ne $false) {
+              throw "Future-information contract invalid."
+          }
+
+          if ($contract.safety.ohlcv_read_only -ne $true) {
+              throw "OHLCV read-only contract invalid."
+          }
+
+          if ($contract.safety.source_reports_read_only -ne $true) {
+              throw "Source reports read-only contract invalid."
+          }
+
+          Write-Host "[PASS] Crosscheck contract"
+
+
+      # ======================================================
+      # 17 - SUMMARY
+      # ======================================================
+
+      - name: 17 - Validate summary CSV
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $path = Join-Path `
+              $env:PRODUCTION_ROOT `
+              "data\reports\$env:REPORT_NAMESPACE\$env:SUMMARY_FILE"
+
+          $rows = @(
+              Import-Csv -LiteralPath $path
+          )
+
+          if ($rows.Count -eq 0) {
+              throw "Summary CSV empty."
+          }
+
+          $required = @(
+              "timeframe",
+              "market",
+              "matched_rows",
+              "neither_rows",
+              "pattern_256_only_rows",
+              "accumulation_only_rows",
+              "both_rows",
+              "both_strong_rows",
+              "accumulation_preceded_256_rows",
+              "status"
+          )
+
+          $columns = @($rows[0].PSObject.Properties.Name)
+
+          foreach ($column in $required) {
+              if ($columns -notcontains $column) {
+                  throw "Summary column missing: $column"
+              }
+          }
+
+          $matched = 0L
+          $both = 0L
+          $preceded = 0L
+
+          foreach ($row in $rows) {
+              if ($row.status -ne "PASS") {
+                  throw "Summary contains non-PASS entry."
+              }
+
+              $count = [int64]$row.matched_rows
+
+              $classified = (
+                  [int64]$row.neither_rows +
+                  [int64]$row.pattern_256_only_rows +
+                  [int64]$row.accumulation_only_rows +
+                  [int64]$row.both_rows
+              )
+
+              if ($count -ne $classified) {
+                  throw "Summary classification mismatch."
+              }
+
+              $matched += $count
+              $both += [int64]$row.both_rows
+              $preceded += [int64]$row.accumulation_preceded_256_rows
+          }
+
+          $resultPath = Join-Path `
+              $env:PRODUCTION_ROOT `
+              "data\reports\$env:REPORT_NAMESPACE\$env:RESULT_FILE"
+
+          $result = Get-Content `
+              -LiteralPath $resultPath `
+              -Raw `
+              -Encoding UTF8 |
+              ConvertFrom-Json
+
+          if ($matched -ne [int64]$result.statistics.matched_rows) {
+              throw "Summary/result matched count mismatch."
+          }
+
+          if ($both -ne [int64]$result.statistics.both_rows) {
+              throw "Summary/result overlap mismatch."
+          }
+
+          if (
+              $preceded -ne
+              [int64]$result.statistics.accumulation_preceded_256_rows
+          ) {
+              throw "Summary/result precedence mismatch."
+          }
+
+          Write-Host "[PASS] Summary cross-check"
+
+
+      # ======================================================
+      # 18 - DETAIL AND CANDIDATES
+      # ======================================================
+
+      - name: 18 - Validate detail and candidate CSV
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $dir = Join-Path `
+              $env:PRODUCTION_ROOT `
+              "data\reports\$env:REPORT_NAMESPACE"
+
+          $detail = Join-Path $dir $env:DETAIL_FILE
+          $candidate = Join-Path $dir $env:CANDIDATE_FILE
+
+          @'
+          import csv
+          import sys
+
+          detail_path, candidate_path = sys.argv[1:3]
+
+          required = {
+              "timeframe",
+              "market",
+              "timestamp",
+              "pattern_256_candidate",
+              "accumulation_candidate",
+              "classification",
+              "both_candidate",
+              "both_strong",
+              "accumulation_preceded_256",
+              "accumulation_lag_bars",
+          }
+
+          for path in (detail_path, candidate_path):
+              with open(path, encoding="utf-8-sig", newline="") as f:
+                  reader = csv.DictReader(f)
+                  missing = required - set(reader.fieldnames or [])
+
+                  if missing:
+                      raise SystemExit(
+                          f"Missing columns in {path}: {sorted(missing)}"
+                      )
+
+                  count = 0
+
+                  for row in reader:
+                      count += 1
+
+                      if row["classification"] not in {
+                          "NEITHER",
+                          "PATTERN_256_ONLY",
+                          "ACCUMULATION_ONLY",
+                          "BOTH",
+                      }:
+                          raise SystemExit(
+                              f"Invalid classification: {row['classification']}"
+                          )
+
+                      if path == candidate_path:
+                          both = row["both_candidate"].lower() == "true"
+                          preceded = (
+                              row["accumulation_preceded_256"].lower()
+                              == "true"
+                          )
+
+                          if not (both or preceded):
+                              raise SystemExit(
+                                  "Candidate output contains unrelated row"
+                              )
+
+                  print(f"[PASS] {path}: {count:,} rows")
+
+          '@ | py - "$detail" "$candidate"
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Detail/candidate validation failed."
+          }
+
+
+      # ======================================================
+      # 19 - SOURCE MANIFEST
+      # ======================================================
+
+      - name: 19 - Validate source manifest
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $path = Join-Path `
+              $env:PRODUCTION_ROOT `
+              "data\reports\$env:REPORT_NAMESPACE\$env:MANIFEST_FILE"
+
+          $rows = @(
+              Import-Csv -LiteralPath $path
+          )
+
+          if ($rows.Count -ne 2) {
+              throw "Expected exactly two research sources."
+          }
+
+          foreach ($row in $rows) {
+              if ($row.status -ne "PASS") {
+                  throw "Source manifest status invalid."
+              }
+
+              if ($row.sha256_unchanged -ne "True") {
+                  throw "Source SHA256 flag invalid."
+              }
+
+              if ($row.sha256_before -ne $row.sha256_after) {
+                  throw "Source SHA256 mismatch."
+              }
+
+              if ([int64]$row.rows_loaded -le 0) {
+                  throw "Source row count invalid."
+              }
+          }
+
+          Write-Host "[PASS] Source manifest"
+
+
+      # ======================================================
+      # 20 - CHECKPOINT
+      # ======================================================
+
+      - name: 20 - Validate checkpoint and output hashes
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $checkpointPath = Join-Path `
+              $env:PRODUCTION_ROOT `
+              "data\validation\$env:CHECKPOINT_FILE"
+
+          $checkpoint = Get-Content `
+              -LiteralPath $checkpointPath `
+              -Raw `
+              -Encoding UTF8 |
+              ConvertFrom-Json
+
+          if ([int]$checkpoint.checkpoint_version -ne 1) {
+              throw "Checkpoint version mismatch."
+          }
+
+          if ($checkpoint.program -ne $env:PROGRAM_FILE) {
+              throw "Checkpoint program mismatch."
+          }
+
+          if ($checkpoint.status -ne "PASS") {
+              throw "Checkpoint status invalid."
+          }
+
+          $dir = Join-Path `
+              $env:PRODUCTION_ROOT `
+              "data\reports\$env:REPORT_NAMESPACE"
+
+          $files = @(
+              $env:RESULT_FILE,
+              $env:SUMMARY_FILE,
+              $env:DETAIL_FILE,
+              $env:CANDIDATE_FILE,
+              $env:MANIFEST_FILE,
+              $env:CONTRACT_FILE,
+              "README.txt"
+          )
+
+          foreach ($file in $files) {
+              $path = Join-Path $dir $file
+
+              $expected = $checkpoint.output_sha256.$file
+
+              if ([string]::IsNullOrWhiteSpace($expected)) {
+                  throw "Checkpoint hash missing: $file"
+              }
+
+              $actual = (
+                  Get-FileHash `
+                      -LiteralPath $path `
+                      -Algorithm SHA256
+              ).Hash
+
+              if ($actual -ne $expected) {
+                  throw "Checkpoint output SHA256 mismatch: $file"
+              }
+          }
+
+          Write-Host "[PASS] Checkpoint output SHA256"
+
+
+      # ======================================================
+      # 21 - FINAL GATE
+      # ======================================================
+
+      - name: 21 - Final Clean V001 test gate
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ($env:CROSSCHECK_EXIT_CODE -ne "0") {
+              throw "Crosscheck process failed."
+          }
+
+          if ($env:SOURCE_INTEGRITY_PASS -ne "1") {
+              throw "Source integrity failed."
+          }
+
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "256 + ACCUMULATION CROSSCHECK TEST PASS"
+          Write-Host "========================================"
+          Write-Host ""
+          Write-Host "[PASS] Clean V001"
+          Write-Host "[PASS] Both independent sources"
+          Write-Host "[PASS] Matching timeframe / market / timestamp"
+          Write-Host "[PASS] Four classifications"
+          Write-Host "[PASS] Historical accumulation precedence"
+          Write-Host "[PASS] Source SHA256 unchanged"
+          Write-Host "[PASS] Result JSON"
+          Write-Host "[PASS] Research contract"
+          Write-Host "[PASS] Summary CSV"
+          Write-Host "[PASS] Detail CSV"
+          Write-Host "[PASS] Candidate CSV"
+          Write-Host "[PASS] Source manifest"
+          Write-Host "[PASS] Checkpoint and output SHA256"
+          Write-Host "[PASS] No future information"
+          Write-Host "[PASS] No backtest"
+          Write-Host "[PASS] No trading"
+          Write-Host "[PASS] Final formula undefined"
+          Write-Host ""
+          Write-Host "[NEXT] Production workflow"
+
+
+      # ======================================================
+      # 22 - DIAGNOSTICS
+      # ======================================================
+
+      - name: 22 - Failure diagnostics
+        if: failure()
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          Write-Host "Crosscheck exit code: $env:CROSSCHECK_EXIT_CODE"
+          Write-Host "Source integrity: $env:SOURCE_INTEGRITY_PASS"
+
+          $dir = Join-Path `
+              $env:PRODUCTION_ROOT `
+              "data\reports\$env:REPORT_NAMESPACE"
+
+          if (Test-Path -LiteralPath $dir) {
+              Get-ChildItem `
+                  -LiteralPath $dir |
+                  Select-Object Name, Length, LastWriteTime |
+                  Format-Table -AutoSize |
+                  Out-String |
+                  Write-Host
+          }
+
+
+      # ======================================================
+      # 23 - UPLOAD VERIFICATION
+      # ======================================================
+
+      - name: 23 - Upload test verification artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: research-pattern-256-accumulation-crosscheck-test-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 6
+          path: |
+            ${{ runner.temp }}\crosscheck_test_${{ github.run_id }}\sources_before.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_accumulation_crosscheck\crosscheck_result.json
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_accumulation_crosscheck\crosscheck_summary.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_accumulation_crosscheck\crosscheck_candidates.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_accumulation_crosscheck\crosscheck_source_manifest.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_accumulation_crosscheck\crosscheck_contract.json
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_accumulation_crosscheck\README.txt
+            C:\Users\USER\Documents\upbit-surge-monitor\data\validation\research_pattern_256_accumulation_crosscheck_checkpoint.json
