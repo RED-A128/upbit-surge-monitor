@@ -1,0 +1,339 @@
+
+name: validate_pattern_256_accumulation_independent.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-pattern-256-accumulation-independent-production
+  cancel-in-progress: false
+
+jobs:
+  independent-validation:
+    name: Independent Validation Production
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 360
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PRODUCTION_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+      PROGRAM_NAME: validate_pattern_256_accumulation_independent.py
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          clean: false
+          persist-credentials: false
+
+      - name: Verify Python program
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python launcher unavailable."
+          }
+
+          $program = Join-Path $env:GITHUB_WORKSPACE $env:PROGRAM_NAME
+
+          if (-not (Test-Path -LiteralPath $program -PathType Leaf)) {
+            throw "Python program not found: $program"
+          }
+
+          py -m py_compile $program
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax verification failed."
+          }
+
+          Write-Host "Python program PASS"
+
+      - name: Verify production source files
+        id: sources
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = $env:PRODUCTION_ROOT
+
+          if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+            throw "Production root not found: $root"
+          }
+
+          $sourceDir = Join-Path $root "data\reports\pattern_256_accumulation_30pct"
+
+          $detail = Join-Path $sourceDir "validation_detail.csv"
+          $result = Join-Path $sourceDir "validation_result.json"
+
+          foreach ($file in @($detail, $result)) {
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+              throw "Required production source missing: $file"
+            }
+          }
+
+          $sourceResult = Get-Content -LiteralPath $result -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          if ($sourceResult.status -ne "PASS") {
+            throw "Upstream validation status is not PASS."
+          }
+
+          if ($sourceResult.limited_test -ne $false) {
+            throw "Upstream validation is not full production data."
+          }
+
+          $detailHash = (Get-FileHash -LiteralPath $detail -Algorithm SHA256).Hash.ToLowerInvariant()
+          $resultHash = (Get-FileHash -LiteralPath $result -Algorithm SHA256).Hash.ToLowerInvariant()
+
+          if ($detailHash -ne ([string]$sourceResult.detail_sha256).ToLowerInvariant()) {
+            throw "Upstream validation detail SHA256 mismatch."
+          }
+
+          "detail_hash=$detailHash" >> $env:GITHUB_OUTPUT
+          "result_hash=$resultHash" >> $env:GITHUB_OUTPUT
+
+          Write-Host "Production source verification PASS"
+          Write-Host "Detail SHA256: $detailHash"
+          Write-Host "Result SHA256: $resultHash"
+
+      - name: Stage validated program in production root
+        id: stage
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $sourceProgram = Join-Path $env:GITHUB_WORKSPACE $env:PROGRAM_NAME
+
+          $stagedProgram = Join-Path $env:PRODUCTION_ROOT ".independent_validation_runner_${{ github.run_id }}_${{ github.run_attempt }}.py"
+
+          if (Test-Path -LiteralPath $stagedProgram) {
+            throw "Temporary program path already exists; refusing overwrite."
+          }
+
+          Copy-Item -LiteralPath $sourceProgram -Destination $stagedProgram
+
+          $sourceHash = (Get-FileHash -LiteralPath $sourceProgram -Algorithm SHA256).Hash.ToLowerInvariant()
+          $stagedHash = (Get-FileHash -LiteralPath $stagedProgram -Algorithm SHA256).Hash.ToLowerInvariant()
+
+          if ($sourceHash -ne $stagedHash) {
+            throw "Staged program SHA256 mismatch."
+          }
+
+          "staged_program=$stagedProgram" >> $env:GITHUB_OUTPUT
+          "program_hash=$sourceHash" >> $env:GITHUB_OUTPUT
+
+          Write-Host "Staged program SHA256 PASS"
+
+      - name: Execute independent production validation
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:PRODUCTION_ROOT
+
+          $program = "${{ steps.stage.outputs.staged_program }}"
+
+          if (-not (Test-Path -LiteralPath $program -PathType Leaf)) {
+            throw "Staged program not found."
+          }
+
+          Write-Host "========================================"
+          Write-Host "Independent Validation Production"
+          Write-Host "========================================"
+
+          py $program
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Independent production validation failed."
+          }
+
+          Write-Host "Independent production execution PASS"
+
+      - name: Verify production outputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $outputDir = Join-Path $env:PRODUCTION_ROOT "data\reports\pattern_256_accumulation_independent"
+
+          $detail = Join-Path $outputDir "independent_detail.csv"
+          $summary = Join-Path $outputDir "independent_summary.csv"
+          $comparison = Join-Path $outputDir "independent_comparison.csv"
+          $resultFile = Join-Path $outputDir "independent_result.json"
+          $manifestFile = Join-Path $outputDir "independent_manifest.json"
+
+          foreach ($file in @(
+            $detail,
+            $summary,
+            $comparison,
+            $resultFile,
+            $manifestFile
+          )) {
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+              throw "Required output missing: $file"
+            }
+          }
+
+          $result = Get-Content -LiteralPath $resultFile -Raw -Encoding UTF8 | ConvertFrom-Json
+          $manifest = Get-Content -LiteralPath $manifestFile -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          if ($result.status -ne "PASS") {
+            throw "Production result status is not PASS."
+          }
+
+          if ($result.program -ne $env:PROGRAM_NAME) {
+            throw "Unexpected result program."
+          }
+
+          if ($result.version -ne "Clean V001") {
+            throw "Unexpected result version."
+          }
+
+          if ([int64]$result.imported_rows -le 0) {
+            throw "Imported row count invalid."
+          }
+
+          if ([int64]$result.selected_rows -le 0) {
+            throw "Selected row count invalid."
+          }
+
+          if (
+            ([int64]$result.selected_rows + [int64]$result.excluded_rows) -ne
+            [int64]$result.imported_rows
+          ) {
+            throw "Row accounting mismatch."
+          }
+
+          if ([int]$result.summary_rows -ne 108) {
+            throw "Summary row count mismatch."
+          }
+
+          if ([int]$result.comparison_rows -ne 18) {
+            throw "Comparison row count mismatch."
+          }
+
+          $checks = @(
+            @{
+              File = $detail
+              Expected = [string]$result.detail_sha256
+              ManifestExpected = [string]$manifest.outputs.'independent_detail.csv'
+            },
+            @{
+              File = $summary
+              Expected = [string]$result.summary_sha256
+              ManifestExpected = [string]$manifest.outputs.'independent_summary.csv'
+            },
+            @{
+              File = $comparison
+              Expected = [string]$result.comparison_sha256
+              ManifestExpected = [string]$manifest.outputs.'independent_comparison.csv'
+            }
+          )
+
+          foreach ($check in $checks) {
+            $actual = (Get-FileHash -LiteralPath $check.File -Algorithm SHA256).Hash.ToLowerInvariant()
+
+            if ($actual -ne $check.Expected.ToLowerInvariant()) {
+              throw "Result SHA256 mismatch: $($check.File)"
+            }
+
+            if ($actual -ne $check.ManifestExpected.ToLowerInvariant()) {
+              throw "Manifest SHA256 mismatch: $($check.File)"
+            }
+
+            Write-Host "SHA256 PASS: $($check.File)"
+          }
+
+          if ($manifest.program -ne $result.program) {
+            throw "Manifest program mismatch."
+          }
+
+          if ($manifest.version -ne $result.version) {
+            throw "Manifest version mismatch."
+          }
+
+          Write-Host "========================================"
+          Write-Host "Production Validation Summary"
+          Write-Host "========================================"
+          Write-Host "Imported rows: $($result.imported_rows)"
+          Write-Host "Selected rows: $($result.selected_rows)"
+          Write-Host "Excluded rows: $($result.excluded_rows)"
+          Write-Host "Summary rows: $($result.summary_rows)"
+          Write-Host "Comparison rows: $($result.comparison_rows)"
+          Write-Host "Elapsed seconds: $($result.elapsed_seconds)"
+          Write-Host "Production output verification PASS"
+
+      - name: Verify original source files unchanged
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $expectedDetail = "${{ steps.sources.outputs.detail_hash }}"
+          $expectedResult = "${{ steps.sources.outputs.result_hash }}"
+
+          if (-not $expectedDetail -or -not $expectedResult) {
+            Write-Host "Initial source verification was not completed."
+            exit 0
+          }
+
+          $sourceDir = Join-Path $env:PRODUCTION_ROOT "data\reports\pattern_256_accumulation_30pct"
+
+          $detail = Join-Path $sourceDir "validation_detail.csv"
+          $result = Join-Path $sourceDir "validation_result.json"
+
+          $actualDetail = (Get-FileHash -LiteralPath $detail -Algorithm SHA256).Hash.ToLowerInvariant()
+          $actualResult = (Get-FileHash -LiteralPath $result -Algorithm SHA256).Hash.ToLowerInvariant()
+
+          if ($actualDetail -ne $expectedDetail) {
+            throw "Production validation_detail.csv changed!"
+          }
+
+          if ($actualResult -ne $expectedResult) {
+            throw "Production validation_result.json changed!"
+          }
+
+          Write-Host "Original production sources unchanged PASS"
+
+      - name: Remove temporary staged program
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $program = "${{ steps.stage.outputs.staged_program }}"
+          $expectedHash = "${{ steps.stage.outputs.program_hash }}"
+
+          if (-not $program -or -not $expectedHash) {
+            Write-Host "No verified staged program to remove."
+            exit 0
+          }
+
+          if (Test-Path -LiteralPath $program -PathType Leaf) {
+            $actualHash = (Get-FileHash -LiteralPath $program -Algorithm SHA256).Hash.ToLowerInvariant()
+
+            if ($actualHash -ne $expectedHash) {
+              throw "Staged program changed; refusing removal."
+            }
+
+            Remove-Item -LiteralPath $program -Force
+
+            Write-Host "Temporary staged program removed."
+          }
+
+      - name: Upload production validation reports
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-accumulation-independent-production
+          path: |
+            C:/Users/USER/Documents/upbit-surge-monitor/data/reports/pattern_256_accumulation_independent/independent_summary.csv
+            C:/Users/USER/Documents/upbit-surge-monitor/data/reports/pattern_256_accumulation_independent/independent_comparison.csv
+            C:/Users/USER/Documents/upbit-surge-monitor/data/reports/pattern_256_accumulation_independent/independent_result.json
+            C:/Users/USER/Documents/upbit-surge-monitor/data/reports/pattern_256_accumulation_independent/independent_manifest.json
+          if-no-files-found: error
+          retention-days: 14
