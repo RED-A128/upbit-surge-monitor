@@ -1,0 +1,861 @@
+
+name: compare_pattern_256_accumulation_performance_test.yml
+
+run-name: compare_pattern_256_accumulation_performance_test.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compare-pattern-256-accumulation-performance-test
+  cancel-in-progress: false
+
+jobs:
+  performance-test:
+    name: compare_pattern_256_accumulation_performance_test.yml
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 60
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+
+      PROGRAM_FILE: compare_pattern_256_accumulation_performance.py
+
+      INPUT_REPORT: data\reports\pattern_256_accumulation_30pct
+
+      OUTPUT_REPORT: data\reports\pattern_256_accumulation_performance
+
+    steps:
+
+      # ======================================================
+      # 01. CHECKOUT
+      # ======================================================
+
+      - name: 01 - Checkout repository
+        uses: actions/checkout@v4
+
+      # ======================================================
+      # 02. ENVIRONMENT
+      # ======================================================
+
+      - name: 02 - Show test environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "========================================"
+          Write-Host "PATTERN PERFORMANCE COMPARISON TEST"
+          Write-Host "Clean V001"
+          Write-Host "========================================"
+
+          Write-Host "Repository: $env:GITHUB_REPOSITORY"
+          Write-Host "Runner: $env:RUNNER_NAME"
+          Write-Host "Workspace: $env:GITHUB_WORKSPACE"
+
+          & py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python launcher unavailable."
+          }
+
+          Write-Host "[PASS] Environment"
+
+      # ======================================================
+      # 03. VERIFY PROGRAM
+      # ======================================================
+
+      - name: 03 - Verify comparison program
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $program = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:PROGRAM_FILE
+
+          if (-not (
+            Test-Path -LiteralPath $program -PathType Leaf
+          )) {
+            throw "Comparison program missing: $program"
+          }
+
+          if ((Get-Item -LiteralPath $program).Length -le 0) {
+            throw "Comparison program is empty."
+          }
+
+          Write-Host "[PASS] Comparison program exists"
+
+      # ======================================================
+      # 04. VERIFY PROGRAM VERSION
+      # ======================================================
+
+      - name: 04 - Verify Clean V001 marker
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $program = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:PROGRAM_FILE
+
+          $content = Get-Content `
+            -LiteralPath $program `
+            -Raw `
+            -Encoding UTF8
+
+          if (-not $content.Contains("Clean V001")) {
+            throw "Clean V001 marker missing."
+          }
+
+          Write-Host "[PASS] Clean V001 marker"
+
+      # ======================================================
+      # 05. PYTHON SYNTAX
+      # ======================================================
+
+      - name: 05 - Validate Python syntax
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $program = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:PROGRAM_FILE
+
+          @'
+          import ast
+          import sys
+          from pathlib import Path
+
+          path = Path(sys.argv[1])
+
+          source = path.read_text(
+              encoding="utf-8-sig"
+          )
+
+          ast.parse(
+              source,
+              filename=str(path),
+          )
+
+          print("[PASS] Python syntax")
+          '@ | py - $program
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax validation failed."
+          }
+
+      # ======================================================
+      # 06. STATIC SAFETY SCAN
+      # ======================================================
+
+      - name: 06 - Static execution safety scan
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $program = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:PROGRAM_FILE
+
+          @'
+          import ast
+          import sys
+          from pathlib import Path
+
+          path = Path(sys.argv[1])
+
+          tree = ast.parse(
+              path.read_text(encoding="utf-8-sig")
+          )
+
+          forbidden = {
+              "os.system",
+              "subprocess.run",
+              "subprocess.Popen",
+          }
+
+          for node in ast.walk(tree):
+
+              if not isinstance(node, ast.Call):
+                  continue
+
+              func = node.func
+
+              if isinstance(func, ast.Name):
+                  if func.id in {"eval", "exec"}:
+                      raise RuntimeError(
+                          "Dynamic execution prohibited: "
+                          + func.id
+                      )
+
+              if isinstance(func, ast.Attribute):
+                  if isinstance(func.value, ast.Name):
+                      name = (
+                          func.value.id
+                          + "."
+                          + func.attr
+                      )
+
+                      if name in forbidden:
+                          raise RuntimeError(
+                              "Prohibited execution call: "
+                              + name
+                          )
+
+          print("[PASS] Static execution scan")
+          '@ | py - $program
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Static execution safety scan failed."
+          }
+
+      # ======================================================
+      # 07. VERIFY PRODUCTION ROOT
+      # ======================================================
+
+      - name: 07 - Verify production root
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = Join-Path `
+            $env:USERPROFILE `
+            "Documents\upbit-surge-monitor"
+
+          if (-not (
+            Test-Path -LiteralPath $root -PathType Container
+          )) {
+            throw "Production root missing: $root"
+          }
+
+          "PRODUCTION_ROOT=$root" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Encoding utf8 `
+              -Append
+
+          Write-Host "[PASS] Production root"
+          Write-Host $root
+
+      # ======================================================
+      # 08. VERIFY SOURCE FILES
+      # ======================================================
+
+      - name: 08 - Verify 30 percent validation inputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $source = Join-Path `
+            $env:PRODUCTION_ROOT `
+            $env:INPUT_REPORT
+
+          $required = @(
+            "validation_summary.csv",
+            "validation_result.json"
+          )
+
+          foreach ($name in $required) {
+
+            $path = Join-Path $source $name
+
+            if (-not (
+              Test-Path -LiteralPath $path -PathType Leaf
+            )) {
+              throw "Required input missing: $path"
+            }
+
+            if ((Get-Item -LiteralPath $path).Length -le 0) {
+              throw "Input file is empty: $path"
+            }
+
+            Write-Host "[PASS] $name"
+          }
+
+      # ======================================================
+      # 09. VALIDATE SOURCE RESULT
+      # ======================================================
+
+      - name: 09 - Validate source result contract
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $path = Join-Path `
+            (Join-Path $env:PRODUCTION_ROOT $env:INPUT_REPORT) `
+            "validation_result.json"
+
+          $result = Get-Content `
+            -LiteralPath $path `
+            -Raw `
+            -Encoding UTF8 |
+            ConvertFrom-Json
+
+          if ($result.status -ne "PASS") {
+            throw "Source validation status is not PASS."
+          }
+
+          if ($result.version -ne "Clean V001") {
+            throw "Unexpected source validation version."
+          }
+
+          if ([double]$result.target_return_pct -ne 30) {
+            throw "Source target return is not 30 percent."
+          }
+
+          if ($result.entry_rule -ne "NEXT_CANDLE_OPEN") {
+            throw "Unexpected entry rule."
+          }
+
+          if ($result.limited_test -ne $false) {
+            throw "Source is limited test data."
+          }
+
+          if ([int64]$result.summary_rows -ne 36) {
+            throw "Source summary row count mismatch."
+          }
+
+          Write-Host "[PASS] Source result contract"
+
+      # ======================================================
+      # 10. VERIFY SOURCE CSV SHA256
+      # ======================================================
+
+      - name: 10 - Verify source summary SHA256
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $source = Join-Path `
+            $env:PRODUCTION_ROOT `
+            $env:INPUT_REPORT
+
+          $summary = Join-Path `
+            $source `
+            "validation_summary.csv"
+
+          $resultPath = Join-Path `
+            $source `
+            "validation_result.json"
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw `
+            -Encoding UTF8 |
+            ConvertFrom-Json
+
+          $actual = (
+            Get-FileHash `
+              -LiteralPath $summary `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          $expected = [string]$result.summary_sha256
+
+          if (
+            $actual -ne $expected.ToLowerInvariant()
+          ) {
+            throw "Source summary SHA256 mismatch."
+          }
+
+          Write-Host "[PASS] Source summary SHA256"
+
+      # ======================================================
+      # 11. PREPARE ISOLATED TEST DIRECTORY
+      # ======================================================
+
+      - name: 11 - Prepare isolated test workspace
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $testRoot = Join-Path `
+            $env:RUNNER_TEMP `
+            "pattern_256_accumulation_performance_test"
+
+          # Remove only this job's temporary directory.
+          # Never remove production data or repository files.
+
+          if (Test-Path -LiteralPath $testRoot) {
+
+            $item = Get-Item -LiteralPath $testRoot -Force
+
+            if (
+              ($item.Attributes -band
+               [IO.FileAttributes]::ReparsePoint) -ne 0
+            ) {
+              throw "Unsafe test root: reparse point detected."
+            }
+
+            Remove-Item `
+              -LiteralPath $testRoot `
+              -Recurse `
+              -Force
+          }
+
+          New-Item `
+            -ItemType Directory `
+            -Path $testRoot `
+            -Force |
+            Out-Null
+
+          $programSource = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:PROGRAM_FILE
+
+          Copy-Item `
+            -LiteralPath $programSource `
+            -Destination $testRoot
+
+          $inputTarget = Join-Path `
+            $testRoot `
+            $env:INPUT_REPORT
+
+          New-Item `
+            -ItemType Directory `
+            -Path $inputTarget `
+            -Force |
+            Out-Null
+
+          $inputSource = Join-Path `
+            $env:PRODUCTION_ROOT `
+            $env:INPUT_REPORT
+
+          foreach (
+            $name in @(
+              "validation_summary.csv",
+              "validation_result.json"
+            )
+          ) {
+            Copy-Item `
+              -LiteralPath (Join-Path $inputSource $name) `
+              -Destination (Join-Path $inputTarget $name)
+          }
+
+          "PERFORMANCE_TEST_ROOT=$testRoot" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Encoding utf8 `
+              -Append
+
+          Write-Host "[PASS] Isolated test workspace"
+          Write-Host $testRoot
+
+      # ======================================================
+      # 12. VERIFY TEST COPIES
+      # ======================================================
+
+      - name: 12 - Verify copied input SHA256
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $source = Join-Path `
+            $env:PRODUCTION_ROOT `
+            $env:INPUT_REPORT
+
+          $target = Join-Path `
+            $env:PERFORMANCE_TEST_ROOT `
+            $env:INPUT_REPORT
+
+          foreach (
+            $name in @(
+              "validation_summary.csv",
+              "validation_result.json"
+            )
+          ) {
+
+            $sourceHash = (
+              Get-FileHash `
+                -LiteralPath (Join-Path $source $name) `
+                -Algorithm SHA256
+            ).Hash
+
+            $targetHash = (
+              Get-FileHash `
+                -LiteralPath (Join-Path $target $name) `
+                -Algorithm SHA256
+            ).Hash
+
+            if ($sourceHash -ne $targetHash) {
+              throw "Input copy SHA256 mismatch: $name"
+            }
+
+            Write-Host "[PASS] Copy verified: $name"
+          }
+
+      # ======================================================
+      # 13. SNAPSHOT PRODUCTION SOURCE HASHES
+      # ======================================================
+
+      - name: 13 - Snapshot production input SHA256
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $source = Join-Path `
+            $env:PRODUCTION_ROOT `
+            $env:INPUT_REPORT
+
+          $summaryHash = (
+            Get-FileHash `
+              -LiteralPath (
+                Join-Path $source "validation_summary.csv"
+              ) `
+              -Algorithm SHA256
+          ).Hash
+
+          $resultHash = (
+            Get-FileHash `
+              -LiteralPath (
+                Join-Path $source "validation_result.json"
+              ) `
+              -Algorithm SHA256
+          ).Hash
+
+          "SUMMARY_SHA256_BEFORE=$summaryHash" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Encoding utf8 `
+              -Append
+
+          "RESULT_SHA256_BEFORE=$resultHash" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Encoding utf8 `
+              -Append
+
+          Write-Host "[PASS] Production source snapshot"
+
+      # ======================================================
+      # 14. RUN PERFORMANCE COMPARISON
+      # ======================================================
+
+      - name: 14 - Run performance comparison test
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Set-Location -LiteralPath $env:PERFORMANCE_TEST_ROOT
+
+          & py $env:PROGRAM_FILE
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Performance comparison program failed."
+          }
+
+          Write-Host "[PASS] Performance comparison executed"
+
+      # ======================================================
+      # 15. VERIFY SOURCE IMMUTABILITY
+      # ======================================================
+
+      - name: 15 - Verify production source unchanged
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if (
+            -not $env:PRODUCTION_ROOT -or
+            -not $env:SUMMARY_SHA256_BEFORE -or
+            -not $env:RESULT_SHA256_BEFORE
+          ) {
+            Write-Host "[SKIP] Source snapshot unavailable."
+            exit 0
+          }
+
+          $source = Join-Path `
+            $env:PRODUCTION_ROOT `
+            $env:INPUT_REPORT
+
+          $summary = Join-Path `
+            $source `
+            "validation_summary.csv"
+
+          $result = Join-Path `
+            $source `
+            "validation_result.json"
+
+          $summaryAfter = (
+            Get-FileHash `
+              -LiteralPath $summary `
+              -Algorithm SHA256
+          ).Hash
+
+          $resultAfter = (
+            Get-FileHash `
+              -LiteralPath $result `
+              -Algorithm SHA256
+          ).Hash
+
+          if (
+            $summaryAfter -ne $env:SUMMARY_SHA256_BEFORE
+          ) {
+            throw "Production summary was modified."
+          }
+
+          if (
+            $resultAfter -ne $env:RESULT_SHA256_BEFORE
+          ) {
+            throw "Production result was modified."
+          }
+
+          Write-Host "[PASS] Production inputs unchanged"
+
+      # ======================================================
+      # 16. VERIFY REQUIRED OUTPUTS
+      # ======================================================
+
+      - name: 16 - Verify performance outputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $report = Join-Path `
+            $env:PERFORMANCE_TEST_ROOT `
+            $env:OUTPUT_REPORT
+
+          $required = @(
+            "performance_groups.csv",
+            "performance_comparison.csv",
+            "performance_result.json",
+            "performance_manifest.json"
+          )
+
+          foreach ($name in $required) {
+
+            $path = Join-Path $report $name
+
+            if (-not (
+              Test-Path -LiteralPath $path -PathType Leaf
+            )) {
+              throw "Missing performance output: $path"
+            }
+
+            if ((Get-Item -LiteralPath $path).Length -le 0) {
+              throw "Empty performance output: $path"
+            }
+
+            Write-Host "[PASS] $name"
+          }
+
+      # ======================================================
+      # 17. VALIDATE PERFORMANCE CSV
+      # ======================================================
+
+      - name: 17 - Validate performance CSV row counts
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $report = Join-Path `
+            $env:PERFORMANCE_TEST_ROOT `
+            $env:OUTPUT_REPORT
+
+          $groupsPath = Join-Path `
+            $report `
+            "performance_groups.csv"
+
+          $comparisonPath = Join-Path `
+            $report `
+            "performance_comparison.csv"
+
+          @'
+          import csv
+          import sys
+          from pathlib import Path
+
+          groups_path = Path(sys.argv[1])
+          comparison_path = Path(sys.argv[2])
+
+          def load_csv(path):
+              with path.open(
+                  "r",
+                  encoding="utf-8-sig",
+                  newline="",
+              ) as handle:
+                  reader = csv.DictReader(handle)
+
+                  if not reader.fieldnames:
+                      raise ValueError(
+                          f"Missing CSV header: {path}"
+                      )
+
+                  return list(reader)
+
+          groups = load_csv(groups_path)
+          comparisons = load_csv(comparison_path)
+
+          if len(groups) != 36:
+              raise ValueError(
+                  f"Expected 36 group rows, got {len(groups)}"
+              )
+
+          if len(comparisons) != 9:
+              raise ValueError(
+                  "Expected 9 comparison rows, "
+                  f"got {len(comparisons)}"
+              )
+
+          print("[PASS] Group rows:", len(groups))
+          print("[PASS] Comparison rows:", len(comparisons))
+          '@ | py - $groupsPath $comparisonPath
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Performance CSV validation failed."
+          }
+
+      # ======================================================
+      # 18. VALIDATE PERFORMANCE RESULT JSON
+      # ======================================================
+
+      - name: 18 - Validate performance result JSON
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $report = Join-Path `
+            $env:PERFORMANCE_TEST_ROOT `
+            $env:OUTPUT_REPORT
+
+          $resultPath = Join-Path `
+            $report `
+            "performance_result.json"
+
+          @'
+          import json
+          import sys
+          from pathlib import Path
+
+          path = Path(sys.argv[1])
+
+          result = json.loads(
+              path.read_text(encoding="utf-8-sig")
+          )
+
+          if not isinstance(result, dict):
+              raise ValueError(
+                  "Performance result must be a JSON object"
+              )
+
+          if result.get("status") != "PASS":
+              raise ValueError(
+                  "Performance result status is not PASS"
+              )
+
+          print("[PASS] Performance result JSON")
+          '@ | py - $resultPath
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Performance result validation failed."
+          }
+
+      # ======================================================
+      # 19. VERIFY OUTPUT FILE HASHES
+      # ======================================================
+
+      - name: 19 - Calculate output SHA256
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $report = Join-Path `
+            $env:PERFORMANCE_TEST_ROOT `
+            $env:OUTPUT_REPORT
+
+          foreach (
+            $name in @(
+              "performance_groups.csv",
+              "performance_comparison.csv",
+              "performance_result.json",
+              "performance_manifest.json"
+            )
+          ) {
+
+            $path = Join-Path $report $name
+
+            $hash = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash
+
+            Write-Host "$name : $hash"
+          }
+
+          Write-Host "[PASS] Output hashes calculated"
+
+      # ======================================================
+      # 20. VERIFY ISOLATED EXECUTION
+      # ======================================================
+
+      - name: 20 - Verify isolated test execution
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $testRoot = (
+            Resolve-Path `
+              -LiteralPath $env:PERFORMANCE_TEST_ROOT
+          ).Path
+
+          $productionRoot = (
+            Resolve-Path `
+              -LiteralPath $env:PRODUCTION_ROOT
+          ).Path
+
+          if (
+            $testRoot.TrimEnd('\') -eq
+            $productionRoot.TrimEnd('\')
+          ) {
+            throw "Test root must differ from production root."
+          }
+
+          $testOutput = Join-Path `
+            $testRoot `
+            $env:OUTPUT_REPORT
+
+          if (-not (
+            Test-Path -LiteralPath $testOutput -PathType Container
+          )) {
+            throw "Isolated test output directory missing."
+          }
+
+          Write-Host "[PASS] Test output isolated"
+
+      # ======================================================
+      # 21. FINAL TEST GATE
+      # ======================================================
+
+      - name: 21 - Final Clean V001 test gate
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "========================================"
+          Write-Host "PATTERN PERFORMANCE TEST PASS"
+          Write-Host "========================================"
+
+          Write-Host "[PASS] Python syntax"
+          Write-Host "[PASS] Source result contract"
+          Write-Host "[PASS] Source SHA256"
+          Write-Host "[PASS] Isolated execution"
+          Write-Host "[PASS] 36 group rows"
+          Write-Host "[PASS] 9 comparison rows"
+          Write-Host "[PASS] Performance result"
+          Write-Host "[PASS] Production inputs unchanged"
+
+          Write-Host ""
+          Write-Host "NEXT: Production workflow"
+
+      # ======================================================
+      # 22. UPLOAD VERIFICATION ARTIFACTS
+      # ======================================================
+
+      - name: 22 - Upload test verification artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-accumulation-performance-test-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/pattern_256_accumulation_performance_test/data/reports/pattern_256_accumulation_performance/performance_groups.csv
+            ${{ runner.temp }}/pattern_256_accumulation_performance_test/data/reports/pattern_256_accumulation_performance/performance_comparison.csv
+            ${{ runner.temp }}/pattern_256_accumulation_performance_test/data/reports/pattern_256_accumulation_performance/performance_result.json
+            ${{ runner.temp }}/pattern_256_accumulation_performance_test/data/reports/pattern_256_accumulation_performance/performance_manifest.json
+          if-no-files-found: warn
+          retention-days: 14
