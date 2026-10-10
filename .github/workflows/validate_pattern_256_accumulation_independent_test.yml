@@ -1,0 +1,343 @@
+
+name: validate_pattern_256_accumulation_independent_test.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-pattern-256-accumulation-independent-test
+  cancel-in-progress: false
+
+jobs:
+  independent-validation-test:
+    name: Independent Validation Test
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 360
+
+    defaults:
+      run:
+        shell: powershell
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          clean: false
+          persist-credentials: false
+
+      - name: Verify Python environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "========================================"
+          Write-Host "Python environment"
+          Write-Host "========================================"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python launcher is unavailable."
+          }
+
+          Write-Host "Python environment PASS"
+
+      - name: Verify independent validation program
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $program = Join-Path $env:GITHUB_WORKSPACE "validate_pattern_256_accumulation_independent.py"
+
+          if (-not (Test-Path -LiteralPath $program -PathType Leaf)) {
+            throw "Independent validation Python file not found: $program"
+          }
+
+          Write-Host "Program: $program"
+
+          py -m py_compile $program
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax validation failed."
+          }
+
+          Write-Host "Python syntax PASS"
+
+      - name: Locate production source files
+        id: source
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $productionRoot = "C:\Users\USER\Documents\upbit-surge-monitor"
+
+          $sourceDir = Join-Path $productionRoot "data\reports\pattern_256_accumulation_30pct"
+
+          $sourceDetail = Join-Path $sourceDir "validation_detail.csv"
+          $sourceResult = Join-Path $sourceDir "validation_result.json"
+
+          if (-not (Test-Path -LiteralPath $sourceDetail -PathType Leaf)) {
+            throw "Source detail file not found: $sourceDetail"
+          }
+
+          if (-not (Test-Path -LiteralPath $sourceResult -PathType Leaf)) {
+            throw "Source result file not found: $sourceResult"
+          }
+
+          Write-Host "Production root: $productionRoot"
+          Write-Host "Source detail: $sourceDetail"
+          Write-Host "Source result: $sourceResult"
+
+          $detailSize = (Get-Item -LiteralPath $sourceDetail).Length
+
+          Write-Host "Source detail size: $detailSize bytes"
+
+          "production_root=$productionRoot" >> $env:GITHUB_OUTPUT
+          "source_detail=$sourceDetail" >> $env:GITHUB_OUTPUT
+          "source_result=$sourceResult" >> $env:GITHUB_OUTPUT
+
+      - name: Verify production source SHA256
+        id: hashes
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $detail = "${{ steps.source.outputs.source_detail }}"
+          $result = "${{ steps.source.outputs.source_result }}"
+
+          Write-Host "Calculating source SHA256..."
+
+          $detailHash = (Get-FileHash -LiteralPath $detail -Algorithm SHA256).Hash.ToLowerInvariant()
+          $resultHash = (Get-FileHash -LiteralPath $result -Algorithm SHA256).Hash.ToLowerInvariant()
+
+          Write-Host "Detail SHA256: $detailHash"
+          Write-Host "Result SHA256: $resultHash"
+
+          "detail_sha256=$detailHash" >> $env:GITHUB_OUTPUT
+          "result_sha256=$resultHash" >> $env:GITHUB_OUTPUT
+
+      - name: Prepare isolated test workspace
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $workspace = $env:GITHUB_WORKSPACE
+
+          $productionRoot = "${{ steps.source.outputs.production_root }}"
+
+          $sourceDetail = "${{ steps.source.outputs.source_detail }}"
+          $sourceResult = "${{ steps.source.outputs.source_result }}"
+
+          $testSourceDir = Join-Path $workspace "data\reports\pattern_256_accumulation_30pct"
+
+          $testOutputDir = Join-Path $workspace "data\reports\pattern_256_accumulation_independent"
+
+          New-Item -ItemType Directory -Path $testSourceDir -Force | Out-Null
+          New-Item -ItemType Directory -Path $testOutputDir -Force | Out-Null
+
+          $workspaceDetail = Join-Path $testSourceDir "validation_detail.csv"
+          $workspaceResult = Join-Path $testSourceDir "validation_result.json"
+
+          if ($workspaceDetail -ne $sourceDetail) {
+            if (Test-Path -LiteralPath $workspaceDetail -PathType Leaf) {
+              $existingHash = (Get-FileHash -LiteralPath $workspaceDetail -Algorithm SHA256).Hash.ToLowerInvariant()
+              $expectedHash = "${{ steps.hashes.outputs.detail_sha256 }}"
+
+              if ($existingHash -ne $expectedHash) {
+                throw "Workspace detail file differs from production source. Refusing overwrite."
+              }
+            }
+            else {
+              Write-Host "Copying validation detail into test workspace..."
+              Copy-Item -LiteralPath $sourceDetail -Destination $workspaceDetail
+            }
+          }
+
+          if ($workspaceResult -ne $sourceResult) {
+            if (Test-Path -LiteralPath $workspaceResult -PathType Leaf) {
+              $existingHash = (Get-FileHash -LiteralPath $workspaceResult -Algorithm SHA256).Hash.ToLowerInvariant()
+              $expectedHash = "${{ steps.hashes.outputs.result_sha256 }}"
+
+              if ($existingHash -ne $expectedHash) {
+                throw "Workspace result file differs from production source. Refusing overwrite."
+              }
+            }
+            else {
+              Copy-Item -LiteralPath $sourceResult -Destination $workspaceResult
+            }
+          }
+
+          $workspaceDetailHash = (Get-FileHash -LiteralPath $workspaceDetail -Algorithm SHA256).Hash.ToLowerInvariant()
+          $workspaceResultHash = (Get-FileHash -LiteralPath $workspaceResult -Algorithm SHA256).Hash.ToLowerInvariant()
+
+          if ($workspaceDetailHash -ne "${{ steps.hashes.outputs.detail_sha256 }}") {
+            throw "Test detail SHA256 mismatch."
+          }
+
+          if ($workspaceResultHash -ne "${{ steps.hashes.outputs.result_sha256 }}") {
+            throw "Test result SHA256 mismatch."
+          }
+
+          Write-Host "Isolated test workspace PASS"
+
+      - name: Execute independent validation test
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "========================================"
+          Write-Host "Independent validation test"
+          Write-Host "========================================"
+
+          py validate_pattern_256_accumulation_independent.py
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Independent validation execution failed."
+          }
+
+          Write-Host "Independent validation execution PASS"
+
+      - name: Verify independent validation outputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $outputDir = Join-Path $env:GITHUB_WORKSPACE "data\reports\pattern_256_accumulation_independent"
+
+          $detail = Join-Path $outputDir "independent_detail.csv"
+          $summary = Join-Path $outputDir "independent_summary.csv"
+          $comparison = Join-Path $outputDir "independent_comparison.csv"
+          $resultFile = Join-Path $outputDir "independent_result.json"
+          $manifestFile = Join-Path $outputDir "independent_manifest.json"
+
+          $requiredFiles = @(
+            $detail,
+            $summary,
+            $comparison,
+            $resultFile,
+            $manifestFile
+          )
+
+          foreach ($file in $requiredFiles) {
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+              throw "Required output missing: $file"
+            }
+
+            Write-Host "PASS: $file"
+          }
+
+          $result = Get-Content -LiteralPath $resultFile -Raw -Encoding UTF8 | ConvertFrom-Json
+          $manifest = Get-Content -LiteralPath $manifestFile -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          if ($result.status -ne "PASS") {
+            throw "Result status is not PASS."
+          }
+
+          if ($result.program -ne "validate_pattern_256_accumulation_independent.py") {
+            throw "Unexpected result program."
+          }
+
+          if ($result.version -ne "Clean V001") {
+            throw "Unexpected program version."
+          }
+
+          if ([int64]$result.imported_rows -le 0) {
+            throw "Imported row count must be positive."
+          }
+
+          if ([int64]$result.selected_rows -le 0) {
+            throw "Selected row count must be positive."
+          }
+
+          if ([int64]$result.selected_rows + [int64]$result.excluded_rows -ne [int64]$result.imported_rows) {
+            throw "Source row accounting mismatch."
+          }
+
+          if ([int]$result.summary_rows -ne 108) {
+            throw "Expected 108 summary rows."
+          }
+
+          if ([int]$result.comparison_rows -ne 18) {
+            throw "Expected 18 comparison rows."
+          }
+
+          $checks = @(
+            @{
+              Path = $detail
+              Expected = [string]$result.detail_sha256
+            },
+            @{
+              Path = $summary
+              Expected = [string]$result.summary_sha256
+            },
+            @{
+              Path = $comparison
+              Expected = [string]$result.comparison_sha256
+            }
+          )
+
+          foreach ($check in $checks) {
+            $actual = (Get-FileHash -LiteralPath $check.Path -Algorithm SHA256).Hash.ToLowerInvariant()
+
+            if ($actual -ne $check.Expected.ToLowerInvariant()) {
+              throw "Output SHA256 mismatch: $($check.Path)"
+            }
+          }
+
+          if ($manifest.program -ne $result.program) {
+            throw "Manifest program mismatch."
+          }
+
+          Write-Host "========================================"
+          Write-Host "Independent validation results"
+          Write-Host "========================================"
+          Write-Host "Imported: $($result.imported_rows)"
+          Write-Host "Selected: $($result.selected_rows)"
+          Write-Host "Excluded: $($result.excluded_rows)"
+          Write-Host "Summary rows: $($result.summary_rows)"
+          Write-Host "Comparison rows: $($result.comparison_rows)"
+          Write-Host "Elapsed seconds: $($result.elapsed_seconds)"
+          Write-Host "Output SHA256 PASS"
+
+      - name: Verify production sources unchanged
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $detail = "${{ steps.source.outputs.source_detail }}"
+          $result = "${{ steps.source.outputs.source_result }}"
+
+          $expectedDetail = "${{ steps.hashes.outputs.detail_sha256 }}"
+          $expectedResult = "${{ steps.hashes.outputs.result_sha256 }}"
+
+          if (-not $detail -or -not $result -or -not $expectedDetail -or -not $expectedResult) {
+            Write-Host "Source hash verification was not initialized."
+            exit 0
+          }
+
+          $actualDetail = (Get-FileHash -LiteralPath $detail -Algorithm SHA256).Hash.ToLowerInvariant()
+          $actualResult = (Get-FileHash -LiteralPath $result -Algorithm SHA256).Hash.ToLowerInvariant()
+
+          if ($actualDetail -ne $expectedDetail) {
+            throw "Production validation_detail.csv changed!"
+          }
+
+          if ($actualResult -ne $expectedResult) {
+            throw "Production validation_result.json changed!"
+          }
+
+          Write-Host "Production source files unchanged PASS"
+
+      - name: Upload independent validation test reports
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-accumulation-independent-test
+          path: |
+            data/reports/pattern_256_accumulation_independent/independent_summary.csv
+            data/reports/pattern_256_accumulation_independent/independent_comparison.csv
+            data/reports/pattern_256_accumulation_independent/independent_result.json
+            data/reports/pattern_256_accumulation_independent/independent_manifest.json
+          if-no-files-found: error
+          retention-days: 14
