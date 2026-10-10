@@ -1,0 +1,778 @@
+
+name: validate_pattern_256_accumulation_30pct_test.yml
+
+run-name: validate_pattern_256_accumulation_30pct_test.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-pattern-256-accumulation-30pct-test
+  cancel-in-progress: false
+
+jobs:
+  validate-pattern-256-accumulation-30pct-test:
+    name: validate_pattern_256_accumulation_30pct_test.yml
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 180
+
+    defaults:
+      run:
+        shell: pwsh
+
+    env:
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+
+    steps:
+
+      # ======================================================
+      # 01. CHECKOUT
+      # ======================================================
+
+      - name: 01 - Checkout repository
+        uses: actions/checkout@v4
+
+      # ======================================================
+      # 02. ENVIRONMENT
+      # ======================================================
+
+      - name: 02 - Show environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "========================================"
+          Write-Host "30 PERCENT VALIDATION TEST"
+          Write-Host "========================================"
+
+          Write-Host "Repository: $env:GITHUB_REPOSITORY"
+          Write-Host "Workspace : $env:GITHUB_WORKSPACE"
+          Write-Host "Runner    : $env:RUNNER_NAME"
+
+          py --version
+
+          py -c "import pandas; print('pandas:', pandas.__version__)"
+          py -c "import numpy; print('numpy:', numpy.__version__)"
+
+      # ======================================================
+      # 03. VERIFY PYTHON PROGRAM
+      # ======================================================
+
+      - name: 03 - Verify validation program
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $program = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "validate_pattern_256_accumulation_30pct.py"
+
+          if (-not (Test-Path -LiteralPath $program -PathType Leaf)) {
+            throw "Validation program missing: $program"
+          }
+
+          Write-Host "[PASS] Program exists"
+          Write-Host $program
+
+      # ======================================================
+      # 04. VERIFY CLEAN V001 MARKERS
+      # ======================================================
+
+      - name: 04 - Verify Clean V001 markers
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $program = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "validate_pattern_256_accumulation_30pct.py"
+
+          $content = Get-Content `
+            -LiteralPath $program `
+            -Raw `
+            -Encoding UTF8
+
+          $required = @(
+            "Clean V001",
+            "TARGET_RETURN",
+            "HORIZONS",
+            "checkpoint_is_valid",
+            "sha256_file",
+            "validate_one_signal",
+            "CENSORED",
+            "NEXT_CANDLE_OPEN"
+          )
+
+          foreach ($marker in $required) {
+
+            if (-not $content.Contains($marker)) {
+              throw "Required program marker missing: $marker"
+            }
+
+            Write-Host "[PASS] $marker"
+          }
+
+      # ======================================================
+      # 05. PYTHON SYNTAX
+      # ======================================================
+
+      - name: 05 - Validate Python syntax
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          @'
+          import ast
+          from pathlib import Path
+
+          path = Path(
+              "validate_pattern_256_accumulation_30pct.py"
+          )
+
+          source = path.read_text(
+              encoding="utf-8-sig"
+          )
+
+          ast.parse(
+              source,
+              filename=str(path),
+          )
+
+          print("[PASS] Python syntax")
+          '@ | py -
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax validation failed"
+          }
+
+      # ======================================================
+      # 06. STATIC SAFETY SCAN
+      # ======================================================
+
+      - name: 06 - Static future-information safety scan
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          @'
+          import ast
+          from pathlib import Path
+
+          path = Path(
+              "validate_pattern_256_accumulation_30pct.py"
+          )
+
+          source = path.read_text(
+              encoding="utf-8-sig"
+          )
+
+          tree = ast.parse(source)
+
+          forbidden_calls = {
+              "subprocess.run",
+              "subprocess.Popen",
+              "os.system",
+          }
+
+          for node in ast.walk(tree):
+
+              if not isinstance(node, ast.Call):
+                  continue
+
+              func = node.func
+
+              if isinstance(func, ast.Attribute):
+                  if isinstance(func.value, ast.Name):
+                      full_name = (
+                          func.value.id
+                          + "."
+                          + func.attr
+                      )
+
+                      if full_name in forbidden_calls:
+                          raise RuntimeError(
+                              "Forbidden execution call: "
+                              + full_name
+                          )
+
+              if isinstance(func, ast.Name):
+                  if func.id in {
+                      "eval",
+                      "exec",
+                  }:
+                      raise RuntimeError(
+                          "Forbidden dynamic execution: "
+                          + func.id
+                      )
+
+          print("[PASS] Static execution safety")
+          '@ | py -
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Static safety scan failed"
+          }
+
+      # ======================================================
+      # 07. VERIFY PRODUCTION ROOT
+      # ======================================================
+
+      - name: 07 - Verify production root
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = Join-Path `
+            $env:USERPROFILE `
+            "Documents\upbit-surge-monitor"
+
+          if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+            throw "Production root missing: $root"
+          }
+
+          "PRODUCTION_ROOT=$root" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Encoding utf8 `
+              -Append
+
+          Write-Host "[PASS] Production root"
+          Write-Host $root
+
+      # ======================================================
+      # 08. VERIFY INPUT DATA
+      # ======================================================
+
+      - name: 08 - Verify crosscheck and OHLCV inputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $candidate = Join-Path `
+            $env:PRODUCTION_ROOT `
+            "data\reports\pattern_256_accumulation_crosscheck\crosscheck_candidates.csv"
+
+          if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            throw "Crosscheck candidates missing: $candidate"
+          }
+
+          foreach ($tf in @("h1", "h4", "d1")) {
+
+            $directory = Join-Path `
+              $env:PRODUCTION_ROOT `
+              "data\ohlcv\$tf"
+
+            if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+              throw "OHLCV directory missing: $directory"
+            }
+
+            $sample = Get-ChildItem `
+              -LiteralPath $directory `
+              -Filter "*.csv" `
+              -File |
+              Select-Object -First 1
+
+            if ($null -eq $sample) {
+              throw "No OHLCV CSV: $directory"
+            }
+
+            Write-Host "[PASS] OHLCV $tf"
+          }
+
+          Write-Host "[PASS] Crosscheck candidates"
+
+      # ======================================================
+      # 09. PREPARE TEST WORKSPACE
+      # ======================================================
+
+      - name: 09 - Prepare isolated test workspace
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $testRoot = Join-Path `
+            $env:RUNNER_TEMP `
+            "pattern_256_accumulation_30pct_test"
+
+          if (Test-Path -LiteralPath $testRoot) {
+            Remove-Item `
+              -LiteralPath $testRoot `
+              -Recurse `
+              -Force
+          }
+
+          New-Item `
+            -ItemType Directory `
+            -Path $testRoot `
+            -Force |
+            Out-Null
+
+          Copy-Item `
+            -LiteralPath (
+              Join-Path $env:GITHUB_WORKSPACE `
+              "validate_pattern_256_accumulation_30pct.py"
+            ) `
+            -Destination $testRoot
+
+          $dataRoot = Join-Path $testRoot "data"
+
+          New-Item `
+            -ItemType Directory `
+            -Path $dataRoot `
+            -Force |
+            Out-Null
+
+          $sourceData = Join-Path `
+            $env:PRODUCTION_ROOT `
+            "data"
+
+          $targetOhlcv = Join-Path `
+            $dataRoot `
+            "ohlcv"
+
+          New-Item `
+            -ItemType Junction `
+            -Path $targetOhlcv `
+            -Target (
+              Join-Path $sourceData "ohlcv"
+            ) |
+            Out-Null
+
+          $targetCrosscheck = Join-Path `
+            $dataRoot `
+            "reports\pattern_256_accumulation_crosscheck"
+
+          New-Item `
+            -ItemType Directory `
+            -Path $targetCrosscheck `
+            -Force |
+            Out-Null
+
+          Copy-Item `
+            -LiteralPath (
+              Join-Path $sourceData `
+              "reports\pattern_256_accumulation_crosscheck\crosscheck_candidates.csv"
+            ) `
+            -Destination $targetCrosscheck
+
+          "TEST_ROOT=$testRoot" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Encoding utf8 `
+              -Append
+
+          Write-Host "[PASS] Isolated test workspace"
+          Write-Host $testRoot
+
+      # ======================================================
+      # 10. SNAPSHOT SOURCE SHA256
+      # ======================================================
+
+      - name: 10 - Snapshot input SHA256 before test
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $candidate = Join-Path `
+            $env:PRODUCTION_ROOT `
+            "data\reports\pattern_256_accumulation_crosscheck\crosscheck_candidates.csv"
+
+          $hash = (
+            Get-FileHash `
+              -LiteralPath $candidate `
+              -Algorithm SHA256
+          ).Hash
+
+          "CANDIDATE_SHA256_BEFORE=$hash" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Encoding utf8 `
+              -Append
+
+          Write-Host "[PASS] Candidate SHA256 snapshot"
+          Write-Host $hash
+
+      # ======================================================
+      # 11. RUN TEST VALIDATION
+      # ======================================================
+
+      - name: 11 - Run 30 percent validation test
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Set-Location -LiteralPath $env:TEST_ROOT
+
+          py validate_pattern_256_accumulation_30pct.py `
+            --limit-markets 3
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "30 percent validation test failed"
+          }
+
+          Write-Host "[PASS] Validation test executed"
+
+      # ======================================================
+      # 12. VERIFY INPUT INTEGRITY
+      # ======================================================
+
+      - name: 12 - Verify crosscheck source SHA256 unchanged
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $candidate = Join-Path `
+            $env:PRODUCTION_ROOT `
+            "data\reports\pattern_256_accumulation_crosscheck\crosscheck_candidates.csv"
+
+          $after = (
+            Get-FileHash `
+              -LiteralPath $candidate `
+              -Algorithm SHA256
+          ).Hash
+
+          if (
+            $env:CANDIDATE_SHA256_BEFORE -and
+            $after -ne $env:CANDIDATE_SHA256_BEFORE
+          ) {
+            throw "Production crosscheck source SHA256 changed"
+          }
+
+          Write-Host "[PASS] Crosscheck source unchanged"
+
+      # ======================================================
+      # 13. VERIFY OUTPUT FILES
+      # ======================================================
+
+      - name: 13 - Verify required test outputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $report = Join-Path `
+            $env:TEST_ROOT `
+            "data\reports\pattern_256_accumulation_30pct"
+
+          $required = @(
+            "validation_detail.csv",
+            "validation_summary.csv",
+            "validation_result.json",
+            "validation_manifest.json"
+          )
+
+          foreach ($filename in $required) {
+
+            $path = Join-Path $report $filename
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing validation output: $path"
+            }
+
+            Write-Host "[PASS] $filename"
+          }
+
+      # ======================================================
+      # 14. VALIDATE RESULT JSON
+      # ======================================================
+
+      - name: 14 - Validate result JSON
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $path = Join-Path `
+            $env:TEST_ROOT `
+            "data\reports\pattern_256_accumulation_30pct\validation_result.json"
+
+          $result = Get-Content `
+            -LiteralPath $path `
+            -Raw `
+            -Encoding UTF8 |
+            ConvertFrom-Json
+
+          if ($result.status -ne "PASS") {
+            throw "Validation result is not PASS"
+          }
+
+          if ($result.version -ne "Clean V001") {
+            throw "Unexpected validation version"
+          }
+
+          if ($result.target_return_pct -ne 30) {
+            throw "Target return mismatch"
+          }
+
+          if ($result.entry_rule -ne "NEXT_CANDLE_OPEN") {
+            throw "Entry rule mismatch"
+          }
+
+          if ($result.limited_test -ne $true) {
+            throw "Expected limited test mode"
+          }
+
+          if ($result.detail_rows -le 0) {
+            throw "No validation detail rows"
+          }
+
+          Write-Host "[PASS] Result JSON"
+
+      # ======================================================
+      # 15. VALIDATE CSV CONTENT
+      # ======================================================
+
+      - name: 15 - Validate detail and summary CSV
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $report = Join-Path `
+            $env:TEST_ROOT `
+            "data\reports\pattern_256_accumulation_30pct"
+
+          $detail = Join-Path `
+            $report `
+            "validation_detail.csv"
+
+          $summary = Join-Path `
+            $report `
+            "validation_summary.csv"
+
+          @'
+          import csv
+          import sys
+          from collections import Counter
+          from pathlib import Path
+
+          detail = Path(sys.argv[1])
+          summary = Path(sys.argv[2])
+
+          valid_statuses = {
+              "HIT",
+              "MISS",
+              "CENSORED",
+              "INVALID",
+          }
+
+          valid_groups = {
+              "PATTERN_256_ONLY",
+              "ACCUMULATION_ONLY",
+              "BOTH",
+              "NEITHER",
+          }
+
+          horizons = {24, 72, 168}
+
+          counts = Counter()
+          rows = 0
+
+          with detail.open(
+              "r",
+              encoding="utf-8-sig",
+              newline="",
+          ) as handle:
+
+              reader = csv.DictReader(handle)
+
+              for row in reader:
+                  rows += 1
+
+                  if row["status"] not in valid_statuses:
+                      raise ValueError(
+                          "Invalid validation status"
+                      )
+
+                  if row["classification"] not in valid_groups:
+                      raise ValueError(
+                          "Invalid classification"
+                      )
+
+                  if int(row["horizon"]) not in horizons:
+                      raise ValueError(
+                          "Invalid horizon"
+                      )
+
+                  counts[row["status"]] += 1
+
+          if rows <= 0:
+              raise ValueError(
+                  "No validation detail rows"
+              )
+
+          with summary.open(
+              "r",
+              encoding="utf-8-sig",
+              newline="",
+          ) as handle:
+
+              reader = csv.DictReader(handle)
+              summary_rows = list(reader)
+
+          if len(summary_rows) != 36:
+              raise ValueError(
+                  "Expected 36 summary rows"
+              )
+
+          print("[PASS] Detail rows:", rows)
+          print("[PASS] Summary rows:", len(summary_rows))
+          print("[PASS] Status counts:", dict(counts))
+          '@ | py - $detail $summary
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "CSV validation failed"
+          }
+
+      # ======================================================
+      # 16. VALIDATE CHECKPOINTS
+      # ======================================================
+
+      - name: 16 - Validate checkpoint integrity
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $checkpointRoot = Join-Path `
+            $env:TEST_ROOT `
+            "data\reports\pattern_256_accumulation_30pct\checkpoints"
+
+          if (-not (Test-Path -LiteralPath $checkpointRoot)) {
+            throw "Checkpoint directory missing"
+          }
+
+          $checkpoints = @(
+            Get-ChildItem `
+              -LiteralPath $checkpointRoot `
+              -Filter "*.json" `
+              -File `
+              -Recurse
+          )
+
+          if ($checkpoints.Count -eq 0) {
+            throw "No checkpoint files generated"
+          }
+
+          foreach ($checkpoint in $checkpoints) {
+
+            $data = Get-Content `
+              -LiteralPath $checkpoint.FullName `
+              -Raw `
+              -Encoding UTF8 |
+              ConvertFrom-Json
+
+            if ($data.version -ne "Clean V001") {
+              throw "Checkpoint version mismatch"
+            }
+
+            if ($data.row_count -le 0) {
+              throw "Checkpoint row count invalid"
+            }
+
+            $chunk = [System.IO.Path]::ChangeExtension(
+              $checkpoint.FullName,
+              ".csv"
+            )
+
+            if (-not (Test-Path -LiteralPath $chunk)) {
+              throw "Checkpoint chunk missing: $chunk"
+            }
+
+            $actualHash = (
+              Get-FileHash `
+                -LiteralPath $chunk `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if (
+              $actualHash -ne
+              $data.chunk_sha256.ToLowerInvariant()
+            ) {
+              throw "Checkpoint chunk SHA256 mismatch"
+            }
+          }
+
+          Write-Host "[PASS] Checkpoint integrity"
+          Write-Host "Checkpoints: $($checkpoints.Count)"
+
+      # ======================================================
+      # 17. VERIFY OUTPUT SHA256
+      # ======================================================
+
+      - name: 17 - Verify final output hashes
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $report = Join-Path `
+            $env:TEST_ROOT `
+            "data\reports\pattern_256_accumulation_30pct"
+
+          $result = Get-Content `
+            -LiteralPath (
+              Join-Path $report "validation_result.json"
+            ) `
+            -Raw `
+            -Encoding UTF8 |
+            ConvertFrom-Json
+
+          $detailHash = (
+            Get-FileHash `
+              -LiteralPath (
+                Join-Path $report "validation_detail.csv"
+              ) `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          $summaryHash = (
+            Get-FileHash `
+              -LiteralPath (
+                Join-Path $report "validation_summary.csv"
+              ) `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if (
+            $detailHash -ne
+            $result.detail_sha256.ToLowerInvariant()
+          ) {
+            throw "Detail SHA256 mismatch"
+          }
+
+          if (
+            $summaryHash -ne
+            $result.summary_sha256.ToLowerInvariant()
+          ) {
+            throw "Summary SHA256 mismatch"
+          }
+
+          Write-Host "[PASS] Final output SHA256"
+
+      # ======================================================
+      # 18. FINAL TEST GATE
+      # ======================================================
+
+      - name: 18 - Final Clean V001 test gate
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "========================================"
+          Write-Host "30 PERCENT VALIDATION TEST PASS"
+          Write-Host "========================================"
+
+          Write-Host "[PASS] Python syntax"
+          Write-Host "[PASS] Static safety"
+          Write-Host "[PASS] Real OHLCV validation"
+          Write-Host "[PASS] Crosscheck source unchanged"
+          Write-Host "[PASS] Detail and summary CSV"
+          Write-Host "[PASS] Checkpoint integrity"
+          Write-Host "[PASS] Output SHA256"
+
+          Write-Host ""
+          Write-Host "NEXT: Production workflow after test PASS"
+
+      # ======================================================
+      # 19. UPLOAD TEST ARTIFACTS
+      # ======================================================
+
+      - name: 19 - Upload test verification artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-accumulation-30pct-test-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/pattern_256_accumulation_30pct_test/data/reports/pattern_256_accumulation_30pct/validation_result.json
+            ${{ runner.temp }}/pattern_256_accumulation_30pct_test/data/reports/pattern_256_accumulation_30pct/validation_summary.csv
+            ${{ runner.temp }}/pattern_256_accumulation_30pct_test/data/reports/pattern_256_accumulation_30pct/validation_manifest.json
+          if-no-files-found: warn
+          retention-days: 7
