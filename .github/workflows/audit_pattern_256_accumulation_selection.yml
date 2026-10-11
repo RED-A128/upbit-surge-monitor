@@ -1,0 +1,477 @@
+
+name: audit_pattern_256_accumulation_selection.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-pattern-256-accumulation-selection-production
+  cancel-in-progress: false
+
+jobs:
+  selection-audit-production:
+    name: Selection Bias Audit Production
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 360
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PRODUCTION_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+      PROGRAM_NAME: audit_pattern_256_accumulation_selection.py
+
+    steps:
+      # ============================================================
+      # 01. Checkout repository
+      # ============================================================
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          clean: false
+          persist-credentials: false
+
+      # ============================================================
+      # 02. Verify Python
+      # ============================================================
+
+      - name: Verify Python environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python launcher unavailable."
+          }
+
+          $program = Join-Path $env:GITHUB_WORKSPACE $env:PROGRAM_NAME
+
+          if (-not (Test-Path -LiteralPath $program -PathType Leaf)) {
+            throw "Audit program not found: $program"
+          }
+
+          py -m py_compile $program
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax verification failed."
+          }
+
+          Write-Host "Python verification PASS"
+
+      # ============================================================
+      # 03. Verify production inputs
+      # ============================================================
+
+      - name: Verify production inputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = $env:PRODUCTION_ROOT
+
+          if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+            throw "Production root missing: $root"
+          }
+
+          $validationDir = Join-Path $root "data\reports\pattern_256_accumulation_30pct"
+          $independentDir = Join-Path $root "data\reports\pattern_256_accumulation_independent"
+
+          $files = @{
+            validation_detail = Join-Path $validationDir "validation_detail.csv"
+            validation_result = Join-Path $validationDir "validation_result.json"
+            independent_detail = Join-Path $independentDir "independent_detail.csv"
+            independent_result = Join-Path $independentDir "independent_result.json"
+            database_checkpoint = Join-Path $independentDir "database_checkpoint.json"
+            database = Join-Path $independentDir "working.sqlite3"
+          }
+
+          foreach ($key in $files.Keys) {
+            if (-not (Test-Path -LiteralPath $files[$key] -PathType Leaf)) {
+              throw "Required production input missing: $($files[$key])"
+            }
+          }
+
+          $validation = Get-Content -LiteralPath $files.validation_result -Raw -Encoding UTF8 | ConvertFrom-Json
+          $independent = Get-Content -LiteralPath $files.independent_result -Raw -Encoding UTF8 | ConvertFrom-Json
+          $checkpoint = Get-Content -LiteralPath $files.database_checkpoint -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          if ($validation.status -ne "PASS") {
+            throw "Upstream validation is not PASS."
+          }
+
+          if ($independent.status -ne "PASS") {
+            throw "Independent validation is not PASS."
+          }
+
+          if ($independent.version -ne "Clean V001") {
+            throw "Unexpected independent validation version."
+          }
+
+          if ($checkpoint.status -ne "COMPLETE") {
+            throw "Database checkpoint incomplete."
+          }
+
+          if ([int64]$independent.imported_rows -ne 7949826) {
+            throw "Unexpected imported row count."
+          }
+
+          if ([int64]$independent.selected_rows -ne 297548) {
+            throw "Unexpected selected row count."
+          }
+
+          if ([int64]$independent.excluded_rows -ne 7652278) {
+            throw "Unexpected excluded row count."
+          }
+
+          $detailHash = (Get-FileHash -LiteralPath $files.validation_detail -Algorithm SHA256).Hash.ToLowerInvariant()
+          $resultHash = (Get-FileHash -LiteralPath $files.validation_result -Algorithm SHA256).Hash.ToLowerInvariant()
+          $independentHash = (Get-FileHash -LiteralPath $files.independent_detail -Algorithm SHA256).Hash.ToLowerInvariant()
+
+          if ($detailHash -ne ([string]$validation.detail_sha256).ToLowerInvariant()) {
+            throw "Validation detail SHA256 mismatch."
+          }
+
+          if ($detailHash -ne ([string]$independent.source_detail_sha256).ToLowerInvariant()) {
+            throw "Independent source detail SHA256 mismatch."
+          }
+
+          if ($resultHash -ne ([string]$independent.source_result_sha256).ToLowerInvariant()) {
+            throw "Independent source result SHA256 mismatch."
+          }
+
+          if ($independentHash -ne ([string]$independent.detail_sha256).ToLowerInvariant()) {
+            throw "Independent detail SHA256 mismatch."
+          }
+
+          if ($detailHash -ne ([string]$checkpoint.source_sha256).ToLowerInvariant()) {
+            throw "Database checkpoint source SHA256 mismatch."
+          }
+
+          if ($resultHash -ne ([string]$checkpoint.result_sha256).ToLowerInvariant()) {
+            throw "Database checkpoint result SHA256 mismatch."
+          }
+
+          Write-Host "Production input verification PASS"
+
+      # ============================================================
+      # 04. Capture input SHA256
+      # ============================================================
+
+      - name: Capture production input SHA256
+        id: hashes
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = $env:PRODUCTION_ROOT
+
+          $paths = @{
+            validation_detail = Join-Path $root "data\reports\pattern_256_accumulation_30pct\validation_detail.csv"
+            validation_result = Join-Path $root "data\reports\pattern_256_accumulation_30pct\validation_result.json"
+            independent_detail = Join-Path $root "data\reports\pattern_256_accumulation_independent\independent_detail.csv"
+            independent_result = Join-Path $root "data\reports\pattern_256_accumulation_independent\independent_result.json"
+            database_checkpoint = Join-Path $root "data\reports\pattern_256_accumulation_independent\database_checkpoint.json"
+            database = Join-Path $root "data\reports\pattern_256_accumulation_independent\working.sqlite3"
+          }
+
+          foreach ($key in $paths.Keys) {
+            $hash = (Get-FileHash -LiteralPath $paths[$key] -Algorithm SHA256).Hash.ToLowerInvariant()
+
+            "$($key)_sha256=$hash" >> $env:GITHUB_OUTPUT
+
+            Write-Host "$key SHA256: $hash"
+          }
+
+          Write-Host "Production SHA256 capture PASS"
+
+      # ============================================================
+      # 05. Stage program safely
+      # ============================================================
+
+      - name: Stage audit program
+        id: stage
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $source = Join-Path $env:GITHUB_WORKSPACE $env:PROGRAM_NAME
+
+          $staged = Join-Path $env:PRODUCTION_ROOT ".selection_audit_runner_${{ github.run_id }}_${{ github.run_attempt }}.py"
+
+          if (Test-Path -LiteralPath $staged) {
+            throw "Staged program already exists. Refusing overwrite: $staged"
+          }
+
+          Copy-Item -LiteralPath $source -Destination $staged
+
+          $sourceHash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
+          $stagedHash = (Get-FileHash -LiteralPath $staged -Algorithm SHA256).Hash.ToLowerInvariant()
+
+          if ($sourceHash -ne $stagedHash) {
+            throw "Staged program SHA256 mismatch."
+          }
+
+          "staged_program=$staged" >> $env:GITHUB_OUTPUT
+          "program_sha256=$sourceHash" >> $env:GITHUB_OUTPUT
+
+          Write-Host "Staged program verification PASS"
+
+      # ============================================================
+      # 06. Execute production audit
+      # ============================================================
+
+      - name: Execute selection bias audit production
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $program = "${{ steps.stage.outputs.staged_program }}"
+
+          if (-not (Test-Path -LiteralPath $program -PathType Leaf)) {
+            throw "Staged program missing."
+          }
+
+          Set-Location $env:PRODUCTION_ROOT
+
+          Write-Host "========================================"
+          Write-Host "Selection Bias Audit Production"
+          Write-Host "========================================"
+
+          py $program
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Selection bias audit production failed."
+          }
+
+          Write-Host "Selection bias audit execution PASS"
+
+      # ============================================================
+      # 07. Verify production outputs
+      # ============================================================
+
+      - name: Verify audit production outputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $outputDir = Join-Path $env:PRODUCTION_ROOT "data\reports\pattern_256_accumulation_selection_audit"
+
+          $selection = Join-Path $outputDir "selection_audit.csv"
+          $matched = Join-Path $outputDir "matched_window_comparison.csv"
+          $resultFile = Join-Path $outputDir "selection_audit_result.json"
+          $manifestFile = Join-Path $outputDir "selection_audit_manifest.json"
+
+          foreach ($file in @(
+            $selection,
+            $matched,
+            $resultFile,
+            $manifestFile
+          )) {
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+              throw "Required output missing: $file"
+            }
+          }
+
+          $result = Get-Content -LiteralPath $resultFile -Raw -Encoding UTF8 | ConvertFrom-Json
+          $manifest = Get-Content -LiteralPath $manifestFile -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          if ($result.status -ne "PASS") {
+            throw "Audit result status is not PASS."
+          }
+
+          if ($result.program -ne $env:PROGRAM_NAME) {
+            throw "Unexpected audit program."
+          }
+
+          if ($result.version -ne "Clean V001") {
+            throw "Unexpected audit version."
+          }
+
+          if ([int64]$result.source_rows -ne 7949826) {
+            throw "Source row count mismatch."
+          }
+
+          if ([int64]$result.selected_rows -ne 297548) {
+            throw "Selected row count mismatch."
+          }
+
+          if ([int64]$result.excluded_rows -ne 7652278) {
+            throw "Excluded row count mismatch."
+          }
+
+          if (
+            ([int64]$result.selected_rows +
+             [int64]$result.excluded_overlap +
+             [int64]$result.excluded_no_entry) -ne
+            [int64]$result.source_rows
+          ) {
+            throw "Audit row accounting mismatch."
+          }
+
+          if ([int]$result.selection_audit_rows -ne 108) {
+            throw "Expected 108 selection audit rows."
+          }
+
+          if ([int]$result.matched_comparison_rows -ne 18) {
+            throw "Expected 18 matched comparison rows."
+          }
+
+          if ($manifest.program -ne $result.program) {
+            throw "Manifest program mismatch."
+          }
+
+          if ($manifest.version -ne $result.version) {
+            throw "Manifest version mismatch."
+          }
+
+          $checks = @(
+            @{
+              Path = $selection
+              ResultHash = [string]$result.selection_audit_sha256
+              ManifestHash = [string]$manifest.outputs.'selection_audit.csv'
+            },
+            @{
+              Path = $matched
+              ResultHash = [string]$result.matched_comparison_sha256
+              ManifestHash = [string]$manifest.outputs.'matched_window_comparison.csv'
+            }
+          )
+
+          foreach ($check in $checks) {
+            $actual = (Get-FileHash -LiteralPath $check.Path -Algorithm SHA256).Hash.ToLowerInvariant()
+
+            if ($actual -ne $check.ResultHash.ToLowerInvariant()) {
+              throw "Result SHA256 mismatch: $($check.Path)"
+            }
+
+            if ($actual -ne $check.ManifestHash.ToLowerInvariant()) {
+              throw "Manifest SHA256 mismatch: $($check.Path)"
+            }
+
+            Write-Host "SHA256 PASS: $($check.Path)"
+          }
+
+          if (@(Import-Csv -LiteralPath $selection).Count -ne 108) {
+            throw "Selection audit CSV row count mismatch."
+          }
+
+          if (@(Import-Csv -LiteralPath $matched).Count -ne 18) {
+            throw "Matched comparison CSV row count mismatch."
+          }
+
+          Write-Host "========================================"
+          Write-Host "Selection Bias Audit Production Summary"
+          Write-Host "========================================"
+
+          Write-Host "Source rows: $($result.source_rows)"
+          Write-Host "Selected rows: $($result.selected_rows)"
+          Write-Host "Overlap excluded: $($result.excluded_overlap)"
+          Write-Host "No-entry excluded: $($result.excluded_no_entry)"
+          Write-Host "Selection audit rows: $($result.selection_audit_rows)"
+          Write-Host "Matched comparison rows: $($result.matched_comparison_rows)"
+          Write-Host "Elapsed seconds: $($result.elapsed_seconds)"
+          Write-Host "Production audit verification PASS"
+
+      # ============================================================
+      # 08. Verify original inputs unchanged
+      # ============================================================
+
+      - name: Verify production inputs unchanged
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $expected = @{
+            validation_detail = "${{ steps.hashes.outputs.validation_detail_sha256 }}"
+            validation_result = "${{ steps.hashes.outputs.validation_result_sha256 }}"
+            independent_detail = "${{ steps.hashes.outputs.independent_detail_sha256 }}"
+            independent_result = "${{ steps.hashes.outputs.independent_result_sha256 }}"
+            database_checkpoint = "${{ steps.hashes.outputs.database_checkpoint_sha256 }}"
+            database = "${{ steps.hashes.outputs.database_sha256 }}"
+          }
+
+          if ($expected.Values -contains "") {
+            Write-Host "Initial SHA256 capture incomplete."
+            exit 0
+          }
+
+          $root = $env:PRODUCTION_ROOT
+
+          $paths = @{
+            validation_detail = Join-Path $root "data\reports\pattern_256_accumulation_30pct\validation_detail.csv"
+            validation_result = Join-Path $root "data\reports\pattern_256_accumulation_30pct\validation_result.json"
+            independent_detail = Join-Path $root "data\reports\pattern_256_accumulation_independent\independent_detail.csv"
+            independent_result = Join-Path $root "data\reports\pattern_256_accumulation_independent\independent_result.json"
+            database_checkpoint = Join-Path $root "data\reports\pattern_256_accumulation_independent\database_checkpoint.json"
+            database = Join-Path $root "data\reports\pattern_256_accumulation_independent\working.sqlite3"
+          }
+
+          foreach ($key in $paths.Keys) {
+            $actual = (Get-FileHash -LiteralPath $paths[$key] -Algorithm SHA256).Hash.ToLowerInvariant()
+
+            if ($actual -ne $expected[$key].ToLowerInvariant()) {
+              throw "Production input changed: $($paths[$key])"
+            }
+
+            Write-Host "UNCHANGED PASS: $($paths[$key])"
+          }
+
+          Write-Host "All original production inputs unchanged PASS"
+
+      # ============================================================
+      # 09. Remove only this run's staged program
+      # ============================================================
+
+      - name: Remove temporary staged program
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $program = "${{ steps.stage.outputs.staged_program }}"
+          $expectedHash = "${{ steps.stage.outputs.program_sha256 }}"
+
+          if (-not $program -or -not $expectedHash) {
+            Write-Host "No verified staged program to remove."
+            exit 0
+          }
+
+          $expectedName = ".selection_audit_runner_${{ github.run_id }}_${{ github.run_attempt }}.py"
+          $expectedPath = Join-Path $env:PRODUCTION_ROOT $expectedName
+
+          if ($program -ne $expectedPath) {
+            throw "Unexpected staged program path. Refusing removal."
+          }
+
+          if (Test-Path -LiteralPath $program -PathType Leaf) {
+            $actualHash = (Get-FileHash -LiteralPath $program -Algorithm SHA256).Hash.ToLowerInvariant()
+
+            if ($actualHash -ne $expectedHash) {
+              throw "Staged program hash changed. Refusing removal."
+            }
+
+            Remove-Item -LiteralPath $program -Force
+
+            Write-Host "Temporary staged program removed."
+          }
+
+      # ============================================================
+      # 10. Upload reports
+      # ============================================================
+
+      - name: Upload selection audit production reports
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-accumulation-selection-audit-production
+          path: |
+            C:/Users/USER/Documents/upbit-surge-monitor/data/reports/pattern_256_accumulation_selection_audit/selection_audit.csv
+            C:/Users/USER/Documents/upbit-surge-monitor/data/reports/pattern_256_accumulation_selection_audit/matched_window_comparison.csv
+            C:/Users/USER/Documents/upbit-surge-monitor/data/reports/pattern_256_accumulation_selection_audit/selection_audit_result.json
+            C:/Users/USER/Documents/upbit-surge-monitor/data/reports/pattern_256_accumulation_selection_audit/selection_audit_manifest.json
+          if-no-files-found: error
+          retention-days: 14
