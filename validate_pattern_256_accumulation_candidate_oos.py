@@ -4,7 +4,7 @@
 
 """
 validate_pattern_256_accumulation_candidate_oos.py
-Clean V001
+Clean V002
 
 Purpose
 -------
@@ -93,7 +93,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 
 PROGRAM = "validate_pattern_256_accumulation_candidate_oos.py"
-VERSION = "Clean V001"
+VERSION = "Clean V002"
 
 SOURCE_CANDIDATE_DIR = (
     "data/reports/pattern_256_accumulation_candidate_rules"
@@ -623,37 +623,42 @@ def scan_validation_detail(
                     "Observed bars exceed required bars."
                 )
 
-            hit_value = str(
-                row["hit_30pct"]
-            ).strip()
-
-            if hit_value not in ("0", "1"):
-                raise ValueError(
-                    "Invalid HIT indicator."
-                )
-
-            hit = int(hit_value)
-
-            # A completed outcome must have full observation.
-            #
-            # Some historical datasets can label a HIT before
-            # a full horizon has elapsed. Such records are
-            # intentionally treated as censored for this
-            # conservative OOS audit.
+            # Only a fully observed HIT/MISS is an evaluable outcome.
+            # Early HIT, incomplete and unknown outcomes are censored;
+            # never silently count them as MISS.
             complete = (
                 observed_bars == required_bars
                 and status in ("HIT", "MISS")
             )
 
+            hit_value = str(row["hit_30pct"] or "").strip().upper()
+            if hit_value in ("1", "1.0", "TRUE", "T", "YES", "Y", "HIT"):
+                hit = 1
+            elif hit_value in ("0", "0.0", "FALSE", "F", "NO", "N", "MISS"):
+                hit = 0
+            elif hit_value in ("", "NONE", "NULL", "NAN", "NA", "N/A"):
+                hit = None
+            else:
+                raise ValueError(
+                    f"Invalid HIT indicator at CSV row {source_rows + 1}: "
+                    f"status={status!r}, hit_30pct={hit_value!r}"
+                )
+
             if complete:
+                if hit is None:
+                    raise ValueError(
+                        f"Missing HIT indicator for complete outcome "
+                        f"at CSV row {source_rows + 1}: status={status!r}"
+                    )
                 if status == "HIT" and hit != 1:
                     raise ValueError(
-                        "HIT status and indicator mismatch."
+                        f"HIT status and indicator mismatch "
+                        f"at CSV row {source_rows + 1}"
                     )
-
                 if status == "MISS" and hit != 0:
                     raise ValueError(
-                        "MISS status and indicator mismatch."
+                        f"MISS status and indicator mismatch "
+                        f"at CSV row {source_rows + 1}"
                     )
 
             key = create_event_key(
