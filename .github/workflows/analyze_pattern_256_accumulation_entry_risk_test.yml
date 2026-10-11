@@ -382,7 +382,7 @@ jobs:
             throw "Unexpected program name."
           }
 
-          if ($result.version -ne "Clean V001") {
+          if ($result.version -ne "Clean V002") {
             throw "Unexpected program version."
           }
 
