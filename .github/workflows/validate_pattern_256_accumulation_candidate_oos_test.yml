@@ -15,6 +15,7 @@ jobs:
   candidate-oos-validation-test:
     name: Candidate OOS Validation Test
     runs-on: [self-hosted, Windows]
+    timeout-minutes: 120
 
     defaults:
       run:
@@ -23,11 +24,14 @@ jobs:
     env:
       PRODUCTION_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
       PROGRAM_NAME: validate_pattern_256_accumulation_candidate_oos.py
-      REPORT_DIR: data/reports/pattern_256_accumulation_candidate_oos
+      REPORT_DIR: data\reports\pattern_256_accumulation_candidate_oos
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          clean: false
+          persist-credentials: false
 
       - name: Verify Python program
         run: |
@@ -47,10 +51,21 @@ jobs:
 
           py --version
 
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python launcher unavailable."
+          }
+
+          $pycache = Join-Path $env:RUNNER_TEMP (
+            "candidate_oos_pycache_{0}_{1}" -f `
+              $env:GITHUB_RUN_ID, $env:GITHUB_RUN_ATTEMPT
+          )
+
+          $env:PYTHONPYCACHEPREFIX = $pycache
+
           py -m py_compile $program
 
           if ($LASTEXITCODE -ne 0) {
-            throw "Python syntax validation failed."
+            throw "Python syntax verification failed."
           }
 
           Write-Host "Python program verification PASS"
@@ -60,36 +75,46 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           $sources = @(
-            'data/reports/pattern_256_accumulation_candidate_rules/candidate_rule_research.csv',
-            'data/reports/pattern_256_accumulation_candidate_rules/candidate_rule_comparison.csv',
-            'data/reports/pattern_256_accumulation_candidate_rules/candidate_rule_result.json',
-            'data/reports/pattern_256_accumulation_candidate_rules/candidate_rule_manifest.json',
-            'data/reports/pattern_256_accumulation_30pct/validation_detail.csv'
+            'data\reports\pattern_256_accumulation_candidate_rules\candidate_rule_research.csv',
+            'data\reports\pattern_256_accumulation_candidate_rules\candidate_rule_comparison.csv',
+            'data\reports\pattern_256_accumulation_candidate_rules\candidate_rule_result.json',
+            'data\reports\pattern_256_accumulation_candidate_rules\candidate_rule_manifest.json',
+            'data\reports\pattern_256_accumulation_30pct\validation_detail.csv'
           )
 
           $snapshot = @()
 
           foreach ($relative in $sources) {
-            $source = Join-Path $env:PRODUCTION_ROOT $relative
+            $source = Join-Path `
+              -Path $env:PRODUCTION_ROOT `
+              -ChildPath ([string]$relative)
 
             if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
               throw "Production input missing: $source"
             }
 
-            $hash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
+            $hash = (
+              Get-FileHash -LiteralPath $source -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
 
             $snapshot += [PSCustomObject]@{
-              relative_path = $relative
-              sha256 = $hash
+              relative_path = [string]$relative
+              sha256 = [string]$hash
             }
 
             Write-Host "SHA256 CAPTURED: $relative"
           }
 
-          $snapshotPath = Join-Path $env:RUNNER_TEMP "candidate_oos_input_hash_$env:GITHUB_RUN_ID.json"
+          $snapshotPath = Join-Path $env:RUNNER_TEMP (
+            "candidate_oos_input_hash_{0}_{1}.json" -f `
+              $env:GITHUB_RUN_ID, $env:GITHUB_RUN_ATTEMPT
+          )
 
-          $snapshot |
-            ConvertTo-Json -Depth 5 |
+          if (Test-Path -LiteralPath $snapshotPath) {
+            throw "Input snapshot already exists."
+          }
+
+          ConvertTo-Json -InputObject @($snapshot) -Depth 5 |
             Set-Content -LiteralPath $snapshotPath -Encoding UTF8
 
           "OOS_INPUT_SNAPSHOT=$snapshotPath" |
@@ -101,41 +126,90 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          $testRoot = Join-Path $env:RUNNER_TEMP "candidate_oos_test_$env:GITHUB_RUN_ID"
+          $testRoot = Join-Path $env:RUNNER_TEMP (
+            "candidate_oos_test_{0}_{1}" -f `
+              $env:GITHUB_RUN_ID, $env:GITHUB_RUN_ATTEMPT
+          )
 
           if (Test-Path -LiteralPath $testRoot) {
             throw "Isolated workspace already exists: $testRoot"
           }
 
-          New-Item -ItemType Directory -Path $testRoot | Out-Null
+          New-Item -ItemType Directory -Path $testRoot |
+            Out-Null
 
-          $programSource = Join-Path $env:GITHUB_WORKSPACE $env:PROGRAM_NAME
-          $programTarget = Join-Path $testRoot $env:PROGRAM_NAME
+          $programSource = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:PROGRAM_NAME
 
-          Copy-Item -LiteralPath $programSource -Destination $programTarget
+          $programTarget = Join-Path `
+            $testRoot `
+            $env:PROGRAM_NAME
+
+          Copy-Item `
+            -LiteralPath $programSource `
+            -Destination $programTarget `
+            -ErrorAction Stop
+
+          $programSourceHash = (
+            Get-FileHash -LiteralPath $programSource -Algorithm SHA256
+          ).Hash
+
+          $programTargetHash = (
+            Get-FileHash -LiteralPath $programTarget -Algorithm SHA256
+          ).Hash
+
+          if ($programSourceHash -ne $programTargetHash) {
+            throw "Python program copy SHA256 mismatch."
+          }
 
           $snapshot = @(
-            Get-Content -LiteralPath $env:OOS_INPUT_SNAPSHOT -Raw |
+            Get-Content `
+              -LiteralPath $env:OOS_INPUT_SNAPSHOT `
+              -Raw `
+              -Encoding UTF8 |
               ConvertFrom-Json
           )
 
           foreach ($item in $snapshot) {
-            $source = Join-Path $env:PRODUCTION_ROOT $item.relative_path
-            $target = Join-Path $testRoot $item.relative_path
+            $relative = [string]$item.relative_path
 
-            $parent = Split-Path -Parent $target
-
-            New-Item -ItemType Directory -Path $parent -Force | Out-Null
-
-            Copy-Item -LiteralPath $source -Destination $target
-
-            $copiedHash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
-
-            if ($copiedHash -ne $item.sha256) {
-              throw "Copied input SHA256 mismatch: $($item.relative_path)"
+            if ([string]::IsNullOrWhiteSpace($relative)) {
+              throw "Invalid snapshot relative path."
             }
 
-            Write-Host "COPY VERIFIED: $($item.relative_path)"
+            $source = Join-Path `
+              -Path $env:PRODUCTION_ROOT `
+              -ChildPath $relative
+
+            $target = Join-Path `
+              -Path $testRoot `
+              -ChildPath $relative
+
+            $parent = Split-Path -Path $target -Parent
+
+            New-Item `
+              -ItemType Directory `
+              -Path $parent `
+              -Force |
+              Out-Null
+
+            Copy-Item `
+              -LiteralPath $source `
+              -Destination $target `
+              -ErrorAction Stop
+
+            $copiedHash = (
+              Get-FileHash -LiteralPath $target -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            $expectedHash = [string]$item.sha256
+
+            if ($copiedHash -ne $expectedHash.ToLowerInvariant()) {
+              throw "Copied input SHA256 mismatch: $relative"
+            }
+
+            Write-Host "COPY VERIFIED: $relative"
           }
 
           "OOS_TEST_ROOT=$testRoot" |
@@ -147,7 +221,17 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          $program = Join-Path $env:OOS_TEST_ROOT $env:PROGRAM_NAME
+          if ([string]::IsNullOrWhiteSpace($env:OOS_TEST_ROOT)) {
+            throw "OOS test root unavailable."
+          }
+
+          $program = Join-Path `
+            $env:OOS_TEST_ROOT `
+            $env:PROGRAM_NAME
+
+          Write-Host "========================================"
+          Write-Host "Candidate OOS Validation Test"
+          Write-Host "========================================"
 
           py $program --root $env:OOS_TEST_ROOT
 
@@ -161,7 +245,9 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          $outputDir = Join-Path $env:OOS_TEST_ROOT $env:REPORT_DIR
+          $outputDir = Join-Path `
+            $env:OOS_TEST_ROOT `
+            $env:REPORT_DIR
 
           $required = @(
             'candidate_oos_summary.csv',
@@ -180,13 +266,25 @@ jobs:
             Write-Host "FOUND: $name"
           }
 
-          $result = Get-Content -LiteralPath (
-            Join-Path $outputDir 'candidate_oos_result.json'
-          ) -Raw | ConvertFrom-Json
+          $resultPath = Join-Path `
+            $outputDir `
+            'candidate_oos_result.json'
 
-          $manifest = Get-Content -LiteralPath (
-            Join-Path $outputDir 'candidate_oos_manifest.json'
-          ) -Raw | ConvertFrom-Json
+          $manifestPath = Join-Path `
+            $outputDir `
+            'candidate_oos_manifest.json'
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw `
+            -Encoding UTF8 |
+            ConvertFrom-Json
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw `
+            -Encoding UTF8 |
+            ConvertFrom-Json
 
           if ($result.status -ne 'PASS') {
             throw "OOS result status is not PASS."
@@ -212,21 +310,42 @@ jobs:
             throw "Unexpected OOS summary row count."
           }
 
+          $summaryPath = Join-Path `
+            $outputDir `
+            'candidate_oos_summary.csv'
+
+          $summary = @(
+            Import-Csv -LiteralPath $summaryPath
+          )
+
+          if ($summary.Count -ne 45) {
+            throw "OOS summary CSV row count mismatch."
+          }
+
           foreach ($name in @(
             'candidate_oos_summary.csv',
             'candidate_oos_yearly.csv',
             'candidate_oos_result.json'
           )) {
-            $expected = $manifest.outputs.PSObject.Properties[$name].Value
+            $property = $manifest.outputs.PSObject.Properties[$name]
 
-            if (-not $expected) {
+            if ($null -eq $property) {
               throw "Missing manifest output hash: $name"
             }
 
-            $path = Join-Path $outputDir $name
-            $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+            $expected = [string]$property.Value
 
-            if ($actual -ne $expected) {
+            if ($expected -notmatch '^[0-9a-fA-F]{64}$') {
+              throw "Invalid manifest output SHA256: $name"
+            }
+
+            $path = Join-Path $outputDir $name
+
+            $actual = (
+              Get-FileHash -LiteralPath $path -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($actual -ne $expected.ToLowerInvariant()) {
               throw "Output SHA256 mismatch: $name"
             }
 
@@ -240,34 +359,53 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          if (-not $env:OOS_INPUT_SNAPSHOT) {
+          if ([string]::IsNullOrWhiteSpace($env:OOS_INPUT_SNAPSHOT)) {
             Write-Host "Input snapshot not created; verification unavailable."
             exit 0
           }
 
-          if (-not (Test-Path -LiteralPath $env:OOS_INPUT_SNAPSHOT)) {
+          if (-not (
+            Test-Path `
+              -LiteralPath $env:OOS_INPUT_SNAPSHOT `
+              -PathType Leaf
+          )) {
             throw "Production input snapshot missing."
           }
 
           $snapshot = @(
-            Get-Content -LiteralPath $env:OOS_INPUT_SNAPSHOT -Raw |
+            Get-Content `
+              -LiteralPath $env:OOS_INPUT_SNAPSHOT `
+              -Raw `
+              -Encoding UTF8 |
               ConvertFrom-Json
           )
 
           foreach ($item in $snapshot) {
-            $path = Join-Path $env:PRODUCTION_ROOT $item.relative_path
+            $relative = [string]$item.relative_path
+
+            if ([string]::IsNullOrWhiteSpace($relative)) {
+              throw "Invalid snapshot relative path."
+            }
+
+            $path = Join-Path `
+              -Path $env:PRODUCTION_ROOT `
+              -ChildPath $relative
 
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
               throw "Production input disappeared: $path"
             }
 
-            $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+            $actual = (
+              Get-FileHash -LiteralPath $path -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
 
-            if ($actual -ne $item.sha256) {
-              throw "Production input changed: $($item.relative_path)"
+            $expected = [string]$item.sha256
+
+            if ($actual -ne $expected.ToLowerInvariant()) {
+              throw "Production input changed: $relative"
             }
 
-            Write-Host "UNCHANGED: $($item.relative_path)"
+            Write-Host "UNCHANGED PASS: $relative"
           }
 
           Write-Host "Production inputs unchanged PASS"
