@@ -1,0 +1,543 @@
+
+name: audit_pattern_256_accumulation_selection_test.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-pattern-256-accumulation-selection-test
+  cancel-in-progress: false
+
+jobs:
+  selection-audit-test:
+    name: Selection Bias Audit Test
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 360
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PRODUCTION_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+      PROGRAM_NAME: audit_pattern_256_accumulation_selection.py
+
+    steps:
+
+      # ============================================================
+      # 01. Checkout
+      # ============================================================
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          clean: false
+          persist-credentials: false
+
+      # ============================================================
+      # 02. Python environment
+      # ============================================================
+
+      - name: Verify Python environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "========================================"
+          Write-Host "Python Environment"
+          Write-Host "========================================"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python launcher unavailable."
+          }
+
+          Write-Host "Python environment PASS"
+
+      # ============================================================
+      # 03. Python syntax
+      # ============================================================
+
+      - name: Verify selection audit program
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $program = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:PROGRAM_NAME
+
+          if (-not (Test-Path -LiteralPath $program -PathType Leaf)) {
+            throw "Audit Python program not found: $program"
+          }
+
+          py -m py_compile $program
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax verification failed."
+          }
+
+          Write-Host "Program: $program"
+          Write-Host "Python syntax PASS"
+
+      # ============================================================
+      # 04. Verify production inputs
+      # ============================================================
+
+      - name: Verify production input files
+        id: inputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = $env:PRODUCTION_ROOT
+
+          if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+            throw "Production root not found: $root"
+          }
+
+          $validationDir = Join-Path `
+            $root `
+            "data\reports\pattern_256_accumulation_30pct"
+
+          $independentDir = Join-Path `
+            $root `
+            "data\reports\pattern_256_accumulation_independent"
+
+          $requiredFiles = @(
+            (Join-Path $validationDir "validation_detail.csv"),
+            (Join-Path $validationDir "validation_result.json"),
+            (Join-Path $independentDir "working.sqlite3"),
+            (Join-Path $independentDir "database_checkpoint.json"),
+            (Join-Path $independentDir "independent_detail.csv"),
+            (Join-Path $independentDir "independent_result.json")
+          )
+
+          foreach ($file in $requiredFiles) {
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+              throw "Required production input missing: $file"
+            }
+
+            Write-Host "FOUND: $file"
+          }
+
+          $validationResult = Get-Content `
+            -LiteralPath (Join-Path $validationDir "validation_result.json") `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          $independentResult = Get-Content `
+            -LiteralPath (Join-Path $independentDir "independent_result.json") `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          $databaseCheckpoint = Get-Content `
+            -LiteralPath (Join-Path $independentDir "database_checkpoint.json") `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          if ($validationResult.status -ne "PASS") {
+            throw "Upstream validation status is not PASS."
+          }
+
+          if ($independentResult.status -ne "PASS") {
+            throw "Independent validation status is not PASS."
+          }
+
+          if ($databaseCheckpoint.status -ne "COMPLETE") {
+            throw "Database checkpoint is incomplete."
+          }
+
+          if ([int64]$independentResult.imported_rows -ne 7949826) {
+            throw "Unexpected imported row count."
+          }
+
+          if ([int64]$independentResult.selected_rows -ne 297548) {
+            throw "Unexpected selected row count."
+          }
+
+          if ([int64]$independentResult.excluded_rows -ne 7652278) {
+            throw "Unexpected excluded row count."
+          }
+
+          Write-Host "Production input structure PASS"
+
+      # ============================================================
+      # 05. Hash original inputs
+      # ============================================================
+
+      - name: Capture production input SHA256
+        id: hashes
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = $env:PRODUCTION_ROOT
+
+          $paths = @{
+            validation_detail = Join-Path $root "data\reports\pattern_256_accumulation_30pct\validation_detail.csv"
+            validation_result = Join-Path $root "data\reports\pattern_256_accumulation_30pct\validation_result.json"
+            independent_detail = Join-Path $root "data\reports\pattern_256_accumulation_independent\independent_detail.csv"
+            independent_result = Join-Path $root "data\reports\pattern_256_accumulation_independent\independent_result.json"
+            database_checkpoint = Join-Path $root "data\reports\pattern_256_accumulation_independent\database_checkpoint.json"
+          }
+
+          foreach ($key in $paths.Keys) {
+            $hash = (Get-FileHash `
+              -LiteralPath $paths[$key] `
+              -Algorithm SHA256).Hash.ToLowerInvariant()
+
+            Write-Host "$key SHA256: $hash"
+
+            "$($key)_sha256=$hash" >> $env:GITHUB_OUTPUT
+          }
+
+          Write-Host "Input SHA256 capture PASS"
+
+      # ============================================================
+      # 06. Prepare isolated workspace
+      # ============================================================
+
+      - name: Prepare isolated audit test workspace
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = $env:PRODUCTION_ROOT
+          $workspace = $env:GITHUB_WORKSPACE
+
+          $sourceValidationDir = Join-Path `
+            $root `
+            "data\reports\pattern_256_accumulation_30pct"
+
+          $sourceIndependentDir = Join-Path `
+            $root `
+            "data\reports\pattern_256_accumulation_independent"
+
+          $targetValidationDir = Join-Path `
+            $workspace `
+            "data\reports\pattern_256_accumulation_30pct"
+
+          $targetIndependentDir = Join-Path `
+            $workspace `
+            "data\reports\pattern_256_accumulation_independent"
+
+          New-Item -ItemType Directory `
+            -Path $targetValidationDir `
+            -Force | Out-Null
+
+          New-Item -ItemType Directory `
+            -Path $targetIndependentDir `
+            -Force | Out-Null
+
+          $copies = @(
+            @{
+              Source = Join-Path $sourceValidationDir "validation_detail.csv"
+              Target = Join-Path $targetValidationDir "validation_detail.csv"
+            },
+            @{
+              Source = Join-Path $sourceValidationDir "validation_result.json"
+              Target = Join-Path $targetValidationDir "validation_result.json"
+            },
+            @{
+              Source = Join-Path $sourceIndependentDir "working.sqlite3"
+              Target = Join-Path $targetIndependentDir "working.sqlite3"
+            },
+            @{
+              Source = Join-Path $sourceIndependentDir "database_checkpoint.json"
+              Target = Join-Path $targetIndependentDir "database_checkpoint.json"
+            },
+            @{
+              Source = Join-Path $sourceIndependentDir "independent_detail.csv"
+              Target = Join-Path $targetIndependentDir "independent_detail.csv"
+            },
+            @{
+              Source = Join-Path $sourceIndependentDir "independent_result.json"
+              Target = Join-Path $targetIndependentDir "independent_result.json"
+            }
+          )
+
+          foreach ($item in $copies) {
+            $source = $item.Source
+            $target = $item.Target
+
+            if (Test-Path -LiteralPath $target -PathType Leaf) {
+              $sourceHash = (Get-FileHash `
+                -LiteralPath $source `
+                -Algorithm SHA256).Hash.ToLowerInvariant()
+
+              $targetHash = (Get-FileHash `
+                -LiteralPath $target `
+                -Algorithm SHA256).Hash.ToLowerInvariant()
+
+              if ($sourceHash -ne $targetHash) {
+                throw "Workspace input differs from production. Refusing overwrite: $target"
+              }
+
+              Write-Host "REUSE VERIFIED: $target"
+            }
+            else {
+              Copy-Item `
+                -LiteralPath $source `
+                -Destination $target
+
+              $sourceHash = (Get-FileHash `
+                -LiteralPath $source `
+                -Algorithm SHA256).Hash.ToLowerInvariant()
+
+              $targetHash = (Get-FileHash `
+                -LiteralPath $target `
+                -Algorithm SHA256).Hash.ToLowerInvariant()
+
+              if ($sourceHash -ne $targetHash) {
+                throw "Copied input SHA256 mismatch: $target"
+              }
+
+              Write-Host "COPY VERIFIED: $target"
+            }
+          }
+
+          Write-Host "Isolated audit workspace PASS"
+
+      # ============================================================
+      # 07. Execute audit
+      # ============================================================
+
+      - name: Execute selection bias audit test
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host "========================================"
+          Write-Host "Selection Bias Audit Test"
+          Write-Host "========================================"
+
+          py audit_pattern_256_accumulation_selection.py
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Selection bias audit execution failed."
+          }
+
+          Write-Host "Selection bias audit execution PASS"
+
+      # ============================================================
+      # 08. Verify outputs
+      # ============================================================
+
+      - name: Verify audit test outputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $outputDir = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "data\reports\pattern_256_accumulation_selection_audit"
+
+          $selectionFile = Join-Path $outputDir "selection_audit.csv"
+          $matchedFile = Join-Path $outputDir "matched_window_comparison.csv"
+          $resultFile = Join-Path $outputDir "selection_audit_result.json"
+          $manifestFile = Join-Path $outputDir "selection_audit_manifest.json"
+
+          foreach ($file in @(
+            $selectionFile,
+            $matchedFile,
+            $resultFile,
+            $manifestFile
+          )) {
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+              throw "Required audit output missing: $file"
+            }
+
+            Write-Host "FOUND: $file"
+          }
+
+          $result = Get-Content `
+            -LiteralPath $resultFile `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestFile `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          if ($result.status -ne "PASS") {
+            throw "Audit result status is not PASS."
+          }
+
+          if ($result.program -ne $env:PROGRAM_NAME) {
+            throw "Unexpected audit program."
+          }
+
+          if ($result.version -ne "Clean V001") {
+            throw "Unexpected audit version."
+          }
+
+          if ([int64]$result.source_rows -ne 7949826) {
+            throw "Source row count mismatch."
+          }
+
+          if ([int64]$result.selected_rows -ne 297548) {
+            throw "Selected row count mismatch."
+          }
+
+          if ([int64]$result.excluded_rows -ne 7652278) {
+            throw "Excluded row count mismatch."
+          }
+
+          if (
+            [int64]$result.selected_rows +
+            [int64]$result.excluded_overlap +
+            [int64]$result.excluded_no_entry -ne
+            [int64]$result.source_rows
+          ) {
+            throw "Audit row accounting mismatch."
+          }
+
+          if ([int]$result.selection_audit_rows -ne 108) {
+            throw "Expected 108 selection audit rows."
+          }
+
+          if ([int]$result.matched_comparison_rows -ne 18) {
+            throw "Expected 18 matched comparison rows."
+          }
+
+          if ($manifest.program -ne $result.program) {
+            throw "Audit manifest program mismatch."
+          }
+
+          if ($manifest.version -ne $result.version) {
+            throw "Audit manifest version mismatch."
+          }
+
+          $checks = @(
+            @{
+              Path = $selectionFile
+              ResultHash = [string]$result.selection_audit_sha256
+              ManifestHash = [string]$manifest.outputs.'selection_audit.csv'
+            },
+            @{
+              Path = $matchedFile
+              ResultHash = [string]$result.matched_comparison_sha256
+              ManifestHash = [string]$manifest.outputs.'matched_window_comparison.csv'
+            }
+          )
+
+          foreach ($check in $checks) {
+            $actualHash = (Get-FileHash `
+              -LiteralPath $check.Path `
+              -Algorithm SHA256).Hash.ToLowerInvariant()
+
+            if ($actualHash -ne $check.ResultHash.ToLowerInvariant()) {
+              throw "Audit result SHA256 mismatch: $($check.Path)"
+            }
+
+            if ($actualHash -ne $check.ManifestHash.ToLowerInvariant()) {
+              throw "Audit manifest SHA256 mismatch: $($check.Path)"
+            }
+
+            Write-Host "SHA256 PASS: $($check.Path)"
+          }
+
+          $selectionRows = @(Import-Csv -LiteralPath $selectionFile)
+          $matchedRows = @(Import-Csv -LiteralPath $matchedFile)
+
+          if ($selectionRows.Count -ne 108) {
+            throw "Selection audit CSV row count mismatch."
+          }
+
+          if ($matchedRows.Count -ne 18) {
+            throw "Matched comparison CSV row count mismatch."
+          }
+
+          Write-Host "========================================"
+          Write-Host "Audit Test Summary"
+          Write-Host "========================================"
+          Write-Host "Source rows: $($result.source_rows)"
+          Write-Host "Selected rows: $($result.selected_rows)"
+          Write-Host "Overlap excluded: $($result.excluded_overlap)"
+          Write-Host "No-entry excluded: $($result.excluded_no_entry)"
+          Write-Host "Selection audit rows: $($result.selection_audit_rows)"
+          Write-Host "Matched comparison rows: $($result.matched_comparison_rows)"
+          Write-Host "Elapsed seconds: $($result.elapsed_seconds)"
+          Write-Host "Audit test output verification PASS"
+
+      # ============================================================
+      # 09. Verify production inputs unchanged
+      # ============================================================
+
+      - name: Verify production inputs unchanged
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $expectedValidationDetail = "${{ steps.hashes.outputs.validation_detail_sha256 }}"
+          $expectedValidationResult = "${{ steps.hashes.outputs.validation_result_sha256 }}"
+          $expectedIndependentDetail = "${{ steps.hashes.outputs.independent_detail_sha256 }}"
+          $expectedIndependentResult = "${{ steps.hashes.outputs.independent_result_sha256 }}"
+          $expectedDatabaseCheckpoint = "${{ steps.hashes.outputs.database_checkpoint_sha256 }}"
+
+          if (
+            -not $expectedValidationDetail -or
+            -not $expectedValidationResult -or
+            -not $expectedIndependentDetail -or
+            -not $expectedIndependentResult -or
+            -not $expectedDatabaseCheckpoint
+          ) {
+            Write-Host "Initial SHA256 capture incomplete."
+            exit 0
+          }
+
+          $root = $env:PRODUCTION_ROOT
+
+          $checks = @(
+            @{
+              Path = Join-Path $root "data\reports\pattern_256_accumulation_30pct\validation_detail.csv"
+              Hash = $expectedValidationDetail
+            },
+            @{
+              Path = Join-Path $root "data\reports\pattern_256_accumulation_30pct\validation_result.json"
+              Hash = $expectedValidationResult
+            },
+            @{
+              Path = Join-Path $root "data\reports\pattern_256_accumulation_independent\independent_detail.csv"
+              Hash = $expectedIndependentDetail
+            },
+            @{
+              Path = Join-Path $root "data\reports\pattern_256_accumulation_independent\independent_result.json"
+              Hash = $expectedIndependentResult
+            },
+            @{
+              Path = Join-Path $root "data\reports\pattern_256_accumulation_independent\database_checkpoint.json"
+              Hash = $expectedDatabaseCheckpoint
+            }
+          )
+
+          foreach ($check in $checks) {
+            $actual = (Get-FileHash `
+              -LiteralPath $check.Path `
+              -Algorithm SHA256).Hash.ToLowerInvariant()
+
+            if ($actual -ne $check.Hash.ToLowerInvariant()) {
+              throw "Production input changed: $($check.Path)"
+            }
+
+            Write-Host "UNCHANGED PASS: $($check.Path)"
+          }
+
+          Write-Host "All production inputs unchanged PASS"
+
+      # ============================================================
+      # 10. Upload test reports
+      # ============================================================
+
+      - name: Upload selection audit test reports
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-accumulation-selection-audit-test
+          path: |
+            data/reports/pattern_256_accumulation_selection_audit/selection_audit.csv
+            data/reports/pattern_256_accumulation_selection_audit/matched_window_comparison.csv
+            data/reports/pattern_256_accumulation_selection_audit/selection_audit_result.json
+            data/reports/pattern_256_accumulation_selection_audit/selection_audit_manifest.json
+          if-no-files-found: error
+          retention-days: 14
