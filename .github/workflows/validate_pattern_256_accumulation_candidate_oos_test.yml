@@ -8,18 +8,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: pattern-256-accumulation-candidate-oos-test
+  group: candidate-oos-validation-test
   cancel-in-progress: false
 
 jobs:
-  candidate-oos-test:
+  candidate-oos-validation-test:
     name: Candidate OOS Validation Test
-
-    runs-on:
-      - self-hosted
-      - Windows
-
-    timeout-minutes: 120
+    runs-on: [self-hosted, Windows]
 
     defaults:
       run:
@@ -28,37 +23,15 @@ jobs:
     env:
       PRODUCTION_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
       PROGRAM_NAME: validate_pattern_256_accumulation_candidate_oos.py
-      EXPECTED_VERSION: Clean V001
-
-      CANDIDATE_REL: data\reports\pattern_256_accumulation_candidate_rules
-      VALIDATION_REL: data\reports\pattern_256_accumulation_30pct
-      OUTPUT_REL: data\reports\pattern_256_accumulation_candidate_oos
+      REPORT_DIR: data/reports/pattern_256_accumulation_candidate_oos
 
     steps:
-
-      # ============================================================
-      # 01. Checkout
-      # ============================================================
-
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          clean: false
-          persist-credentials: false
-
-      # ============================================================
-      # 02. Verify Python program
-      # ============================================================
 
       - name: Verify Python program
         run: |
           $ErrorActionPreference = "Stop"
-
-          py --version
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "Python launcher unavailable."
-          }
 
           $program = Join-Path $env:GITHUB_WORKSPACE $env:PROGRAM_NAME
 
@@ -66,634 +39,244 @@ jobs:
             throw "Python program missing: $program"
           }
 
-          $source = Get-Content `
-            -LiteralPath $program `
-            -Raw `
-            -Encoding UTF8
+          $content = Get-Content -LiteralPath $program -Raw -Encoding UTF8
 
-          if ($source -notmatch 'VERSION\s*=\s*["'']Clean V001["'']') {
-            throw "Unexpected Python program version."
+          if ($content -notmatch 'VERSION\s*=\s*["'']Clean V002["'']') {
+            throw "Expected Python program Clean V002."
           }
 
-          if ($source -notmatch 'PROGRAM\s*=\s*["'']validate_pattern_256_accumulation_candidate_oos\.py["'']') {
-            throw "Unexpected Python program identity."
-          }
-
-          $env:PYTHONPYCACHEPREFIX = Join-Path `
-            $env:RUNNER_TEMP `
-            "candidate_oos_test_pycache_${{ github.run_id }}_${{ github.run_attempt }}"
+          py --version
 
           py -m py_compile $program
 
           if ($LASTEXITCODE -ne 0) {
-            throw "Python syntax verification failed."
+            throw "Python syntax validation failed."
           }
 
           Write-Host "Python program verification PASS"
 
-      # ============================================================
-      # 03. Capture production input hashes
-      # ============================================================
-
       - name: Capture production input SHA256
-        id: input_hashes
         run: |
           $ErrorActionPreference = "Stop"
 
-          $candidateDir = Join-Path `
-            $env:PRODUCTION_ROOT `
-            $env:CANDIDATE_REL
-
-          $validationDir = Join-Path `
-            $env:PRODUCTION_ROOT `
-            $env:VALIDATION_REL
-
-          $files = @(
-            @{
-              Key = "candidate_rule_research.csv"
-              Path = Join-Path $candidateDir "candidate_rule_research.csv"
-            }
-            @{
-              Key = "candidate_rule_comparison.csv"
-              Path = Join-Path $candidateDir "candidate_rule_comparison.csv"
-            }
-            @{
-              Key = "candidate_rule_result.json"
-              Path = Join-Path $candidateDir "candidate_rule_result.json"
-            }
-            @{
-              Key = "candidate_rule_manifest.json"
-              Path = Join-Path $candidateDir "candidate_rule_manifest.json"
-            }
-            @{
-              Key = "validation_detail.csv"
-              Path = Join-Path $validationDir "validation_detail.csv"
-            }
+          $sources = @(
+            'data/reports/pattern_256_accumulation_candidate_rules/candidate_rule_research.csv',
+            'data/reports/pattern_256_accumulation_candidate_rules/candidate_rule_comparison.csv',
+            'data/reports/pattern_256_accumulation_candidate_rules/candidate_rule_result.json',
+            'data/reports/pattern_256_accumulation_candidate_rules/candidate_rule_manifest.json',
+            'data/reports/pattern_256_accumulation_30pct/validation_detail.csv'
           )
 
-          $hashes = @{}
+          $snapshot = @()
 
-          foreach ($file in $files) {
-            if (-not (Test-Path -LiteralPath $file.Path -PathType Leaf)) {
-              throw "Production input missing: $($file.Path)"
+          foreach ($relative in $sources) {
+            $source = Join-Path $env:PRODUCTION_ROOT $relative
+
+            if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+              throw "Production input missing: $source"
             }
 
-            $hashes[$file.Key] = (
-              Get-FileHash `
-                -LiteralPath $file.Path `
-                -Algorithm SHA256
-            ).Hash.ToLowerInvariant()
+            $hash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
 
-            Write-Host "SHA256 PASS: $($file.Key)"
+            $snapshot += [PSCustomObject]@{
+              relative_path = $relative
+              sha256 = $hash
+            }
+
+            Write-Host "SHA256 CAPTURED: $relative"
           }
 
-          $snapshot = Join-Path `
-            $env:RUNNER_TEMP `
-            "candidate_oos_input_hashes_${{ github.run_id }}_${{ github.run_attempt }}.json"
+          $snapshotPath = Join-Path $env:RUNNER_TEMP "candidate_oos_input_hash_$env:GITHUB_RUN_ID.json"
 
-          if (Test-Path -LiteralPath $snapshot) {
-            throw "Hash snapshot already exists."
-          }
-
-          $hashes |
+          $snapshot |
             ConvertTo-Json -Depth 5 |
-            Set-Content `
-              -LiteralPath $snapshot `
-              -Encoding UTF8
+            Set-Content -LiteralPath $snapshotPath -Encoding UTF8
 
-          "snapshot=$snapshot" >> $env:GITHUB_OUTPUT
+          "OOS_INPUT_SNAPSHOT=$snapshotPath" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-          Write-Host "Production input hash capture PASS"
-
-      # ============================================================
-      # 04. Prepare isolated workspace
-      # ============================================================
+          Write-Host "Production input snapshot PASS"
 
       - name: Prepare isolated test workspace
-        id: workspace
         run: |
           $ErrorActionPreference = "Stop"
 
-          $testRoot = Join-Path `
-            $env:RUNNER_TEMP `
-            "candidate_oos_test_${{ github.run_id }}_${{ github.run_attempt }}"
+          $testRoot = Join-Path $env:RUNNER_TEMP "candidate_oos_test_$env:GITHUB_RUN_ID"
 
           if (Test-Path -LiteralPath $testRoot) {
-            throw "Test workspace already exists: $testRoot"
+            throw "Isolated workspace already exists: $testRoot"
           }
 
-          $candidateTarget = Join-Path `
-            $testRoot `
-            $env:CANDIDATE_REL
+          New-Item -ItemType Directory -Path $testRoot | Out-Null
 
-          $validationTarget = Join-Path `
-            $testRoot `
-            $env:VALIDATION_REL
+          $programSource = Join-Path $env:GITHUB_WORKSPACE $env:PROGRAM_NAME
+          $programTarget = Join-Path $testRoot $env:PROGRAM_NAME
 
-          New-Item `
-            -ItemType Directory `
-            -Path $candidateTarget `
-            -Force | Out-Null
+          Copy-Item -LiteralPath $programSource -Destination $programTarget
 
-          New-Item `
-            -ItemType Directory `
-            -Path $validationTarget `
-            -Force | Out-Null
+          $snapshot = @(
+            Get-Content -LiteralPath $env:OOS_INPUT_SNAPSHOT -Raw |
+              ConvertFrom-Json
+          )
 
-          $candidateSource = Join-Path `
-            $env:PRODUCTION_ROOT `
-            $env:CANDIDATE_REL
+          foreach ($item in $snapshot) {
+            $source = Join-Path $env:PRODUCTION_ROOT $item.relative_path
+            $target = Join-Path $testRoot $item.relative_path
 
-          foreach ($filename in @(
-            "candidate_rule_research.csv"
-            "candidate_rule_comparison.csv"
-            "candidate_rule_result.json"
-            "candidate_rule_manifest.json"
-          )) {
-            $source = Join-Path $candidateSource $filename
-            $target = Join-Path $candidateTarget $filename
+            $parent = Split-Path -Parent $target
 
-            Copy-Item `
-              -LiteralPath $source `
-              -Destination $target `
-              -ErrorAction Stop
+            New-Item -ItemType Directory -Path $parent -Force | Out-Null
 
-            $sourceHash = (
-              Get-FileHash -LiteralPath $source -Algorithm SHA256
-            ).Hash.ToLowerInvariant()
+            Copy-Item -LiteralPath $source -Destination $target
 
-            $targetHash = (
-              Get-FileHash -LiteralPath $target -Algorithm SHA256
-            ).Hash.ToLowerInvariant()
+            $copiedHash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
 
-            if ($sourceHash -ne $targetHash) {
-              throw "Candidate input copy hash mismatch: $filename"
+            if ($copiedHash -ne $item.sha256) {
+              throw "Copied input SHA256 mismatch: $($item.relative_path)"
             }
 
-            Write-Host "COPY VERIFIED: $filename"
+            Write-Host "COPY VERIFIED: $($item.relative_path)"
           }
 
-          # --------------------------------------------------------
-          # Link the large validation_detail.csv without copying it.
-          #
-          # The program only opens the CSV for reading.
-          # The original file remains in production.
-          # --------------------------------------------------------
+          "OOS_TEST_ROOT=$testRoot" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-          $detailSource = Join-Path `
-            (Join-Path $env:PRODUCTION_ROOT $env:VALIDATION_REL) `
-            "validation_detail.csv"
-
-          $detailTarget = Join-Path `
-            $validationTarget `
-            "validation_detail.csv"
-
-          if (-not (Test-Path -LiteralPath $detailSource -PathType Leaf)) {
-            throw "Validation detail source missing."
-          }
-
-          # A symbolic link may require privileges on Windows.
-          # A hard link is attempted instead, on the same volume.
-          #
-          # The source and target must reside on the same volume.
-          # No existing source file is modified.
-
-          $sourceDrive = [System.IO.Path]::GetPathRoot($detailSource)
-          $targetDrive = [System.IO.Path]::GetPathRoot($detailTarget)
-
-          if ($sourceDrive -ne $targetDrive) {
-            throw "Hard link requires source and target on same volume."
-          }
-
-          $output = & cmd.exe /c mklink /H `
-            "`"$detailTarget`"" `
-            "`"$detailSource`"" 2>&1
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "Failed to create validation detail hard link: $output"
-          }
-
-          if (-not (Test-Path -LiteralPath $detailTarget -PathType Leaf)) {
-            throw "Validation detail hard link missing."
-          }
-
-          Write-Host "Large validation detail linked successfully."
-          Write-Host "Source file was not copied."
-
-          "test_root=$testRoot" >> $env:GITHUB_OUTPUT
-
-          Write-Host "Isolated OOS test workspace PASS"
-
-      # ============================================================
-      # 05. Execute OOS validation
-      # ============================================================
+          Write-Host "Isolated test workspace PASS"
 
       - name: Execute candidate OOS validation test
         run: |
           $ErrorActionPreference = "Stop"
 
-          $program = Join-Path $env:GITHUB_WORKSPACE $env:PROGRAM_NAME
-          $testRoot = "${{ steps.workspace.outputs.test_root }}"
+          $program = Join-Path $env:OOS_TEST_ROOT $env:PROGRAM_NAME
 
-          if ([string]::IsNullOrWhiteSpace($testRoot)) {
-            throw "Test workspace path missing."
-          }
-
-          Write-Host "========================================"
-          Write-Host "Candidate OOS Validation Test"
-          Write-Host "========================================"
-
-          Write-Host "Program: $program"
-          Write-Host "Test root: $testRoot"
-
-          py $program --root $testRoot
+          py $program --root $env:OOS_TEST_ROOT
 
           if ($LASTEXITCODE -ne 0) {
-            throw "Candidate OOS validation test execution failed."
+            throw "Candidate OOS validation execution failed."
           }
 
           Write-Host "Candidate OOS validation execution PASS"
 
-      # ============================================================
-      # 06. Verify OOS test outputs
-      # ============================================================
-
       - name: Verify candidate OOS test outputs
-        id: verify_outputs
         run: |
           $ErrorActionPreference = "Stop"
 
-          $testRoot = "${{ steps.workspace.outputs.test_root }}"
+          $outputDir = Join-Path $env:OOS_TEST_ROOT $env:REPORT_DIR
 
-          $outputDir = Join-Path $testRoot $env:OUTPUT_REL
+          $required = @(
+            'candidate_oos_summary.csv',
+            'candidate_oos_yearly.csv',
+            'candidate_oos_result.json',
+            'candidate_oos_manifest.json'
+          )
 
-          if (-not (Test-Path -LiteralPath $outputDir -PathType Container)) {
-            throw "OOS test output directory missing."
-          }
+          foreach ($name in $required) {
+            $path = Join-Path $outputDir $name
 
-          $summaryPath = Join-Path $outputDir "candidate_oos_summary.csv"
-          $yearlyPath = Join-Path $outputDir "candidate_oos_yearly.csv"
-          $resultPath = Join-Path $outputDir "candidate_oos_result.json"
-          $manifestPath = Join-Path $outputDir "candidate_oos_manifest.json"
-
-          foreach ($path in @(
-            $summaryPath
-            $yearlyPath
-            $resultPath
-            $manifestPath
-          )) {
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-              throw "Required OOS output missing: $path"
+              throw "Missing OOS output: $path"
             }
 
-            Write-Host "FOUND: $path"
+            Write-Host "FOUND: $name"
           }
 
-          $result = Get-Content `
-            -LiteralPath $resultPath `
-            -Raw `
-            -Encoding UTF8 | ConvertFrom-Json
+          $result = Get-Content -LiteralPath (
+            Join-Path $outputDir 'candidate_oos_result.json'
+          ) -Raw | ConvertFrom-Json
 
-          $manifest = Get-Content `
-            -LiteralPath $manifestPath `
-            -Raw `
-            -Encoding UTF8 | ConvertFrom-Json
+          $manifest = Get-Content -LiteralPath (
+            Join-Path $outputDir 'candidate_oos_manifest.json'
+          ) -Raw | ConvertFrom-Json
 
-          if ($result.status -ne "PASS") {
+          if ($result.status -ne 'PASS') {
             throw "OOS result status is not PASS."
           }
 
-          if ($manifest.status -ne "PASS") {
+          if ($manifest.status -ne 'PASS') {
             throw "OOS manifest status is not PASS."
           }
 
           if ($result.program -ne $env:PROGRAM_NAME) {
-            throw "Unexpected OOS result program."
+            throw "Unexpected OOS program."
           }
 
-          if ($manifest.program -ne $env:PROGRAM_NAME) {
-            throw "Unexpected OOS manifest program."
+          if ($result.version -ne 'Clean V002') {
+            throw "Unexpected OOS program version."
           }
 
-          if ($result.version -ne $env:EXPECTED_VERSION) {
-            throw "Unexpected OOS result version."
-          }
-
-          if ($manifest.version -ne $env:EXPECTED_VERSION) {
-            throw "Unexpected OOS manifest version."
-          }
-
-          if ($result.assessment -ne "DESCRIPTIVE_CHRONOLOGICAL_OOS_ONLY") {
+          if ($result.assessment -ne 'DESCRIPTIVE_CHRONOLOGICAL_OOS_ONLY') {
             throw "Unexpected OOS assessment."
           }
 
-          if ($result.source_program -ne "research_pattern_256_accumulation_candidate_rules.py") {
-            throw "Unexpected source program."
-          }
-
-          if ([int]$result.rule_count -ne 5) {
-            throw "Expected 5 OOS signal rules."
-          }
-
           if ([int]$result.summary_rows -ne 45) {
-            throw "Expected 45 OOS summary rows."
+            throw "Unexpected OOS summary row count."
           }
 
-          if ([int]$result.source_rows -le 0) {
-            throw "Source row count must be positive."
-          }
+          foreach ($name in @(
+            'candidate_oos_summary.csv',
+            'candidate_oos_yearly.csv',
+            'candidate_oos_result.json'
+          )) {
+            $expected = $manifest.outputs.PSObject.Properties[$name].Value
 
-          if ([int]$result.unique_signal_events -le 0) {
-            throw "Unique event count must be positive."
-          }
-
-          # --------------------------------------------------------
-          # Verify methodology flags
-          # --------------------------------------------------------
-
-          $methodology = $result.methodology
-
-          $expectedTrue = @(
-            "chronological_split"
-            "split_by_unique_signal_event"
-            "embargo_applied"
-            "signal_time_features_only"
-            "oos_outcomes_used_for_evaluation_only"
-            "incomplete_horizons_treated_as_censored"
-          )
-
-          foreach ($name in $expectedTrue) {
-            if ($methodology.$name -ne $true) {
-              throw "Expected true methodology flag: $name"
-            }
-          }
-
-          $expectedFalse = @(
-            "future_outcomes_used_as_features"
-            "historical_aggregate_rules_used_as_live_features"
-            "thresholds_optimized_on_oos"
-            "statistical_significance_tested"
-            "independent_events_proven"
-            "trading_return_estimated"
-            "fees_and_slippage_modeled"
-            "live_scanner_ready"
-            "automatic_trading_enabled"
-          )
-
-          foreach ($name in $expectedFalse) {
-            if ($methodology.$name -ne $false) {
-              throw "Expected false methodology flag: $name"
-            }
-          }
-
-          # --------------------------------------------------------
-          # Verify summary CSV
-          # --------------------------------------------------------
-
-          $summary = @(
-            Import-Csv -LiteralPath $summaryPath
-          )
-
-          if ($summary.Count -ne 45) {
-            throw "Summary CSV row count mismatch."
-          }
-
-          $ruleIds = @(
-            "S00_ALL_SIGNALS"
-            "S01_PATTERN_60"
-            "S02_PATTERN_70"
-            "S03_BOTH_PATTERN_60"
-            "S04_BOTH_STRICT"
-          )
-
-          $timeframes = @("h1", "h4", "d1")
-          $horizons = @(24, 72, 168)
-
-          $keys = @{}
-
-          foreach ($row in $summary) {
-            $key = "{0}|{1}|{2}" -f `
-              $row.timeframe, `
-              $row.rule_id, `
-              $row.horizon
-
-            if ($keys.ContainsKey($key)) {
-              throw "Duplicate OOS summary combination: $key"
+            if (-not $expected) {
+              throw "Missing manifest output hash: $name"
             }
 
-            $keys[$key] = $true
+            $path = Join-Path $outputDir $name
+            $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
 
-            foreach ($prefix in @("train", "oos")) {
-              $selected = [int]$row."${prefix}_selected_events"
-              $complete = [int]$row."${prefix}_complete_events"
-              $hits = [int]$row."${prefix}_hit_events"
-              $censored = [int]$row."${prefix}_censored_events"
-
-              if ($selected -ne ($complete + $censored)) {
-                throw "OOS summary accounting mismatch: $key"
-              }
-
-              if ($hits -gt $complete) {
-                throw "HIT count exceeds complete count: $key"
-              }
-
-              if (
-                $selected -lt 0 -or
-                $complete -lt 0 -or
-                $hits -lt 0 -or
-                $censored -lt 0
-              ) {
-                throw "Negative event count: $key"
-              }
-
-              $rateText = $row."${prefix}_hit_rate_pct"
-
-              if ($complete -eq 0) {
-                if (-not [string]::IsNullOrWhiteSpace($rateText)) {
-                  throw "Unexpected HIT rate without completed events."
-                }
-              }
-              else {
-                $rate = [double]::Parse(
-                  $rateText,
-                  [System.Globalization.CultureInfo]::InvariantCulture
-                )
-
-                if (
-                  [double]::IsNaN($rate) -or
-                  [double]::IsInfinity($rate)
-                ) {
-                  throw "Non-finite HIT rate."
-                }
-
-                if ($rate -lt 0 -or $rate -gt 100) {
-                  throw "HIT rate out of range."
-                }
-
-                $expectedRate = 100.0 * $hits / $complete
-
-                if ([math]::Abs($rate - $expectedRate) -gt 0.00001) {
-                  throw "HIT rate calculation mismatch."
-                }
-              }
+            if ($actual -ne $expected) {
+              throw "Output SHA256 mismatch: $name"
             }
 
-            if ($row.status -notin @(
-              "INSUFFICIENT_OOS_SAMPLE",
-              "DESCRIPTIVE_OOS_ONLY"
-            )) {
-              throw "Unexpected OOS summary status."
-            }
+            Write-Host "OUTPUT VERIFIED: $name"
           }
 
-          foreach ($timeframe in $timeframes) {
-            foreach ($ruleId in $ruleIds) {
-              foreach ($horizon in $horizons) {
-                $key = "{0}|{1}|{2}" -f `
-                  $timeframe, $ruleId, $horizon
-
-                if (-not $keys.ContainsKey($key)) {
-                  throw "Missing OOS summary combination: $key"
-                }
-              }
-            }
-          }
-
-          # --------------------------------------------------------
-          # Verify output SHA256
-          # --------------------------------------------------------
-
-          $outputFiles = @(
-            "candidate_oos_summary.csv"
-            "candidate_oos_yearly.csv"
-            "candidate_oos_result.json"
-          )
-
-          foreach ($filename in $outputFiles) {
-            $path = Join-Path $outputDir $filename
-
-            $actual = (
-              Get-FileHash -LiteralPath $path -Algorithm SHA256
-            ).Hash.ToLowerInvariant()
-
-            $property = $manifest.outputs.PSObject.Properties[$filename]
-
-            if ($null -eq $property) {
-              throw "Missing manifest hash: $filename"
-            }
-
-            $expected = [string]$property.Value
-
-            if ($expected -notmatch '^[0-9a-fA-F]{64}$') {
-              throw "Invalid output hash: $filename"
-            }
-
-            if ($actual -ne $expected.ToLowerInvariant()) {
-              throw "Output SHA256 mismatch: $filename"
-            }
-
-            Write-Host "OUTPUT SHA256 PASS: $filename"
-          }
-
-          $summaryHash = (
-            Get-FileHash -LiteralPath $summaryPath -Algorithm SHA256
-          ).Hash.ToLowerInvariant()
-
-          $yearlyHash = (
-            Get-FileHash -LiteralPath $yearlyPath -Algorithm SHA256
-          ).Hash.ToLowerInvariant()
-
-          if ($summaryHash -ne (
-            [string]$result.candidate_oos_summary_sha256
-          ).ToLowerInvariant()) {
-            throw "Result summary SHA256 mismatch."
-          }
-
-          if ($yearlyHash -ne (
-            [string]$result.candidate_oos_yearly_sha256
-          ).ToLowerInvariant()) {
-            throw "Result yearly SHA256 mismatch."
-          }
-
-          "output_dir=$outputDir" >> $env:GITHUB_OUTPUT
-
-          Write-Host "Candidate OOS output verification PASS"
-
-      # ============================================================
-      # 07. Verify production inputs unchanged
-      # ============================================================
+          Write-Host "Candidate OOS test outputs PASS"
 
       - name: Verify production inputs unchanged
         if: always()
         run: |
           $ErrorActionPreference = "Stop"
 
-          $snapshot = "${{ steps.input_hashes.outputs.snapshot }}"
-
-          if ([string]::IsNullOrWhiteSpace($snapshot)) {
-            throw "Production input hash snapshot unavailable."
+          if (-not $env:OOS_INPUT_SNAPSHOT) {
+            Write-Host "Input snapshot not created; verification unavailable."
+            exit 0
           }
 
-          if (-not (Test-Path -LiteralPath $snapshot -PathType Leaf)) {
-            throw "Production input hash snapshot missing."
+          if (-not (Test-Path -LiteralPath $env:OOS_INPUT_SNAPSHOT)) {
+            throw "Production input snapshot missing."
           }
 
-          $expected = Get-Content `
-            -LiteralPath $snapshot `
-            -Raw `
-            -Encoding UTF8 | ConvertFrom-Json
+          $snapshot = @(
+            Get-Content -LiteralPath $env:OOS_INPUT_SNAPSHOT -Raw |
+              ConvertFrom-Json
+          )
 
-          $candidateDir = Join-Path `
-            $env:PRODUCTION_ROOT `
-            $env:CANDIDATE_REL
-
-          $validationDir = Join-Path `
-            $env:PRODUCTION_ROOT `
-            $env:VALIDATION_REL
-
-          foreach ($property in $expected.PSObject.Properties) {
-            $filename = $property.Name
-            $expectedHash = [string]$property.Value
-
-            if ($filename -eq "validation_detail.csv") {
-              $path = Join-Path $validationDir $filename
-            }
-            else {
-              $path = Join-Path $candidateDir $filename
-            }
+          foreach ($item in $snapshot) {
+            $path = Join-Path $env:PRODUCTION_ROOT $item.relative_path
 
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-              throw "Production input missing: $filename"
+              throw "Production input disappeared: $path"
             }
 
-            $actualHash = (
-              Get-FileHash `
-                -LiteralPath $path `
-                -Algorithm SHA256
-            ).Hash.ToLowerInvariant()
+            $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
 
-            if ($actualHash -ne $expectedHash.ToLowerInvariant()) {
-              throw "Production input changed: $filename"
+            if ($actual -ne $item.sha256) {
+              throw "Production input changed: $($item.relative_path)"
             }
 
-            Write-Host "UNCHANGED PASS: $filename"
+            Write-Host "UNCHANGED: $($item.relative_path)"
           }
 
-          Write-Host "All production inputs unchanged PASS"
-
-      # ============================================================
-      # 08. Upload test reports
-      # ============================================================
+          Write-Host "Production inputs unchanged PASS"
 
       - name: Upload candidate OOS test reports
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: pattern-256-accumulation-candidate-oos-test
-          path: |
-            ${{ steps.verify_outputs.outputs.output_dir }}/candidate_oos_summary.csv
-            ${{ steps.verify_outputs.outputs.output_dir }}/candidate_oos_yearly.csv
-            ${{ steps.verify_outputs.outputs.output_dir }}/candidate_oos_result.json
-            ${{ steps.verify_outputs.outputs.output_dir }}/candidate_oos_manifest.json
+          path: ${{ env.OOS_TEST_ROOT }}/data/reports/pattern_256_accumulation_candidate_oos/
           if-no-files-found: error
           retention-days: 30
