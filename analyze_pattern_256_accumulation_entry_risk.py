@@ -4,56 +4,39 @@
 
 """
 analyze_pattern_256_accumulation_entry_risk.py
-Clean V001
+Clean V002
 
-Upbit Surge Monitor
-Pattern 256 / Accumulation Entry Risk Research
+Historical entry-risk research for Pattern 256 and
+Pattern 256 + accumulation signals.
 
-PURPOSE
--------
-Analyze historical entry risk separately for:
-- PATTERN_256_ONLY
-- BOTH (Pattern 256 + Accumulation)
+Read-only input:
+ data/reports/pattern_256_accumulation_30pct/
+   validation_detail.csv
+   validation_result.json
 
-INPUT (READ ONLY)
------------------
-data/reports/pattern_256_accumulation_30pct/
-    validation_detail.csv
-    validation_result.json
+Optional read-only context:
+ data/reports/pattern_256_accumulation_fair/
+   fair_comparison.csv
+   fair_result.json
 
-OPTIONAL CONTEXT (READ ONLY)
-----------------------------
-data/reports/pattern_256_accumulation_fair/
-    fair_comparison.csv
-    fair_result.json
+Outputs:
+ data/reports/pattern_256_accumulation_entry_risk/
+   entry_risk_summary.csv
+   entry_risk_stop_scenarios.csv
+   entry_risk_result.json
+   entry_risk_manifest.json
 
-OUTPUT
-------
-data/reports/pattern_256_accumulation_entry_risk/
-    entry_risk_summary.csv
-    entry_risk_stop_scenarios.csv
-    entry_risk_result.json
-    entry_risk_manifest.json
-
-SAFETY
-------
-- Never change original OHLCV.
-- Never change validation results.
-- Never change independent validation.
-- Never change fair comparison reports.
-- Stream CSV; do not load entire source into memory.
-- No trading orders.
-- No API requests.
-- No future information used to create signals.
-- Stop/target ordering is NOT inferred from
-  aggregate high/low values.
-- No claim of executable trading profitability.
-
-RUN
----
-py analyze_pattern_256_accumulation_entry_risk.py
-
-Python standard library only.
+IMPORTANT:
+ - No trading.
+ - No changes to upstream data.
+ - Large CSV processed as a stream.
+ - HIT may be confirmed before full horizon.
+ - Partial observations are never treated as full-horizon
+   drawdown observations.
+ - Target/stop chronological order is unknown when
+   both barriers are touched.
+ - These are descriptive statistics, not executable
+   trading backtests.
 """
 
 from __future__ import annotations
@@ -73,60 +56,32 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-PROGRAM = (
-    "analyze_pattern_256_accumulation_entry_risk.py"
-)
-
-VERSION = "Clean V001"
+PROGRAM = "analyze_pattern_256_accumulation_entry_risk.py"
+VERSION = "Clean V002"
 
 ROOT = Path(__file__).resolve().parent
-
 REPORTS = ROOT / "data" / "reports"
 
-SOURCE_DIR = (
-    REPORTS / "pattern_256_accumulation_30pct"
-)
-
+SOURCE_DIR = REPORTS / "pattern_256_accumulation_30pct"
 SOURCE_CSV = SOURCE_DIR / "validation_detail.csv"
 SOURCE_RESULT = SOURCE_DIR / "validation_result.json"
 
-FAIR_DIR = (
-    REPORTS / "pattern_256_accumulation_fair"
-)
-
+FAIR_DIR = REPORTS / "pattern_256_accumulation_fair"
 FAIR_CSV = FAIR_DIR / "fair_comparison.csv"
 FAIR_RESULT = FAIR_DIR / "fair_result.json"
 
-OUTPUT_DIR = (
-    REPORTS / "pattern_256_accumulation_entry_risk"
-)
+OUTPUT_DIR = REPORTS / "pattern_256_accumulation_entry_risk"
 
 SUMMARY_CSV = OUTPUT_DIR / "entry_risk_summary.csv"
-
-STOP_CSV = (
-    OUTPUT_DIR / "entry_risk_stop_scenarios.csv"
-)
-
+STOP_CSV = OUTPUT_DIR / "entry_risk_stop_scenarios.csv"
 RESULT_JSON = OUTPUT_DIR / "entry_risk_result.json"
-
-MANIFEST_JSON = (
-    OUTPUT_DIR / "entry_risk_manifest.json"
-)
+MANIFEST_JSON = OUTPUT_DIR / "entry_risk_manifest.json"
 
 TIMEFRAMES = ("h1", "h4", "d1")
-
 HORIZONS = (24, 72, 168)
-
-CLASSES = (
-    "PATTERN_256_ONLY",
-    "BOTH",
-)
-
+CLASSES = ("PATTERN_256_ONLY", "BOTH")
 STOP_LEVELS = (5.0, 10.0, 15.0, 20.0)
-
-TARGET_RETURN_PCT = 30.0
-
-PROGRESS_INTERVAL = 500000
+TARGET_PCT = 30.0
 
 REQUIRED_COLUMNS = (
     "timeframe",
@@ -206,94 +161,61 @@ STOP_COLUMNS = [
 
 
 def log(message):
-    timestamp = datetime.now().strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
-    print(f"[{timestamp}] {message}", flush=True)
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{stamp}] {message}", flush=True)
 
 
-def now_utc():
-    return datetime.now(
-        timezone.utc
-    ).isoformat()
+def utc_now():
+    return datetime.now(timezone.utc).isoformat()
 
 
-def sha256(path):
+def file_hash(path):
     digest = hashlib.sha256()
-
     with path.open("rb") as handle:
-        for block in iter(
-            lambda: handle.read(1024 * 1024),
-            b"",
-        ):
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
-
     return digest.hexdigest()
 
 
 def read_json(path):
-    with path.open(
-        "r",
-        encoding="utf-8-sig",
-    ) as handle:
+    with path.open("r", encoding="utf-8-sig") as handle:
         return json.load(handle)
 
 
-def write_json_atomic(path, data):
-    path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    fd, temporary_name = tempfile.mkstemp(
+def atomic_json(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(
         prefix=path.name + ".",
         suffix=".tmp",
         dir=str(path.parent),
     )
-
-    temporary = Path(temporary_name)
-
+    temp = Path(name)
     try:
-        with os.fdopen(
-            fd,
-            "w",
-            encoding="utf-8",
-        ) as handle:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(
-                data,
+                value,
                 handle,
                 indent=2,
                 ensure_ascii=False,
                 allow_nan=False,
             )
-
-        os.replace(temporary, path)
-
+        os.replace(temp, path)
     finally:
-        if temporary.exists():
-            temporary.unlink()
+        if temp.exists():
+            temp.unlink()
 
 
-def write_csv_atomic(path, columns, rows):
-    path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    fd, temporary_name = tempfile.mkstemp(
+def atomic_csv(path, columns, rows):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(
         prefix=path.name + ".",
         suffix=".tmp",
         dir=str(path.parent),
     )
-
-    temporary = Path(temporary_name)
-
+    temp = Path(name)
     try:
         with os.fdopen(
-            fd,
-            "w",
-            encoding="utf-8-sig",
-            newline="",
+            fd, "w", encoding="utf-8-sig", newline=""
         ) as handle:
             writer = csv.DictWriter(
                 handle,
@@ -302,195 +224,128 @@ def write_csv_atomic(path, columns, rows):
             )
             writer.writeheader()
             writer.writerows(rows)
-
-        os.replace(temporary, path)
-
+        os.replace(temp, path)
     finally:
-        if temporary.exists():
-            temporary.unlink()
+        if temp.exists():
+            temp.unlink()
 
 
-def parse_float(value, field, line):
+def number(value, name, line):
     try:
-        number = float(value)
-    except (TypeError, ValueError):
+        result = float(value)
+    except (ValueError, TypeError):
         raise ValueError(
-            f"Line {line}: invalid {field}: {value!r}"
+            f"Line {line}: invalid {name}: {value!r}"
         )
-
-    if not math.isfinite(number):
+    if not math.isfinite(result):
         raise ValueError(
-            f"Line {line}: non-finite {field}"
+            f"Line {line}: non-finite {name}"
         )
+    return result
 
-    return number
 
-
-def parse_int(value, field, line):
+def integer(value, name, line):
     try:
-        number = int(value)
-    except (TypeError, ValueError):
+        return int(value)
+    except (ValueError, TypeError):
         raise ValueError(
-            f"Line {line}: invalid {field}: {value!r}"
+            f"Line {line}: invalid {name}: {value!r}"
         )
 
-    return number
 
-
-def rate(numerator, denominator):
-    if denominator == 0:
+def percentage(count, total):
+    if total == 0:
         return None
+    return 100.0 * count / total
 
-    return 100.0 * numerator / denominator
 
-
-def rounded(value):
+def fmt(value):
     if value is None:
         return ""
-
     return round(float(value), 6)
 
 
-def counter_median(counter):
-    total = sum(counter.values())
-
-    if total == 0:
+def median_from_counter(counts):
+    size = sum(counts.values())
+    if size == 0:
         return None
 
-    left_index = (total - 1) // 2
-    right_index = total // 2
+    positions = ((size - 1) // 2, size // 2)
+    values = []
+    cumulative = 0
 
-    left_value = None
-    right_value = None
-    seen = 0
-
-    for value in sorted(counter):
-        next_seen = seen + counter[value]
-
-        if (
-            left_value is None
-            and left_index < next_seen
-        ):
-            left_value = value
-
-        if right_index < next_seen:
-            right_value = value
+    for item in sorted(counts):
+        cumulative += counts[item]
+        for position in positions[len(values):]:
+            if position < cumulative:
+                values.append(item)
+            else:
+                break
+        if len(values) == 2:
             break
 
-        seen = next_seen
-
-    return (
-        left_value + right_value
-    ) / 2.0
+    return (values[0] + values[1]) / 2.0
 
 
 def validate_inputs():
-    log("[CHECK] Source files")
+    log("[CHECK] Input files")
 
     for path in (SOURCE_CSV, SOURCE_RESULT):
         if not path.is_file():
-            raise FileNotFoundError(
-                f"Required input missing: {path}"
-            )
+            raise FileNotFoundError(path)
 
-    result = read_json(SOURCE_RESULT)
+    source_result = read_json(SOURCE_RESULT)
 
-    if result.get("status") != "PASS":
-        raise ValueError(
-            "Validation result status is not PASS"
-        )
+    if source_result.get("status") != "PASS":
+        raise ValueError("Source validation status is not PASS")
 
-    expected_hash = result.get(
-        "detail_sha256"
-    )
+    detail_hash = file_hash(SOURCE_CSV)
+    expected = source_result.get("detail_sha256")
 
-    actual_hash = sha256(SOURCE_CSV)
-
-    if expected_hash is not None:
-        if (
-            not isinstance(expected_hash, str)
-            or len(expected_hash) != 64
-        ):
-            raise ValueError(
-                "Invalid validation detail SHA256"
-            )
-
-        if (
-            actual_hash.lower()
-            != expected_hash.lower()
-        ):
-            raise ValueError(
-                "Validation detail SHA256 mismatch"
-            )
-
+    if expected is not None:
+        if not isinstance(expected, str):
+            raise ValueError("Invalid source detail SHA256")
+        if detail_hash != expected.lower():
+            raise ValueError("Source detail SHA256 mismatch")
     else:
-        log(
-            "[WARN] Source result has no "
-            "detail_sha256; recording actual hash"
-        )
+        log("[WARN] Source result has no detail_sha256")
 
     hashes = {
-        str(SOURCE_CSV.relative_to(ROOT)):
-            actual_hash,
+        str(SOURCE_CSV.relative_to(ROOT)): detail_hash,
         str(SOURCE_RESULT.relative_to(ROOT)):
-            sha256(SOURCE_RESULT),
+            file_hash(SOURCE_RESULT),
     }
 
-    optional_files = (
-        FAIR_CSV,
-        FAIR_RESULT,
+    fair_exists = (
+        FAIR_CSV.is_file(),
+        FAIR_RESULT.is_file(),
     )
 
-    if all(
-        path.is_file()
-        for path in optional_files
-    ):
+    if any(fair_exists) and not all(fair_exists):
+        raise ValueError("Incomplete fair comparison context")
+
+    if all(fair_exists):
         fair_result = read_json(FAIR_RESULT)
-
         if fair_result.get("status") != "PASS":
-            raise ValueError(
-                "Existing fair comparison "
-                "result is not PASS"
-            )
+            raise ValueError("Fair comparison is not PASS")
 
-        expected_fair_hash = fair_result.get(
+        fair_hash = file_hash(FAIR_CSV)
+        expected_fair = fair_result.get(
             "fair_comparison_sha256"
         )
 
-        actual_fair_hash = sha256(FAIR_CSV)
-
         if (
-            not isinstance(expected_fair_hash, str)
-            or actual_fair_hash.lower()
-            != expected_fair_hash.lower()
+            not isinstance(expected_fair, str)
+            or fair_hash != expected_fair.lower()
         ):
-            raise ValueError(
-                "Fair comparison SHA256 mismatch"
-            )
+            raise ValueError("Fair comparison hash mismatch")
 
-        for path in optional_files:
-            hashes[
-                str(path.relative_to(ROOT))
-            ] = sha256(path)
-
-        log("[PASS] Fair comparison context verified")
-
-    elif any(
-        path.is_file()
-        for path in optional_files
-    ):
-        raise ValueError(
-            "Fair comparison context is incomplete"
+        hashes[str(FAIR_CSV.relative_to(ROOT))] = fair_hash
+        hashes[str(FAIR_RESULT.relative_to(ROOT))] = (
+            file_hash(FAIR_RESULT)
         )
 
-    else:
-        log(
-            "[INFO] Optional fair comparison "
-            "context not present"
-        )
-
-    log("[PASS] Source integrity")
-
+    log("[PASS] Input validation")
     return hashes
 
 
@@ -504,6 +359,8 @@ def new_group():
         "markets": set(),
         "hits": 0,
         "misses": 0,
+        "early_hits": 0,
+        "full_observation": 0,
         "return_sum": 0.0,
         "drawdown_sum": 0.0,
         "worst_drawdown": None,
@@ -519,7 +376,6 @@ def new_group():
 
 def update_group(group, row, line):
     group["total"] += 1
-
     status = row["status"].strip().upper()
 
     if status == "CENSORED":
@@ -534,49 +390,64 @@ def update_group(group, row, line):
         group["other"] += 1
         return
 
-    entry = parse_float(
-        row["entry_price"],
-        "entry_price",
-        line,
+    horizon = integer(row["horizon"], "horizon", line)
+    observed = integer(
+        row["observed_bars"], "observed_bars", line
+    )
+    required = integer(
+        row["required_bars"], "required_bars", line
     )
 
-    high = parse_float(
-        row["max_high"],
-        "max_high",
+    if required != horizon:
+        raise ValueError(
+            f"Line {line}: required_bars != horizon"
+        )
+
+    if not (1 <= observed <= required):
+        raise ValueError(
+            f"Line {line}: invalid observed_bars"
+        )
+
+    hit = status == "HIT"
+
+    # Clean V002:
+    # A HIT may be confirmed before the full horizon.
+    # A MISS requires the full horizon to be observed.
+    if not hit and observed < required:
+        raise ValueError(
+            f"Line {line}: incomplete MISS evaluation"
+        )
+
+    hit_flag = row["hit_30pct"].strip()
+    if hit_flag not in ("0", "1"):
+        raise ValueError(
+            f"Line {line}: invalid hit_30pct"
+        )
+
+    if (hit_flag == "1") != hit:
+        raise ValueError(
+            f"Line {line}: HIT flag mismatch"
+        )
+
+    target = number(
+        row["target_return_pct"],
+        "target_return_pct",
         line,
     )
+    if abs(target - TARGET_PCT) > 1e-8:
+        raise ValueError(
+            f"Line {line}: unexpected target"
+        )
 
-    low = parse_float(
-        row["min_low"],
-        "min_low",
-        line,
+    entry = number(row["entry_price"], "entry_price", line)
+    high = number(row["max_high"], "max_high", line)
+    low = number(row["min_low"], "min_low", line)
+    max_return = number(
+        row["max_return_pct"], "max_return_pct", line
     )
-
-    max_return = parse_float(
-        row["max_return_pct"],
-        "max_return_pct",
-        line,
+    max_drawdown = number(
+        row["max_drawdown_pct"], "max_drawdown_pct", line
     )
-
-    max_drawdown = parse_float(
-        row["max_drawdown_pct"],
-        "max_drawdown_pct",
-        line,
-    )
-
-    observed = parse_int(
-        row["observed_bars"],
-        "observed_bars",
-        line,
-    )
-
-    required = parse_int(
-        row["required_bars"],
-        "required_bars",
-        line,
-    )
-
-    horizon = int(row["horizon"])
 
     if (
         entry <= 0
@@ -588,294 +459,191 @@ def update_group(group, row, line):
             f"Line {line}: invalid price values"
         )
 
-    if (
-        observed != required
-        or required != horizon
-    ):
+    calculated_return = (high / entry - 1) * 100
+    calculated_drawdown = (low / entry - 1) * 100
+
+    if abs(calculated_return - max_return) > 0.001:
         raise ValueError(
-            f"Line {line}: incomplete evaluation "
-            "marked HIT/MISS"
+            f"Line {line}: max_return mismatch"
         )
 
-    calculated_return = (
-        (high / entry - 1.0) * 100.0
-    )
-
-    calculated_drawdown = (
-        (low / entry - 1.0) * 100.0
-    )
-
-    if (
-        abs(
-            calculated_return - max_return
-        ) > 0.001
-    ):
+    if abs(calculated_drawdown - max_drawdown) > 0.001:
         raise ValueError(
-            f"Line {line}: max return mismatch"
+            f"Line {line}: max_drawdown mismatch"
         )
 
-    if (
-        abs(
-            calculated_drawdown - max_drawdown
-        ) > 0.001
-    ):
+    if hit and max_return < TARGET_PCT - 0.001:
         raise ValueError(
-            f"Line {line}: max drawdown mismatch"
+            f"Line {line}: HIT without target high"
         )
 
-    hit = status == "HIT"
-
-    hit_field = row["hit_30pct"].strip()
-
-    if hit_field not in ("0", "1"):
+    if not hit and max_return >= TARGET_PCT + 0.001:
         raise ValueError(
-            f"Line {line}: invalid hit_30pct"
+            f"Line {line}: MISS despite target high"
         )
 
-    if (hit_field == "1") != hit:
-        raise ValueError(
-            f"Line {line}: HIT status mismatch"
-        )
-
-    target = parse_float(
-        row["target_return_pct"],
-        "target_return_pct",
-        line,
-    )
-
-    if abs(target - TARGET_RETURN_PCT) > 1e-8:
-        raise ValueError(
-            f"Line {line}: unexpected target"
-        )
-
-    if hit and max_return < (
-        TARGET_RETURN_PCT - 0.001
-    ):
-        raise ValueError(
-            f"Line {line}: HIT without target"
-        )
-
-    if not hit and max_return >= (
-        TARGET_RETURN_PCT + 0.001
-    ):
-        raise ValueError(
-            f"Line {line}: MISS despite target"
-        )
-
-    group["complete"] += 1
+    first_hit = None
 
     if hit:
-        group["hits"] += 1
-    else:
-        group["misses"] += 1
-
-    group["return_sum"] += max_return
-    group["drawdown_sum"] += max_drawdown
-
-    worst = group["worst_drawdown"]
-
-    if (
-        worst is None
-        or max_drawdown < worst
-    ):
-        group["worst_drawdown"] = max_drawdown
-
-    for level in STOP_LEVELS:
-        if max_drawdown <= -level:
-            group["drawdown_counts"][level] += 1
-
-    if hit:
-        first_hit = parse_int(
+        first_hit = integer(
             row["first_hit_bars"],
             "first_hit_bars",
             line,
         )
 
-        if not (1 <= first_hit <= horizon):
+        if not (1 <= first_hit <= observed):
             raise ValueError(
-                f"Line {line}: invalid first_hit_bars"
+                f"Line {line}: first_hit_bars "
+                "outside observed range"
             )
 
+        group["hits"] += 1
         group["first_hit_sum"] += first_hit
         group["first_hit_counts"][first_hit] += 1
 
-    elif row["first_hit_bars"].strip():
-        raise ValueError(
-            f"Line {line}: MISS has first_hit_bars"
-        )
+        if observed < required:
+            group["early_hits"] += 1
+
+    else:
+        if row["first_hit_bars"].strip():
+            raise ValueError(
+                f"Line {line}: MISS has first_hit_bars"
+            )
+        group["misses"] += 1
+
+    group["complete"] += 1
+
+    if observed == required:
+        group["full_observation"] += 1
+
+    # Max high/low describe the actually observed
+    # interval, which can be shorter than the horizon.
+    group["return_sum"] += max_return
+    group["drawdown_sum"] += max_drawdown
+
+    if (
+        group["worst_drawdown"] is None
+        or max_drawdown < group["worst_drawdown"]
+    ):
+        group["worst_drawdown"] = max_drawdown
 
     for level in STOP_LEVELS:
-        stop_touched = (
-            max_drawdown <= -level
-        )
+        stop_touched = max_drawdown <= -level
 
-        counter = group["stop"][level]
+        if stop_touched:
+            group["drawdown_counts"][level] += 1
+
+        counts = group["stop"][level]
 
         if hit and stop_touched:
-            counter["both"] += 1
-
-        elif hit and not stop_touched:
-            counter["target_only"] += 1
-
-        elif not hit and stop_touched:
-            counter["stop_only"] += 1
-
+            counts["both"] += 1
+        elif hit:
+            counts["target_only"] += 1
+        elif stop_touched:
+            counts["stop_only"] += 1
         else:
-            counter["neither"] += 1
+            counts["neither"] += 1
 
 
 def scan_source():
     groups = defaultdict(new_group)
-
     total_rows = 0
     included_rows = 0
-    excluded_classes = Counter()
+    excluded = Counter()
 
-    log("[SCAN] Streaming validation_detail.csv")
+    log("[SCAN] Starting streamed CSV analysis")
 
     with SOURCE_CSV.open(
-        "r",
-        encoding="utf-8-sig",
-        newline="",
+        "r", encoding="utf-8-sig", newline=""
     ) as handle:
-
         reader = csv.DictReader(handle)
 
         if not reader.fieldnames:
-            raise ValueError(
-                "Source CSV has no header"
-            )
+            raise ValueError("Source CSV header missing")
 
-        missing = set(
-            REQUIRED_COLUMNS
-        ) - set(reader.fieldnames)
-
+        missing = set(REQUIRED_COLUMNS) - set(
+            reader.fieldnames
+        )
         if missing:
             raise ValueError(
-                "Missing CSV columns: "
+                "Missing source columns: "
                 + ", ".join(sorted(missing))
             )
 
-        for line, row in enumerate(
-            reader,
-            start=2,
-        ):
+        for line, row in enumerate(reader, start=2):
             total_rows += 1
 
             classification = (
-                row["classification"]
-                .strip()
-                .upper()
+                row["classification"].strip().upper()
             )
 
             if classification not in CLASSES:
-                excluded_classes[
-                    classification
-                ] += 1
+                excluded[classification] += 1
                 continue
 
-            timeframe = (
-                row["timeframe"]
-                .strip()
-                .lower()
-            )
-
+            timeframe = row["timeframe"].strip().lower()
             if timeframe not in TIMEFRAMES:
                 raise ValueError(
-                    f"Line {line}: unexpected timeframe"
+                    f"Line {line}: unknown timeframe"
                 )
 
-            horizon = parse_int(
-                row["horizon"],
-                "horizon",
-                line,
+            horizon = integer(
+                row["horizon"], "horizon", line
             )
-
             if horizon not in HORIZONS:
                 raise ValueError(
-                    f"Line {line}: unexpected horizon"
+                    f"Line {line}: unknown horizon"
                 )
 
             market = row["market"].strip()
-
             if not market:
                 raise ValueError(
-                    f"Line {line}: empty market"
+                    f"Line {line}: missing market"
                 )
 
-            key = (
-                timeframe,
-                horizon,
-                classification,
-            )
-
+            key = (timeframe, horizon, classification)
             group = groups[key]
-
             group["markets"].add(market)
 
-            update_group(
-                group,
-                row,
-                line,
-            )
-
+            update_group(group, row, line)
             included_rows += 1
 
-            if (
-                total_rows % PROGRESS_INTERVAL
-                == 0
-            ):
+            if total_rows % 500000 == 0:
                 log(
-                    "[SCAN] "
-                    f"{total_rows:,} rows processed"
+                    f"[SCAN] {total_rows:,} rows processed"
                 )
 
-    log(
-        "[PASS] Source rows: "
-        f"{total_rows:,}"
-    )
+    log(f"[PASS] Source rows: {total_rows:,}")
 
-    return (
-        groups,
-        total_rows,
-        included_rows,
-        excluded_classes,
-    )
+    return groups, total_rows, included_rows, excluded
 
 
 def build_summary(groups):
-    results = []
+    rows = []
 
     for timeframe in TIMEFRAMES:
         for horizon in HORIZONS:
             for classification in CLASSES:
                 group = groups[
-                    (
-                        timeframe,
-                        horizon,
-                        classification,
-                    )
+                    (timeframe, horizon, classification)
                 ]
 
                 complete = group["complete"]
                 hits = group["hits"]
-
-                hit_counts = group[
-                    "first_hit_counts"
-                ]
+                hit_counts = group["first_hit_counts"]
 
                 if complete == 0:
                     assessment = "NO_COMPLETE_SAMPLES"
-
                 elif complete < 100:
                     assessment = "SMALL_SAMPLE"
-
-                else:
+                elif group["early_hits"]:
                     assessment = (
-                        "DESCRIPTIVE_RISK_ONLY"
+                        "DESCRIPTIVE_MIXED_OBSERVATION"
                     )
+                else:
+                    assessment = "DESCRIPTIVE_RISK_ONLY"
 
-                results.append({
+                rows.append({
                     "timeframe": timeframe,
                     "horizon": horizon,
                     "classification": classification,
@@ -887,25 +655,21 @@ def build_summary(groups):
                     "markets": len(group["markets"]),
                     "hit_count": hits,
                     "miss_count": group["misses"],
-                    "hit_rate_complete_pct": rounded(
-                        rate(hits, complete)
+                    "hit_rate_complete_pct": fmt(
+                        percentage(hits, complete)
                     ),
-                    "hit_rate_all_pct": rounded(
-                        rate(hits, group["total"])
+                    "hit_rate_all_pct": fmt(
+                        percentage(hits, group["total"])
                     ),
-                    "mean_max_return_pct": rounded(
-                        (
-                            group["return_sum"] / complete
-                            if complete else None
-                        )
+                    "mean_max_return_pct": fmt(
+                        group["return_sum"] / complete
+                        if complete else None
                     ),
-                    "mean_max_drawdown_pct": rounded(
-                        (
-                            group["drawdown_sum"] / complete
-                            if complete else None
-                        )
+                    "mean_max_drawdown_pct": fmt(
+                        group["drawdown_sum"] / complete
+                        if complete else None
                     ),
-                    "worst_max_drawdown_pct": rounded(
+                    "worst_max_drawdown_pct": fmt(
                         group["worst_drawdown"]
                     ),
                     "drawdown_below_5pct_count":
@@ -916,69 +680,51 @@ def build_summary(groups):
                         group["drawdown_counts"][15.0],
                     "drawdown_below_20pct_count":
                         group["drawdown_counts"][20.0],
-                    "mean_first_hit_bars": rounded(
-                        (
-                            group["first_hit_sum"] / hits
-                            if hits else None
-                        )
+                    "mean_first_hit_bars": fmt(
+                        group["first_hit_sum"] / hits
+                        if hits else None
                     ),
-                    "median_first_hit_bars": rounded(
-                        counter_median(hit_counts)
+                    "median_first_hit_bars": fmt(
+                        median_from_counter(hit_counts)
                     ),
                     "hit_within_1_bar": sum(
-                        count
-                        for bar, count
-                        in hit_counts.items()
+                        n for bar, n in hit_counts.items()
                         if bar <= 1
                     ),
                     "hit_within_3_bars": sum(
-                        count
-                        for bar, count
-                        in hit_counts.items()
+                        n for bar, n in hit_counts.items()
                         if bar <= 3
                     ),
                     "hit_within_5_bars": sum(
-                        count
-                        for bar, count
-                        in hit_counts.items()
+                        n for bar, n in hit_counts.items()
                         if bar <= 5
                     ),
                     "hit_within_10_bars": sum(
-                        count
-                        for bar, count
-                        in hit_counts.items()
+                        n for bar, n in hit_counts.items()
                         if bar <= 10
                     ),
                     "hit_within_24_bars": sum(
-                        count
-                        for bar, count
-                        in hit_counts.items()
+                        n for bar, n in hit_counts.items()
                         if bar <= 24
                     ),
                     "hit_within_72_bars": sum(
-                        count
-                        for bar, count
-                        in hit_counts.items()
+                        n for bar, n in hit_counts.items()
                         if bar <= 72
                     ),
                     "assessment": assessment,
                 })
 
-    return results
+    return rows
 
 
 def build_stop_scenarios(groups):
-    results = []
+    rows = []
 
     for timeframe in TIMEFRAMES:
         for horizon in HORIZONS:
             for classification in CLASSES:
                 group = groups[
-                    (
-                        timeframe,
-                        horizon,
-                        classification,
-                    )
+                    (timeframe, horizon, classification)
                 ]
 
                 complete = group["complete"]
@@ -986,54 +732,22 @@ def build_stop_scenarios(groups):
                 for level in STOP_LEVELS:
                     counts = group["stop"][level]
 
-                    target_only = counts[
-                        "target_only"
-                    ]
-
-                    stop_only = counts[
-                        "stop_only"
-                    ]
-
+                    target_only = counts["target_only"]
+                    stop_only = counts["stop_only"]
                     both = counts["both"]
                     neither = counts["neither"]
 
                     if (
-                        target_only
-                        + stop_only
-                        + both
-                        + neither
-                        != complete
+                        target_only + stop_only + both
+                        + neither != complete
                     ):
                         raise ValueError(
-                            "Stop scenario accounting mismatch"
+                            "Barrier accounting mismatch"
                         )
 
-                    stop_touched = (
-                        stop_only + both
-                    )
+                    stop_touched = stop_only + both
 
-                    # With aggregate high/low, if both
-                    # stop and target were touched,
-                    # chronological ordering is unknown.
-                    #
-                    # Bounds assume only two barriers:
-                    # stop and +30% target.
-                    #
-                    # These are counts of potential
-                    # first-barrier outcomes, not actual
-                    # executed trade results.
-
-                    target_lower = target_only
-                    target_upper = (
-                        target_only + both
-                    )
-
-                    stop_lower = stop_only
-                    stop_upper = (
-                        stop_only + both
-                    )
-
-                    results.append({
+                    rows.append({
                         "timeframe": timeframe,
                         "horizon": horizon,
                         "classification": classification,
@@ -1041,10 +755,9 @@ def build_stop_scenarios(groups):
                         "complete_rows": complete,
                         "target_hit_count": group["hits"],
                         "stop_touched_count": stop_touched,
-                        "stop_touched_pct": rounded(
-                            rate(
-                                stop_touched,
-                                complete,
+                        "stop_touched_pct": fmt(
+                            percentage(
+                                stop_touched, complete
                             )
                         ),
                         "target_without_stop_touch":
@@ -1061,79 +774,52 @@ def build_stop_scenarios(groups):
                         "ambiguous_order_count": both,
                         "neither_count": neither,
                         "target_first_lower_bound_pct":
-                            rounded(
-                                rate(
-                                    target_lower,
-                                    complete,
-                                )
-                            ),
+                            fmt(percentage(
+                                target_only, complete
+                            )),
                         "target_first_upper_bound_pct":
-                            rounded(
-                                rate(
-                                    target_upper,
-                                    complete,
-                                )
-                            ),
+                            fmt(percentage(
+                                target_only + both,
+                                complete,
+                            )),
                         "stop_first_lower_bound_pct":
-                            rounded(
-                                rate(
-                                    stop_lower,
-                                    complete,
-                                )
-                            ),
+                            fmt(percentage(
+                                stop_only, complete
+                            )),
                         "stop_first_upper_bound_pct":
-                            rounded(
-                                rate(
-                                    stop_upper,
-                                    complete,
-                                )
-                            ),
+                            fmt(percentage(
+                                stop_only + both,
+                                complete,
+                            )),
                         "interpretation": (
                             "BARRIER_ORDER_UNKNOWN"
-                            if both
-                            else "NO_DUAL_TOUCH_AMBIGUITY"
+                            if both else
+                            "NO_DUAL_TOUCH_AMBIGUITY"
                         ),
                     })
 
-    return results
+    return rows
 
 
-def verify_results(
+def verify_accounting(
     groups,
-    summary_rows,
-    stop_rows,
-    total_rows,
-    included_rows,
-    excluded_classes,
+    summary,
+    stops,
+    total,
+    included,
+    excluded,
 ):
-    if len(summary_rows) != 18:
-        raise ValueError(
-            "Expected 18 summary rows"
-        )
+    if len(summary) != 18:
+        raise ValueError("Expected 18 summary rows")
 
-    if len(stop_rows) != 72:
-        raise ValueError(
-            "Expected 72 stop scenario rows"
-        )
+    if len(stops) != 72:
+        raise ValueError("Expected 72 stop rows")
 
-    group_total = sum(
-        group["total"]
-        for group in groups.values()
-    )
+    if sum(g["total"] for g in groups.values()) != included:
+        raise ValueError("Included row count mismatch")
 
-    if group_total != included_rows:
-        raise ValueError(
-            "Included row accounting mismatch"
-        )
-
-    if (
-        included_rows
-        + sum(excluded_classes.values())
-        != total_rows
-    ):
-        raise ValueError(
-            "Source row accounting mismatch"
-        )
+    if included + sum(excluded.values()) != total:
+        raise ValueError("Source row count mismatch")
 
     for group in groups.values():
         if (
@@ -1143,225 +829,137 @@ def verify_results(
             + group["other"]
             != group["total"]
         ):
-            raise ValueError(
-                "Status accounting mismatch"
-            )
+            raise ValueError("Status accounting mismatch")
 
         if (
             group["hits"] + group["misses"]
             != group["complete"]
         ):
-            raise ValueError(
-                "HIT/MISS accounting mismatch"
-            )
+            raise ValueError("HIT/MISS accounting mismatch")
 
         if (
-            sum(
-                group["first_hit_counts"].values()
-            )
+            sum(group["first_hit_counts"].values())
             != group["hits"]
         ):
-            raise ValueError(
-                "First-hit accounting mismatch"
-            )
+            raise ValueError("First-hit accounting mismatch")
 
-    log("[PASS] Result accounting")
+        if group["early_hits"] > group["hits"]:
+            raise ValueError("Early-hit accounting mismatch")
+
+    log("[PASS] Accounting verification")
 
 
-def verify_inputs_unchanged(hashes):
-    log("[CHECK] Input files unchanged")
-
+def verify_unchanged(hashes):
     for relative, expected in hashes.items():
         path = ROOT / relative
-
         if not path.is_file():
-            raise FileNotFoundError(
-                f"Input disappeared: {path}"
-            )
-
-        if sha256(path) != expected:
+            raise FileNotFoundError(path)
+        if file_hash(path) != expected:
             raise ValueError(
-                f"Input SHA256 changed: {relative}"
+                f"Upstream input changed: {relative}"
             )
-
-    log("[PASS] Input SHA256 unchanged")
+    log("[PASS] Upstream input hashes unchanged")
 
 
 def main():
     started = time.monotonic()
 
-    log("=" * 72)
-    log(f"{PROGRAM} - {VERSION}")
-    log("=" * 72)
+    log("=" * 65)
+    log(f"{PROGRAM} / {VERSION}")
+    log("=" * 65)
 
     hashes = validate_inputs()
 
-    (
-        groups,
-        total_rows,
-        included_rows,
-        excluded_classes,
-    ) = scan_source()
+    groups, total, included, excluded = scan_source()
 
-    summary_rows = build_summary(groups)
+    summary = build_summary(groups)
+    stops = build_stop_scenarios(groups)
 
-    stop_rows = build_stop_scenarios(groups)
-
-    verify_results(
-        groups,
-        summary_rows,
-        stop_rows,
-        total_rows,
-        included_rows,
-        excluded_classes,
+    verify_accounting(
+        groups, summary, stops, total, included, excluded
     )
 
-    # Verify all upstream files before writing
-    # new reports.
-    verify_inputs_unchanged(hashes)
+    verify_unchanged(hashes)
 
-    OUTPUT_DIR.mkdir(
-        parents=True,
-        exist_ok=True,
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    atomic_csv(SUMMARY_CSV, SUMMARY_COLUMNS, summary)
+    atomic_csv(STOP_CSV, STOP_COLUMNS, stops)
+
+    summary_hash = file_hash(SUMMARY_CSV)
+    stop_hash = file_hash(STOP_CSV)
+
+    complete = sum(
+        g["complete"] for g in groups.values()
     )
-
-    write_csv_atomic(
-        SUMMARY_CSV,
-        SUMMARY_COLUMNS,
-        summary_rows,
-    )
-
-    write_csv_atomic(
-        STOP_CSV,
-        STOP_COLUMNS,
-        stop_rows,
-    )
-
-    summary_hash = sha256(SUMMARY_CSV)
-    stop_hash = sha256(STOP_CSV)
-
-    complete_rows = sum(
-        group["complete"]
-        for group in groups.values()
-    )
-
-    hit_rows = sum(
-        group["hits"]
-        for group in groups.values()
+    hits = sum(g["hits"] for g in groups.values())
+    early_hits = sum(
+        g["early_hits"] for g in groups.values()
     )
 
     result = {
         "program": PROGRAM,
         "version": VERSION,
         "status": "PASS",
-        "created_at_utc": now_utc(),
-        "method": (
-            "DESCRIPTIVE_ENTRY_RISK_AND_"
-            "TWO_BARRIER_OUTCOME_BOUNDS"
-        ),
-        "target_return_pct": TARGET_RETURN_PCT,
+        "created_at_utc": utc_now(),
+        "target_return_pct": TARGET_PCT,
         "timeframes": list(TIMEFRAMES),
         "horizons": list(HORIZONS),
         "classifications": list(CLASSES),
         "stop_levels_pct": list(STOP_LEVELS),
-        "source_rows": total_rows,
-        "included_rows": included_rows,
-        "excluded_classes": dict(
-            excluded_classes
-        ),
-        "complete_rows": complete_rows,
-        "hit_rows": hit_rows,
-        "summary_rows": len(summary_rows),
-        "stop_scenario_rows": len(stop_rows),
-        "entry_risk_summary_sha256":
-            summary_hash,
-        "entry_risk_stop_scenarios_sha256":
-            stop_hash,
+        "source_rows": total,
+        "included_rows": included,
+        "excluded_classes": dict(excluded),
+        "complete_rows": complete,
+        "hit_rows": hits,
+        "early_hit_rows": early_hits,
+        "summary_rows": len(summary),
+        "stop_scenario_rows": len(stops),
+        "entry_risk_summary_sha256": summary_hash,
+        "entry_risk_stop_scenarios_sha256": stop_hash,
         "elapsed_seconds": round(
-            time.monotonic() - started,
-            3,
+            time.monotonic() - started, 3
         ),
         "limitations": [
-            "This report is descriptive, not a trading backtest.",
-            "High and low values describe the entire evaluation horizon.",
-            "Maximum drawdown may occur after the +30% target was hit.",
-            "When both target and stop are touched, their order is unknown.",
-            "First-hit bars are available for target hits only.",
-            "No intrabar execution order is inferred.",
-            "No slippage, fees, liquidity or gap execution model is applied.",
-            "Repeated signals and multiple horizons are correlated.",
-            "This report does not reproduce the independent non-overlap selection.",
-            "TRAIN and TEST are not separated in this source-level report.",
-            "Future outcomes are used for historical evaluation only.",
-            "Historical 30% target attainment is not guaranteed future profit.",
+            "Descriptive research, not an executable backtest.",
+            "HIT may be confirmed before the full horizon.",
+            "Some risk observations therefore have shorter windows.",
+            "High/low are measured over observed windows only.",
+            "Stop and target chronological order is unknown.",
+            "Intrabar execution, gaps, fees and slippage are not modeled.",
+            "Overlapping signals are not independent observations.",
+            "TRAIN and TEST are not separated in this report.",
+            "Future outcomes are used for evaluation only.",
         ],
     }
 
     manifest = {
         "program": PROGRAM,
         "version": VERSION,
-        "created_at_utc": now_utc(),
+        "created_at_utc": utc_now(),
         "inputs": hashes,
         "outputs": {
-            "entry_risk_summary.csv":
-                summary_hash,
-            "entry_risk_stop_scenarios.csv":
-                stop_hash,
+            "entry_risk_summary.csv": summary_hash,
+            "entry_risk_stop_scenarios.csv": stop_hash,
         },
     }
 
-    write_json_atomic(
-        MANIFEST_JSON,
-        manifest,
-    )
+    atomic_json(MANIFEST_JSON, manifest)
+    atomic_json(RESULT_JSON, result)
 
-    write_json_atomic(
-        RESULT_JSON,
-        result,
-    )
+    verify_unchanged(hashes)
 
-    # Recheck source files after all report writes.
-    verify_inputs_unchanged(hashes)
-
-    log("=" * 72)
+    log("=" * 65)
     log("[PASS] Entry risk analysis completed")
-    log(
-        f"[PASS] Source rows: {total_rows:,}"
-    )
-    log(
-        f"[PASS] Included rows: {included_rows:,}"
-    )
-    log(
-        f"[PASS] Complete evaluations: "
-        f"{complete_rows:,}"
-    )
-    log(
-        f"[PASS] Target hits: {hit_rows:,}"
-    )
-    log(
-        f"[PASS] Summary rows: "
-        f"{len(summary_rows)}"
-    )
-    log(
-        f"[PASS] Stop scenario rows: "
-        f"{len(stop_rows)}"
-    )
-    log(
-        f"[OUTPUT] {OUTPUT_DIR}"
-    )
-    log("=" * 72)
-
-    for row in summary_rows:
-        if row["horizon"] == 168:
-            log(
-                "[168 BARS] "
-                f"{row['timeframe']} "
-                f"{row['classification']} "
-                f"complete={row['complete_rows']} "
-                f"hits={row['hit_count']} "
-                f"hit_rate={row['hit_rate_complete_pct']}% "
-                f"mean_dd={row['mean_max_drawdown_pct']}%"
-            )
+    log(f"Source rows: {total:,}")
+    log(f"Included rows: {included:,}")
+    log(f"Complete HIT/MISS rows: {complete:,}")
+    log(f"HIT rows: {hits:,}")
+    log(f"Early HIT rows: {early_hits:,}")
+    log(f"Summary rows: {len(summary)}")
+    log(f"Stop scenario rows: {len(stops)}")
+    log(f"Output: {OUTPUT_DIR}")
+    log("=" * 65)
 
     return 0
 
@@ -1369,11 +967,9 @@ def main():
 if __name__ == "__main__":
     try:
         sys.exit(main())
-
     except KeyboardInterrupt:
-        log("[STOP] Interrupted safely")
+        log("[STOP] Interrupted")
         sys.exit(130)
-
     except Exception:
         log("[FAIL] Entry risk analysis failed")
         traceback.print_exc()
