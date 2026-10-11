@@ -28,7 +28,7 @@ jobs:
     env:
       PRODUCTION_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
       PROGRAM_NAME: validate_pattern_256_accumulation_risk_adjusted.py
-      EXPECTED_VERSION: Clean V001
+      EXPECTED_VERSION: Clean V002
       SOURCE_REPORT: data\reports\pattern_256_accumulation_entry_risk
       OUTPUT_REPORT: data\reports\pattern_256_accumulation_risk_adjusted
 
