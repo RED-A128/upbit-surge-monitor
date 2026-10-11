@@ -1,0 +1,761 @@
+
+name: research_pattern_256_accumulation_candidate_rules_test.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern-256-accumulation-candidate-rules-test
+  cancel-in-progress: false
+
+jobs:
+  candidate-rules-test:
+    name: Candidate Rules Research Test
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 60
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PRODUCTION_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+      PROGRAM_NAME: research_pattern_256_accumulation_candidate_rules.py
+      EXPECTED_VERSION: Clean V001
+      SOURCE_REPORT: data\reports\pattern_256_accumulation_risk_adjusted
+      OUTPUT_REPORT: data\reports\pattern_256_accumulation_candidate_rules
+
+    steps:
+
+      # ============================================================
+      # 01. Checkout repository
+      # ============================================================
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          clean: false
+          persist-credentials: false
+
+      # ============================================================
+      # 02. Verify Python program
+      # ============================================================
+
+      - name: Verify Python program
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python launcher unavailable."
+          }
+
+          $program = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:PROGRAM_NAME
+
+          if (-not (Test-Path -LiteralPath $program -PathType Leaf)) {
+            throw "Python program missing: $program"
+          }
+
+          $source = Get-Content `
+            -LiteralPath $program `
+            -Raw `
+            -Encoding UTF8
+
+          if ($source -notmatch 'VERSION\s*=\s*["'']Clean V001["'']') {
+            throw "Unexpected Python program version."
+          }
+
+          if ($source -notmatch 'PROGRAM\s*=\s*["'']research_pattern_256_accumulation_candidate_rules\.py["'']') {
+            throw "Unexpected Python program identity."
+          }
+
+          $env:PYTHONPYCACHEPREFIX = Join-Path `
+            $env:RUNNER_TEMP `
+            "candidate_rules_pycache_${{ github.run_id }}_${{ github.run_attempt }}"
+
+          py -m py_compile $program
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax verification failed."
+          }
+
+          Write-Host "Python program verification PASS"
+
+      # ============================================================
+      # 03. Capture production input SHA256
+      # ============================================================
+
+      - name: Capture production input SHA256
+        id: production_hashes
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $sourceDir = Join-Path `
+            $env:PRODUCTION_ROOT `
+            $env:SOURCE_REPORT
+
+          if (-not (Test-Path -LiteralPath $sourceDir -PathType Container)) {
+            throw "Production source directory missing: $sourceDir"
+          }
+
+          $files = @(
+            "risk_adjusted_groups.csv"
+            "risk_adjusted_comparison.csv"
+            "risk_adjusted_result.json"
+            "risk_adjusted_manifest.json"
+          )
+
+          $hashes = @{}
+
+          foreach ($filename in $files) {
+            $path = Join-Path $sourceDir $filename
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Production input missing: $path"
+            }
+
+            $hashes[$filename] = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            Write-Host "SHA256: $filename = $($hashes[$filename])"
+          }
+
+          $resultPath = Join-Path `
+            $sourceDir `
+            "risk_adjusted_result.json"
+
+          $manifestPath = Join-Path `
+            $sourceDir `
+            "risk_adjusted_manifest.json"
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw `
+            -Encoding UTF8 | ConvertFrom-Json
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw `
+            -Encoding UTF8 | ConvertFrom-Json
+
+          if ($result.status -ne "PASS") {
+            throw "Upstream result is not PASS."
+          }
+
+          if ($manifest.status -ne "PASS") {
+            throw "Upstream manifest is not PASS."
+          }
+
+          if ($result.program -ne "validate_pattern_256_accumulation_risk_adjusted.py") {
+            throw "Unexpected upstream program."
+          }
+
+          if ($result.version -ne $manifest.version) {
+            throw "Upstream version mismatch."
+          }
+
+          if ($result.assessment -ne "DESCRIPTIVE_RISK_COMPARISON_ONLY") {
+            throw "Unexpected upstream assessment."
+          }
+
+          foreach ($filename in @(
+            "risk_adjusted_groups.csv"
+            "risk_adjusted_comparison.csv"
+            "risk_adjusted_result.json"
+          )) {
+            $expected = [string]$manifest.outputs.$filename
+
+            if ([string]::IsNullOrWhiteSpace($expected)) {
+              throw "Missing upstream manifest hash: $filename"
+            }
+
+            if ($hashes[$filename] -ne $expected.ToLowerInvariant()) {
+              throw "Upstream manifest SHA256 mismatch: $filename"
+            }
+          }
+
+          $hashPath = Join-Path `
+            $env:RUNNER_TEMP `
+            "candidate_rules_input_hashes_${{ github.run_id }}_${{ github.run_attempt }}.json"
+
+          if (Test-Path -LiteralPath $hashPath) {
+            throw "Input hash snapshot already exists."
+          }
+
+          $hashes |
+            ConvertTo-Json -Depth 5 |
+            Set-Content `
+              -LiteralPath $hashPath `
+              -Encoding UTF8
+
+          "hash_path=$hashPath" >> $env:GITHUB_OUTPUT
+
+          Write-Host "Production input SHA256 capture PASS"
+
+      # ============================================================
+      # 04. Prepare isolated test workspace
+      # ============================================================
+
+      - name: Prepare isolated test workspace
+        id: workspace
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $workRoot = Join-Path `
+            $env:RUNNER_TEMP `
+            "candidate_rules_test_${{ github.run_id }}_${{ github.run_attempt }}"
+
+          if (Test-Path -LiteralPath $workRoot) {
+            throw "Test workspace already exists. Refusing overwrite."
+          }
+
+          $sourceDir = Join-Path `
+            $env:PRODUCTION_ROOT `
+            $env:SOURCE_REPORT
+
+          $targetDir = Join-Path `
+            $workRoot `
+            $env:SOURCE_REPORT
+
+          New-Item `
+            -ItemType Directory `
+            -Path $targetDir `
+            -Force | Out-Null
+
+          $files = @(
+            "risk_adjusted_groups.csv"
+            "risk_adjusted_comparison.csv"
+            "risk_adjusted_result.json"
+            "risk_adjusted_manifest.json"
+          )
+
+          foreach ($filename in $files) {
+            $source = Join-Path $sourceDir $filename
+            $target = Join-Path $targetDir $filename
+
+            Copy-Item `
+              -LiteralPath $source `
+              -Destination $target `
+              -ErrorAction Stop
+
+            $sourceHash = (
+              Get-FileHash `
+                -LiteralPath $source `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            $targetHash = (
+              Get-FileHash `
+                -LiteralPath $target `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($sourceHash -ne $targetHash) {
+              throw "Copied input SHA256 mismatch: $filename"
+            }
+
+            Write-Host "COPY VERIFIED: $filename"
+          }
+
+          $programSource = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:PROGRAM_NAME
+
+          $programTarget = Join-Path `
+            $workRoot `
+            $env:PROGRAM_NAME
+
+          Copy-Item `
+            -LiteralPath $programSource `
+            -Destination $programTarget `
+            -ErrorAction Stop
+
+          $programSourceHash = (
+            Get-FileHash `
+              -LiteralPath $programSource `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          $programTargetHash = (
+            Get-FileHash `
+              -LiteralPath $programTarget `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if ($programSourceHash -ne $programTargetHash) {
+            throw "Copied Python program SHA256 mismatch."
+          }
+
+          "work_root=$workRoot" >> $env:GITHUB_OUTPUT
+          "work_program=$programTarget" >> $env:GITHUB_OUTPUT
+
+          Write-Host "Isolated test workspace PASS"
+
+      # ============================================================
+      # 05. Execute candidate rules research test
+      # ============================================================
+
+      - name: Execute candidate rules research test
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $workRoot = "${{ steps.workspace.outputs.work_root }}"
+          $program = "${{ steps.workspace.outputs.work_program }}"
+
+          Write-Host "========================================"
+          Write-Host "Candidate Rules Research Test"
+          Write-Host "========================================"
+
+          py $program --root $workRoot
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Candidate rules research execution failed."
+          }
+
+          Write-Host "Candidate rules research execution PASS"
+
+      # ============================================================
+      # 06. Verify candidate rules test outputs
+      # ============================================================
+
+      - name: Verify candidate rules test outputs
+        id: verify_outputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $workRoot = "${{ steps.workspace.outputs.work_root }}"
+
+          $outputDir = Join-Path `
+            $workRoot `
+            $env:OUTPUT_REPORT
+
+          $researchPath = Join-Path `
+            $outputDir `
+            "candidate_rule_research.csv"
+
+          $comparisonPath = Join-Path `
+            $outputDir `
+            "candidate_rule_comparison.csv"
+
+          $resultPath = Join-Path `
+            $outputDir `
+            "candidate_rule_result.json"
+
+          $manifestPath = Join-Path `
+            $outputDir `
+            "candidate_rule_manifest.json"
+
+          foreach ($path in @(
+            $researchPath
+            $comparisonPath
+            $resultPath
+            $manifestPath
+          )) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Required output missing: $path"
+            }
+
+            Write-Host "FOUND: $path"
+          }
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw `
+            -Encoding UTF8 | ConvertFrom-Json
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw `
+            -Encoding UTF8 | ConvertFrom-Json
+
+          if ($result.status -ne "PASS") {
+            throw "Result status is not PASS."
+          }
+
+          if ($manifest.status -ne "PASS") {
+            throw "Manifest status is not PASS."
+          }
+
+          if ($result.program -ne $env:PROGRAM_NAME) {
+            throw "Unexpected result program."
+          }
+
+          if ($manifest.program -ne $env:PROGRAM_NAME) {
+            throw "Unexpected manifest program."
+          }
+
+          if ($result.version -ne $env:EXPECTED_VERSION) {
+            throw "Unexpected result version."
+          }
+
+          if ($manifest.version -ne $env:EXPECTED_VERSION) {
+            throw "Unexpected manifest version."
+          }
+
+          if ($result.source_program -ne "validate_pattern_256_accumulation_risk_adjusted.py") {
+            throw "Unexpected upstream source program."
+          }
+
+          if ([int]$result.source_group_rows -ne 72) {
+            throw "Unexpected source group row count."
+          }
+
+          if ([int]$result.source_comparison_rows -ne 36) {
+            throw "Unexpected source comparison row count."
+          }
+
+          if ([int]$result.rule_count -ne 5) {
+            throw "Expected exactly 5 predefined rules."
+          }
+
+          if ([int]$result.research_rows -ne 360) {
+            throw "Expected exactly 360 research rows."
+          }
+
+          if ([int]$result.comparison_rows -ne 180) {
+            throw "Expected exactly 180 comparison rows."
+          }
+
+          if ($result.assessment -ne "DESCRIPTIVE_CANDIDATE_RULE_RESEARCH_ONLY") {
+            throw "Unexpected research assessment."
+          }
+
+          $methodology = $result.methodology
+
+          if ($methodology.historical_outcomes_used_for_evaluation -ne $true) {
+            throw "Historical evaluation flag mismatch."
+          }
+
+          if ($methodology.historical_outcomes_allowed_as_live_features -ne $false) {
+            throw "Future outcome leakage risk."
+          }
+
+          if ($methodology.rule_thresholds_predeclared -ne $true) {
+            throw "Predeclared rule flag mismatch."
+          }
+
+          if ($methodology.thresholds_optimized_on_current_data -ne $false) {
+            throw "Unexpected threshold optimization claim."
+          }
+
+          if ($methodology.statistical_significance_tested -ne $false) {
+            throw "Unexpected statistical significance claim."
+          }
+
+          if ($methodology.out_of_sample_verified -ne $false) {
+            throw "Unexpected out-of-sample claim."
+          }
+
+          if ($methodology.intrabar_order_resolved -ne $false) {
+            throw "Unexpected intrabar ordering claim."
+          }
+
+          if ($methodology.trading_return_estimated -ne $false) {
+            throw "Unexpected trading return claim."
+          }
+
+          if ($methodology.live_scanner_ready -ne $false) {
+            throw "Unexpected scanner readiness claim."
+          }
+
+          if ($methodology.automatic_trading_enabled -ne $false) {
+            throw "Automatic trading must remain disabled."
+          }
+
+          $research = @(
+            Import-Csv -LiteralPath $researchPath
+          )
+
+          $comparisons = @(
+            Import-Csv -LiteralPath $comparisonPath
+          )
+
+          if ($research.Count -ne 360) {
+            throw "Research CSV row count mismatch."
+          }
+
+          if ($comparisons.Count -ne 180) {
+            throw "Comparison CSV row count mismatch."
+          }
+
+          $ruleIds = @(
+            "R00_BASELINE"
+            "R01_BALANCED"
+            "R02_CONSERVATIVE"
+            "R03_RISK_BALANCE"
+            "R04_STRICT"
+          )
+
+          $timeframes = @("h1", "h4", "d1")
+          $horizons = @(24, 72, 168)
+          $stopLevels = @(5, 10, 15, 20)
+
+          $classifications = @(
+            "PATTERN_256_ONLY"
+            "BOTH"
+          )
+
+          foreach ($ruleId in $ruleIds) {
+            foreach ($timeframe in $timeframes) {
+              foreach ($horizon in $horizons) {
+                foreach ($stop in $stopLevels) {
+
+                  $comparisonMatch = @(
+                    $comparisons | Where-Object {
+                      $_.rule_id -eq $ruleId -and
+                      $_.timeframe -eq $timeframe -and
+                      [int]$_.horizon -eq $horizon -and
+                      [int]$_.stop_loss_pct -eq $stop
+                    }
+                  )
+
+                  if ($comparisonMatch.Count -ne 1) {
+                    throw "Missing or duplicate comparison combination."
+                  }
+
+                  foreach ($classification in $classifications) {
+                    $researchMatch = @(
+                      $research | Where-Object {
+                        $_.rule_id -eq $ruleId -and
+                        $_.timeframe -eq $timeframe -and
+                        [int]$_.horizon -eq $horizon -and
+                        [int]$_.stop_loss_pct -eq $stop -and
+                        $_.classification -eq $classification
+                      }
+                    )
+
+                    if ($researchMatch.Count -ne 1) {
+                      throw "Missing or duplicate research combination."
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          foreach ($row in $research) {
+            if ($row.meets_historical_rule -notin @("0", "1")) {
+              throw "Invalid historical rule result."
+            }
+
+            if ($row.research_status -ne "DESCRIPTIVE_ONLY") {
+              throw "Unexpected research status."
+            }
+
+            $hit = [double]$row.historical_hit_rate_pct
+            $stop = [double]$row.historical_stop_touched_pct
+            $margin = [double]$row.historical_hit_minus_stop_pp
+
+            if ([math]::Abs(($hit - $stop) - $margin) -gt 0.00001) {
+              throw "Historical hit-stop margin mismatch."
+            }
+          }
+
+          foreach ($row in $comparisons) {
+            if ($row.only_meets_rule -notin @("0", "1")) {
+              throw "Invalid ONLY rule result."
+            }
+
+            if ($row.both_meets_rule -notin @("0", "1")) {
+              throw "Invalid BOTH rule result."
+            }
+
+            if ($row.interpretation -ne "HISTORICAL_DESCRIPTIVE_ONLY") {
+              throw "Unexpected comparison interpretation."
+            }
+
+            $onlyHit = [double]$row.only_hit_rate_pct
+            $bothHit = [double]$row.both_hit_rate_pct
+            $hitDiff = [double]$row.hit_rate_difference_pp
+
+            $onlyStop = [double]$row.only_stop_touched_pct
+            $bothStop = [double]$row.both_stop_touched_pct
+            $stopDiff = [double]$row.stop_touch_difference_pp
+
+            if ([math]::Abs(($bothHit - $onlyHit) - $hitDiff) -gt 0.00001) {
+              throw "Comparison HIT difference mismatch."
+            }
+
+            if ([math]::Abs(($bothStop - $onlyStop) - $stopDiff) -gt 0.00001) {
+              throw "Comparison stop difference mismatch."
+            }
+
+            if ($row.both_meets_rule -eq "1" -and $row.only_meets_rule -eq "0") {
+              $expectedPreference = "BOTH_ONLY_PASSES"
+            }
+            elseif ($row.both_meets_rule -eq "0" -and $row.only_meets_rule -eq "1") {
+              $expectedPreference = "PATTERN_256_ONLY_PASSES"
+            }
+            elseif ($row.both_meets_rule -eq "1" -and $row.only_meets_rule -eq "1") {
+              $expectedPreference = "BOTH_GROUPS_PASS"
+            }
+            else {
+              $expectedPreference = "NEITHER_GROUP_PASSES"
+            }
+
+            if ($row.historical_preference -ne $expectedPreference) {
+              throw "Historical preference mismatch."
+            }
+          }
+
+          $hashChecks = @(
+            @{
+              Path = $researchPath
+              ResultHash = [string]$result.candidate_rule_research_sha256
+              ManifestHash = [string]$manifest.outputs.'candidate_rule_research.csv'
+            }
+            @{
+              Path = $comparisonPath
+              ResultHash = [string]$result.candidate_rule_comparison_sha256
+              ManifestHash = [string]$manifest.outputs.'candidate_rule_comparison.csv'
+            }
+            @{
+              Path = $resultPath
+              ResultHash = [string]$manifest.outputs.'candidate_rule_result.json'
+              ManifestHash = [string]$manifest.outputs.'candidate_rule_result.json'
+            }
+          )
+
+          foreach ($check in $hashChecks) {
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $check.Path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ([string]::IsNullOrWhiteSpace($check.ResultHash)) {
+              throw "Missing result SHA256."
+            }
+
+            if ([string]::IsNullOrWhiteSpace($check.ManifestHash)) {
+              throw "Missing manifest SHA256."
+            }
+
+            if ($actual -ne $check.ResultHash.ToLowerInvariant()) {
+              throw "Result SHA256 mismatch: $($check.Path)"
+            }
+
+            if ($actual -ne $check.ManifestHash.ToLowerInvariant()) {
+              throw "Manifest SHA256 mismatch: $($check.Path)"
+            }
+
+            Write-Host "SHA256 PASS: $($check.Path)"
+          }
+
+          # Verify that the output records the exact copied inputs.
+          $copiedSource = Join-Path `
+            $workRoot `
+            $env:SOURCE_REPORT
+
+          foreach ($filename in @(
+            "risk_adjusted_groups.csv"
+            "risk_adjusted_comparison.csv"
+            "risk_adjusted_result.json"
+            "risk_adjusted_manifest.json"
+          )) {
+            $path = Join-Path $copiedSource $filename
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            $resultHash = [string]$result.input_sha256.$filename
+            $manifestHash = [string]$manifest.inputs.$filename
+
+            if ($actual -ne $resultHash.ToLowerInvariant()) {
+              throw "Result input SHA256 mismatch: $filename"
+            }
+
+            if ($actual -ne $manifestHash.ToLowerInvariant()) {
+              throw "Manifest input SHA256 mismatch: $filename"
+            }
+          }
+
+          "output_dir=$outputDir" >> $env:GITHUB_OUTPUT
+
+          Write-Host "Candidate rules test output verification PASS"
+
+      # ============================================================
+      # 07. Verify production inputs unchanged
+      # ============================================================
+
+      - name: Verify production inputs unchanged
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $hashPath = "${{ steps.production_hashes.outputs.hash_path }}"
+
+          if ([string]::IsNullOrWhiteSpace($hashPath)) {
+            throw "Initial production input hash snapshot unavailable."
+          }
+
+          if (-not (Test-Path -LiteralPath $hashPath -PathType Leaf)) {
+            throw "Initial production input hash file missing."
+          }
+
+          $expected = Get-Content `
+            -LiteralPath $hashPath `
+            -Raw `
+            -Encoding UTF8 | ConvertFrom-Json
+
+          $sourceDir = Join-Path `
+            $env:PRODUCTION_ROOT `
+            $env:SOURCE_REPORT
+
+          foreach ($property in $expected.PSObject.Properties) {
+            $filename = $property.Name
+            $expectedHash = [string]$property.Value
+
+            $path = Join-Path $sourceDir $filename
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Production input disappeared: $filename"
+            }
+
+            $actualHash = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($actualHash -ne $expectedHash.ToLowerInvariant()) {
+              throw "Production input changed: $filename"
+            }
+
+            Write-Host "UNCHANGED PASS: $filename"
+          }
+
+          Write-Host "All production inputs unchanged PASS"
+
+      # ============================================================
+      # 08. Upload candidate rules test reports
+      # ============================================================
+
+      - name: Upload candidate rules test reports
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-accumulation-candidate-rules-test
+          path: |
+            ${{ steps.verify_outputs.outputs.output_dir }}/candidate_rule_research.csv
+            ${{ steps.verify_outputs.outputs.output_dir }}/candidate_rule_comparison.csv
+            ${{ steps.verify_outputs.outputs.output_dir }}/candidate_rule_result.json
+            ${{ steps.verify_outputs.outputs.output_dir }}/candidate_rule_manifest.json
+          if-no-files-found: error
+          retention-days: 30
