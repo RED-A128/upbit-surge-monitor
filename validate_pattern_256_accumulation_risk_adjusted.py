@@ -4,33 +4,23 @@
 
 """
 validate_pattern_256_accumulation_risk_adjusted.py
-Clean V001
+Clean V002
 
-Purpose
--------
-Compare PATTERN_256_ONLY and BOTH using existing entry-risk
-summary and stop-scenario reports.
+Pattern 256 / Accumulation Risk Adjusted Validation
 
-Safety
-------
-- Read-only upstream inputs.
-- No OHLCV modifications.
-- No trading or exchange API calls.
-- No future data used to generate new signals.
-- No assumption that target was reached before stop.
-- Separate output directory.
-- SHA256 verification before and after analysis.
-- Atomic output replacement.
+- Read upstream reports only.
+- Validate source and output SHA256.
+- Compare PATTERN_256_ONLY and BOTH.
+- Separate h1/h4/d1 and 24/72/168 bars.
+- Preserve uncertainty of target/stop ordering.
+- Do not modify OHLCV or upstream reports.
+- Do not execute trades.
 - Standard library only.
 
-Important
----------
-This is a descriptive research validation, not a trading
-backtest or a proof of profitability.
-
-The source report rows may contain overlapping signals.
-Consequently, the row counts must not be interpreted as
-independent trade counts.
+V002:
+Fix source_rows accounting. The upstream entry-risk report
+counts rows across timeframe, horizon and classification.
+It must not be compared with 24-bar groups alone.
 """
 
 from __future__ import annotations
@@ -38,6 +28,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import io
 import json
 import math
 import os
@@ -45,14 +36,13 @@ import sys
 import tempfile
 import traceback
 
-from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 
 PROGRAM = "validate_pattern_256_accumulation_risk_adjusted.py"
-VERSION = "Clean V001"
+VERSION = "Clean V002"
 
 SOURCE_DIR = Path(
     "data/reports/pattern_256_accumulation_entry_risk"
@@ -67,26 +57,18 @@ STOP_FILE = "entry_risk_stop_scenarios.csv"
 SOURCE_RESULT_FILE = "entry_risk_result.json"
 SOURCE_MANIFEST_FILE = "entry_risk_manifest.json"
 
-COMPARISON_FILE = "risk_adjusted_comparison.csv"
 GROUPS_FILE = "risk_adjusted_groups.csv"
+COMPARISON_FILE = "risk_adjusted_comparison.csv"
 RESULT_FILE = "risk_adjusted_result.json"
 MANIFEST_FILE = "risk_adjusted_manifest.json"
 
 TIMEFRAMES = ("h1", "h4", "d1")
 HORIZONS = (24, 72, 168)
-
-CLASSIFICATIONS = (
-    "PATTERN_256_ONLY",
-    "BOTH",
-)
-
+CLASSIFICATIONS = ("PATTERN_256_ONLY", "BOTH")
 STOP_LEVELS = (5, 10, 15, 20)
 
 MIN_COMPLETE_ROWS = 100
 MIN_HIT_ROWS = 30
-
-# These are research-quality flags, not statistical
-# significance thresholds.
 MAX_CENSORED_PCT = 10.0
 
 SUMMARY_REQUIRED = (
@@ -188,38 +170,31 @@ COMPARISON_FIELDS = [
 
 
 class ValidationError(RuntimeError):
-    """Invalid or inconsistent source report."""
+    pass
 
 
 def log(message: str) -> None:
     timestamp = datetime.now().strftime(
         "%Y-%m-%d %H:%M:%S"
     )
-    print(
-        f"[{timestamp}] {message}",
-        flush=True,
-    )
+    print(f"[{timestamp}] {message}", flush=True)
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
 
     with path.open("rb") as handle:
-        while True:
-            block = handle.read(1024 * 1024)
-
-            if not block:
-                break
-
+        for block in iter(
+            lambda: handle.read(1024 * 1024),
+            b"",
+        ):
             digest.update(block)
 
     return digest.hexdigest()
-
-
-def utc_now() -> str:
-    return datetime.now(
-        timezone.utc
-    ).isoformat()
 
 
 def require_file(path: Path) -> None:
@@ -238,7 +213,7 @@ def to_int(
         text = str(value).strip()
 
         if not text:
-            raise ValueError("empty value")
+            raise ValueError("empty")
 
         number = int(text)
 
@@ -255,10 +230,7 @@ def to_int(
     return number
 
 
-def to_float(
-    value: Any,
-    field: str,
-) -> float:
+def to_float(value: Any, field: str) -> float:
     try:
         number = float(str(value).strip())
 
@@ -275,21 +247,18 @@ def to_float(
     return number
 
 
-def percentage(
-    numerator: float,
-    denominator: float,
-) -> float:
+def pct(numerator: float, denominator: float) -> float:
     if denominator <= 0:
         return 0.0
 
-    return numerator * 100.0 / denominator
+    return 100.0 * numerator / denominator
 
 
-def rounded(value: float) -> float:
+def rnd(value: float) -> float:
     return round(value, 6)
 
 
-def close_enough(
+def rate_matches(
     actual: float,
     expected: float,
     tolerance: float = 0.0001,
@@ -297,30 +266,9 @@ def close_enough(
     return abs(actual - expected) <= tolerance
 
 
-def validate_dimensions(
-    timeframe: str,
-    horizon: int,
-    classification: str,
-) -> None:
-    if timeframe not in TIMEFRAMES:
-        raise ValidationError(
-            f"Unknown timeframe: {timeframe}"
-        )
-
-    if horizon not in HORIZONS:
-        raise ValidationError(
-            f"Unknown horizon: {horizon}"
-        )
-
-    if classification not in CLASSIFICATIONS:
-        raise ValidationError(
-            f"Unknown classification: {classification}"
-        )
-
-
 def read_csv(
     path: Path,
-    required_columns: tuple[str, ...],
+    required: tuple[str, ...],
 ) -> list[dict[str, str]]:
     require_file(path)
 
@@ -329,7 +277,6 @@ def read_csv(
         encoding="utf-8-sig",
         newline="",
     ) as handle:
-
         reader = csv.DictReader(handle)
 
         if not reader.fieldnames:
@@ -338,14 +285,14 @@ def read_csv(
             )
 
         missing = [
-            column
-            for column in required_columns
-            if column not in reader.fieldnames
+            field
+            for field in required
+            if field not in reader.fieldnames
         ]
 
         if missing:
             raise ValidationError(
-                f"Missing columns in {path.name}: "
+                f"Missing CSV fields in {path.name}: "
                 + ", ".join(missing)
             )
 
@@ -355,7 +302,10 @@ def read_csv(
             reader,
             start=2,
         ):
-            if None in row:
+            if None in row or any(
+                value is None
+                for value in row.values()
+            ):
                 raise ValidationError(
                     f"Malformed CSV line {line_number}: "
                     f"{path.name}"
@@ -378,24 +328,45 @@ def load_json(path: Path) -> dict[str, Any]:
         "r",
         encoding="utf-8-sig",
     ) as handle:
-        value = json.load(handle)
+        data = json.load(handle)
 
-    if not isinstance(value, dict):
+    if not isinstance(data, dict):
         raise ValidationError(
-            f"JSON object expected: {path}"
+            f"Expected JSON object: {path}"
         )
 
-    return value
+    return data
+
+
+def validate_dimensions(
+    timeframe: str,
+    horizon: int,
+    classification: str,
+) -> None:
+    if timeframe not in TIMEFRAMES:
+        raise ValidationError(
+            f"Unexpected timeframe: {timeframe}"
+        )
+
+    if horizon not in HORIZONS:
+        raise ValidationError(
+            f"Unexpected horizon: {horizon}"
+        )
+
+    if classification not in CLASSIFICATIONS:
+        raise ValidationError(
+            f"Unexpected classification: {classification}"
+        )
 
 
 def validate_source_metadata(
     result: dict[str, Any],
     manifest: dict[str, Any],
-    input_hashes: dict[str, str],
+    hashes: dict[str, str],
 ) -> None:
     if result.get("status") != "PASS":
         raise ValidationError(
-            "Upstream entry risk result is not PASS."
+            "Upstream result status is not PASS."
         )
 
     if result.get("program") != (
@@ -410,12 +381,12 @@ def validate_source_metadata(
             "Unexpected upstream version."
         )
 
-    if manifest.get("program") != result.get("program"):
+    if manifest.get("program") != result["program"]:
         raise ValidationError(
             "Upstream manifest program mismatch."
         )
 
-    if manifest.get("version") != result.get("version"):
+    if manifest.get("version") != result["version"]:
         raise ValidationError(
             "Upstream manifest version mismatch."
         )
@@ -427,7 +398,7 @@ def validate_source_metadata(
             "Upstream manifest outputs missing."
         )
 
-    for filename, result_key in (
+    checks = (
         (
             SUMMARY_FILE,
             "entry_risk_summary_sha256",
@@ -436,38 +407,67 @@ def validate_source_metadata(
             STOP_FILE,
             "entry_risk_stop_scenarios_sha256",
         ),
-    ):
-        actual = input_hashes[filename]
+    )
+
+    for filename, result_field in checks:
+        actual = hashes[filename]
+
+        expected_result = str(
+            result.get(result_field, "")
+        ).lower()
 
         expected_manifest = str(
             outputs.get(filename, "")
         ).lower()
 
-        expected_result = str(
-            result.get(result_key, "")
-        ).lower()
+        if actual != expected_result:
+            raise ValidationError(
+                f"Result SHA256 mismatch: {filename}"
+            )
 
         if actual != expected_manifest:
             raise ValidationError(
-                f"Upstream manifest hash mismatch: "
-                f"{filename}"
+                f"Manifest SHA256 mismatch: {filename}"
             )
 
-        if actual != expected_result:
-            raise ValidationError(
-                f"Upstream result hash mismatch: "
-                f"{filename}"
-            )
+
+def expected_summary_keys() -> set:
+    return {
+        (tf, horizon, classification)
+        for tf in TIMEFRAMES
+        for horizon in HORIZONS
+        for classification in CLASSIFICATIONS
+    }
+
+
+def expected_stop_keys() -> set:
+    return {
+        (tf, horizon, classification, stop)
+        for tf in TIMEFRAMES
+        for horizon in HORIZONS
+        for classification in CLASSIFICATIONS
+        for stop in STOP_LEVELS
+    }
 
 
 def parse_summary(
     raw_rows: list[dict[str, str]],
-) -> dict[tuple[str, int, str], dict[str, Any]]:
-
+) -> dict[tuple, dict[str, Any]]:
     parsed = {}
 
+    count_fields = (
+        "total_rows",
+        "complete_rows",
+        "censored_rows",
+        "invalid_rows",
+        "other_status_rows",
+        "markets",
+        "hit_count",
+        "miss_count",
+    )
+
     for row in raw_rows:
-        timeframe = row["timeframe"].strip()
+        tf = row["timeframe"].strip()
         horizon = to_int(
             row["horizon"],
             "horizon",
@@ -477,38 +477,25 @@ def parse_summary(
         ].strip()
 
         validate_dimensions(
-            timeframe,
+            tf,
             horizon,
             classification,
         )
 
-        key = (
-            timeframe,
-            horizon,
-            classification,
-        )
+        key = (tf, horizon, classification)
 
         if key in parsed:
             raise ValidationError(
-                f"Duplicate summary key: {key}"
+                f"Duplicate summary group: {key}"
             )
 
         item = {
-            "timeframe": timeframe,
+            "timeframe": tf,
             "horizon": horizon,
             "classification": classification,
         }
 
-        for field in (
-            "total_rows",
-            "complete_rows",
-            "censored_rows",
-            "invalid_rows",
-            "other_status_rows",
-            "markets",
-            "hit_count",
-            "miss_count",
-        ):
+        for field in count_fields:
             item[field] = to_int(
                 row[field],
                 field,
@@ -519,34 +506,35 @@ def parse_summary(
             "hit_rate_complete_pct",
         )
 
-        if (
-            item["total_rows"]
-            != item["complete_rows"]
-            + item["censored_rows"]
-            + item["invalid_rows"]
-            + item["other_status_rows"]
+        if item["total_rows"] != sum(
+            item[field]
+            for field in (
+                "complete_rows",
+                "censored_rows",
+                "invalid_rows",
+                "other_status_rows",
+            )
         ):
             raise ValidationError(
-                f"Summary accounting mismatch: {key}"
+                f"Summary status accounting mismatch: {key}"
             )
 
-        if (
-            item["complete_rows"]
-            != item["hit_count"]
+        if item["complete_rows"] != (
+            item["hit_count"]
             + item["miss_count"]
         ):
             raise ValidationError(
-                f"HIT/MISS accounting mismatch: {key}"
+                f"Summary HIT/MISS mismatch: {key}"
             )
 
-        calculated_rate = percentage(
+        expected_rate = pct(
             item["hit_count"],
             item["complete_rows"],
         )
 
-        if not close_enough(
+        if not rate_matches(
             item["hit_rate_pct"],
-            calculated_rate,
+            expected_rate,
         ):
             raise ValidationError(
                 f"Summary HIT rate mismatch: {key}"
@@ -554,18 +542,9 @@ def parse_summary(
 
         parsed[key] = item
 
-    expected_keys = {
-        (timeframe, horizon, classification)
-        for timeframe in TIMEFRAMES
-        for horizon in HORIZONS
-        for classification in CLASSIFICATIONS
-    }
-
-    if set(parsed) != expected_keys:
-        missing = expected_keys - set(parsed)
-
+    if set(parsed) != expected_summary_keys():
         raise ValidationError(
-            f"Summary groups incomplete: {sorted(missing)}"
+            "Summary group keys incomplete or unexpected."
         )
 
     return parsed
@@ -574,8 +553,7 @@ def parse_summary(
 def parse_stops(
     raw_rows: list[dict[str, str]],
     summaries: dict,
-) -> dict[tuple[str, int, str, int], dict[str, Any]]:
-
+) -> dict[tuple, dict[str, Any]]:
     parsed = {}
 
     count_fields = (
@@ -601,7 +579,7 @@ def parse_stops(
     )
 
     for row in raw_rows:
-        timeframe = row["timeframe"].strip()
+        tf = row["timeframe"].strip()
         horizon = to_int(
             row["horizon"],
             "horizon",
@@ -611,7 +589,7 @@ def parse_stops(
         ].strip()
 
         validate_dimensions(
-            timeframe,
+            tf,
             horizon,
             classification,
         )
@@ -620,41 +598,35 @@ def parse_stops(
             row["stop_loss_pct"],
             "stop_loss_pct",
         )
-
-        stop_level = int(stop_float)
+        stop = int(stop_float)
 
         if (
-            stop_float != stop_level
-            or stop_level not in STOP_LEVELS
+            stop_float != stop
+            or stop not in STOP_LEVELS
         ):
             raise ValidationError(
                 f"Unexpected stop level: {stop_float}"
             )
 
-        key = (
-            timeframe,
-            horizon,
-            classification,
-            stop_level,
-        )
+        key = (tf, horizon, classification, stop)
 
         if key in parsed:
             raise ValidationError(
-                f"Duplicate stop key: {key}"
+                f"Duplicate stop group: {key}"
             )
 
         summary_key = key[:3]
 
         if summary_key not in summaries:
             raise ValidationError(
-                f"Missing summary: {summary_key}"
+                f"Missing summary group: {summary_key}"
             )
 
         item = {
-            "timeframe": timeframe,
+            "timeframe": tf,
             "horizon": horizon,
             "classification": classification,
-            "stop_loss_pct": stop_level,
+            "stop_loss_pct": stop,
         }
 
         for field in count_fields:
@@ -670,7 +642,7 @@ def parse_stops(
             )
 
         complete = item["complete_rows"]
-        hit = item["target_hit_count"]
+        target = item["target_hit_count"]
         touched = item["stop_touched_count"]
 
         target_only = item[
@@ -684,18 +656,16 @@ def parse_stops(
         ]
         neither = item["neither_touched"]
 
-        if complete != summaries[
-            summary_key
-        ]["complete_rows"]:
+        summary = summaries[summary_key]
+
+        if complete != summary["complete_rows"]:
             raise ValidationError(
-                f"Stop/summary complete mismatch: {key}"
+                f"Stop complete count mismatch: {key}"
             )
 
-        if hit != summaries[
-            summary_key
-        ]["hit_count"]:
+        if target != summary["hit_count"]:
             raise ValidationError(
-                f"Stop/summary HIT mismatch: {key}"
+                f"Stop HIT count mismatch: {key}"
             )
 
         if complete != (
@@ -705,17 +675,17 @@ def parse_stops(
             + neither
         ):
             raise ValidationError(
-                f"Four-category accounting mismatch: {key}"
+                f"Stop category accounting mismatch: {key}"
             )
 
-        if hit != target_only + both:
+        if target != target_only + both:
             raise ValidationError(
                 f"Target accounting mismatch: {key}"
             )
 
         if touched != stop_only + both:
             raise ValidationError(
-                f"Stop accounting mismatch: {key}"
+                f"Stop touch accounting mismatch: {key}"
             )
 
         if (
@@ -729,95 +699,219 @@ def parse_stops(
             != neither
         ):
             raise ValidationError(
-                f"Order classification mismatch: {key}"
+                f"Barrier order accounting mismatch: {key}"
             )
 
-        calculated_rates = {
-            "stop_touched_pct": percentage(
+        calculated = {
+            "stop_touched_pct": pct(
                 touched,
                 complete,
             ),
-            "target_first_lower_bound_pct": percentage(
+            "target_first_lower_bound_pct": pct(
                 target_only,
                 complete,
             ),
-            "target_first_upper_bound_pct": percentage(
+            "target_first_upper_bound_pct": pct(
                 target_only + both,
                 complete,
             ),
-            "stop_first_lower_bound_pct": percentage(
+            "stop_first_lower_bound_pct": pct(
                 stop_only,
                 complete,
             ),
-            "stop_first_upper_bound_pct": percentage(
+            "stop_first_upper_bound_pct": pct(
                 stop_only + both,
                 complete,
             ),
         }
 
-        for field, expected in calculated_rates.items():
-            if not close_enough(
+        for field, expected in calculated.items():
+            if not rate_matches(
                 item[field],
                 expected,
             ):
                 raise ValidationError(
-                    f"Rate mismatch {field}: {key}"
+                    f"Stop rate mismatch {field}: {key}"
                 )
 
         parsed[key] = item
 
-    expected_keys = {
-        (
-            timeframe,
-            horizon,
-            classification,
-            stop_level,
-        )
-        for timeframe in TIMEFRAMES
-        for horizon in HORIZONS
-        for classification in CLASSIFICATIONS
-        for stop_level in STOP_LEVELS
-    }
-
-    if set(parsed) != expected_keys:
-        missing = expected_keys - set(parsed)
-
+    if set(parsed) != expected_stop_keys():
         raise ValidationError(
-            f"Stop groups incomplete: {sorted(missing)}"
+            "Stop scenario group keys incomplete or unexpected."
         )
 
     return parsed
 
 
-def group_quality(
-    summary: dict[str, Any],
-) -> tuple[str, str, float]:
+def verify_result_counts(
+    result: dict[str, Any],
+    summaries: dict,
+    stops: dict,
+) -> None:
+    """
+    V002 correction:
 
+    The upstream entry-risk analysis reports source_rows
+    across all evaluated timeframe/horizon/classification
+    rows.
+
+    Never compare source_rows against the 24-bar subset.
+    """
+
+    if len(summaries) != 18:
+        raise ValidationError(
+            "Expected 18 summary groups."
+        )
+
+    if len(stops) != 72:
+        raise ValidationError(
+            "Expected 72 stop scenario groups."
+        )
+
+    if to_int(
+        result.get("summary_rows"),
+        "summary_rows",
+    ) != len(summaries):
+        raise ValidationError(
+            "Source summary row count mismatch."
+        )
+
+    if to_int(
+        result.get("stop_scenario_rows"),
+        "stop_scenario_rows",
+    ) != len(stops):
+        raise ValidationError(
+            "Source stop scenario row count mismatch."
+        )
+
+    total = sum(
+        item["total_rows"]
+        for item in summaries.values()
+    )
+
+    complete = sum(
+        item["complete_rows"]
+        for item in summaries.values()
+    )
+
+    hits = sum(
+        item["hit_count"]
+        for item in summaries.values()
+    )
+
+    source_rows = to_int(
+        result.get("source_rows"),
+        "source_rows",
+    )
+
+    included_rows = to_int(
+        result.get("included_rows"),
+        "included_rows",
+    )
+
+    complete_rows = to_int(
+        result.get("complete_rows"),
+        "complete_rows",
+    )
+
+    hit_rows = to_int(
+        result.get("hit_rows"),
+        "hit_rows",
+    )
+
+    # Check that all reported rows were accounted for.
+    if total != included_rows:
+        raise ValidationError(
+            "Included row accounting mismatch: "
+            f"summary={total}, result={included_rows}"
+        )
+
+    # The source CSV has one record for each evaluated
+    # horizon. The upstream report counts those records.
+    if source_rows < included_rows:
+        raise ValidationError(
+            "Source rows cannot be less than included rows."
+        )
+
+    if complete != complete_rows:
+        raise ValidationError(
+            "Complete row accounting mismatch: "
+            f"summary={complete}, result={complete_rows}"
+        )
+
+    if hits != hit_rows:
+        raise ValidationError(
+            "HIT row accounting mismatch: "
+            f"summary={hits}, result={hit_rows}"
+        )
+
+    log(
+        "[PASS] Source row accounting: "
+        f"source={source_rows}, included={included_rows}"
+    )
+
+    log(
+        "[PASS] Complete/HIT accounting: "
+        f"complete={complete}, hits={hits}"
+    )
+
+
+def verify_horizon_consistency(summaries: dict) -> None:
+    """
+    Horizon checks are descriptive. Complete counts
+    can decrease as longer horizons become censored.
+    """
+
+    for tf in TIMEFRAMES:
+        for classification in CLASSIFICATIONS:
+            previous_total = None
+            previous_complete = None
+
+            for horizon in HORIZONS:
+                item = summaries[
+                    (tf, horizon, classification)
+                ]
+
+                total = item["total_rows"]
+                complete = item["complete_rows"]
+
+                if previous_total is not None:
+                    if total != previous_total:
+                        raise ValidationError(
+                            "Total count differs between horizons: "
+                            f"{tf}/{classification}"
+                        )
+
+                    if complete > previous_complete:
+                        raise ValidationError(
+                            "Complete count increases with horizon: "
+                            f"{tf}/{classification}"
+                        )
+
+                previous_total = total
+                previous_complete = complete
+
+
+def group_quality(summary: dict) -> tuple:
     complete = summary["complete_rows"]
     hits = summary["hit_count"]
     total = summary["total_rows"]
     censored = summary["censored_rows"]
 
-    censored_pct = percentage(
-        censored,
-        total,
-    )
+    censored_pct = pct(censored, total)
 
-    sample_warnings = []
+    warnings = []
 
     if complete < MIN_COMPLETE_ROWS:
-        sample_warnings.append(
-            "SMALL_COMPLETE_SAMPLE"
-        )
+        warnings.append("SMALL_COMPLETE_SAMPLE")
 
     if hits < MIN_HIT_ROWS:
-        sample_warnings.append(
-            "FEW_TARGET_HITS"
-        )
+        warnings.append("FEW_TARGET_HITS")
 
     sample_warning = (
-        "|".join(sample_warnings)
-        if sample_warnings
+        "|".join(warnings)
+        if warnings
         else "NONE"
     )
 
@@ -834,23 +928,18 @@ def group_quality(
     )
 
 
-def build_group_rows(
+def build_groups(
     summaries: dict,
     stops: dict,
 ) -> list[dict[str, Any]]:
+    rows = []
 
-    output = []
-
-    for timeframe in TIMEFRAMES:
+    for tf in TIMEFRAMES:
         for horizon in HORIZONS:
             for classification in CLASSIFICATIONS:
-                summary_key = (
-                    timeframe,
-                    horizon,
-                    classification,
-                )
-
-                summary = summaries[summary_key]
+                summary = summaries[
+                    (tf, horizon, classification)
+                ]
 
                 (
                     sample_warning,
@@ -861,7 +950,7 @@ def build_group_rows(
                 for stop_level in STOP_LEVELS:
                     stop = stops[
                         (
-                            timeframe,
+                            tf,
                             horizon,
                             classification,
                             stop_level,
@@ -884,34 +973,32 @@ def build_group_rows(
                         "stop_first_upper_bound_pct"
                     ]
 
-                    # Descriptive percentage-point margins only.
-                    # These are NOT expected trading returns.
-                    conservative_margin = (
+                    conservative = (
                         target_lower - stop_upper
                     )
 
-                    optimistic_margin = (
+                    optimistic = (
                         target_upper - stop_lower
                     )
 
-                    output.append({
-                        "timeframe": timeframe,
+                    rows.append({
+                        "timeframe": tf,
                         "horizon": horizon,
                         "classification": classification,
                         "stop_loss_pct": stop_level,
                         "total_rows": summary["total_rows"],
                         "complete_rows": summary["complete_rows"],
                         "censored_rows": summary["censored_rows"],
-                        "censored_pct": rounded(censored_pct),
+                        "censored_pct": rnd(censored_pct),
                         "markets": summary["markets"],
                         "hit_count": summary["hit_count"],
-                        "hit_rate_pct": rounded(
+                        "hit_rate_pct": rnd(
                             summary["hit_rate_pct"]
                         ),
                         "stop_touched_count": stop[
                             "stop_touched_count"
                         ],
-                        "stop_touched_pct": rounded(
+                        "stop_touched_pct": rnd(
                             stop["stop_touched_pct"]
                         ),
                         "target_without_stop_touch": stop[
@@ -920,29 +1007,29 @@ def build_group_rows(
                         "target_and_stop_both_touched": stop[
                             "target_and_stop_both_touched"
                         ],
-                        "ambiguous_order_pct": rounded(
-                            percentage(
+                        "ambiguous_order_pct": rnd(
+                            pct(
                                 stop["ambiguous_order_count"],
                                 stop["complete_rows"],
                             )
                         ),
-                        "target_first_lower_bound_pct": rounded(
+                        "target_first_lower_bound_pct": rnd(
                             target_lower
                         ),
-                        "target_first_upper_bound_pct": rounded(
+                        "target_first_upper_bound_pct": rnd(
                             target_upper
                         ),
-                        "stop_first_lower_bound_pct": rounded(
+                        "stop_first_lower_bound_pct": rnd(
                             stop_lower
                         ),
-                        "stop_first_upper_bound_pct": rounded(
+                        "stop_first_upper_bound_pct": rnd(
                             stop_upper
                         ),
-                        "conservative_target_minus_stop_pp": rounded(
-                            conservative_margin
+                        "conservative_target_minus_stop_pp": rnd(
+                            conservative
                         ),
-                        "optimistic_target_minus_stop_pp": rounded(
-                            optimistic_margin
+                        "optimistic_target_minus_stop_pp": rnd(
+                            optimistic
                         ),
                         "sample_warning": sample_warning,
                         "censoring_warning": censoring_warning,
@@ -951,13 +1038,12 @@ def build_group_rows(
                         ),
                     })
 
-    return output
+    return rows
 
 
 def compare_groups(
-    group_rows: list[dict[str, Any]],
+    groups: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-
     indexed = {
         (
             row["timeframe"],
@@ -965,18 +1051,17 @@ def compare_groups(
             row["classification"],
             row["stop_loss_pct"],
         ): row
-        for row in group_rows
+        for row in groups
     }
 
-    output = []
+    comparisons = []
 
-    for timeframe in TIMEFRAMES:
+    for tf in TIMEFRAMES:
         for horizon in HORIZONS:
             for stop_level in STOP_LEVELS:
-
                 only = indexed[
                     (
-                        timeframe,
+                        tf,
                         horizon,
                         "PATTERN_256_ONLY",
                         stop_level,
@@ -985,7 +1070,7 @@ def compare_groups(
 
                 both = indexed[
                     (
-                        timeframe,
+                        tf,
                         horizon,
                         "BOTH",
                         stop_level,
@@ -1017,44 +1102,20 @@ def compare_groups(
                     - only["conservative_target_minus_stop_pp"]
                 )
 
-                warnings = []
+                sample_warnings = set()
+                censor_warnings = set()
 
                 for group in (only, both):
                     if group["sample_warning"] != "NONE":
-                        warnings.append(
-                            group["sample_warning"]
+                        sample_warnings.update(
+                            group["sample_warning"].split("|")
                         )
 
-                censoring_warnings = []
-
-                for group in (only, both):
                     if group["censoring_warning"] != "NONE":
-                        censoring_warnings.append(
-                            group["censoring_warning"]
+                        censor_warnings.update(
+                            group["censoring_warning"].split("|")
                         )
 
-                sample_warning = (
-                    "|".join(
-                        sorted(
-                            set(
-                                "|".join(warnings).split("|")
-                            )
-                        )
-                    )
-                    if warnings
-                    else "NONE"
-                )
-
-                censoring_warning = (
-                    "|".join(
-                        sorted(set(censoring_warnings))
-                    )
-                    if censoring_warnings
-                    else "NONE"
-                )
-
-                # This label is intentionally descriptive.
-                # It is NOT a recommendation to trade.
                 if hit_diff > 0 and stop_diff < 0:
                     direction = (
                         "BOTH_HIGHER_HIT_LOWER_STOP_TOUCH"
@@ -1074,8 +1135,8 @@ def compare_groups(
                 else:
                     direction = "MIXED_OR_EQUAL"
 
-                output.append({
-                    "timeframe": timeframe,
+                comparisons.append({
+                    "timeframe": tf,
                     "horizon": horizon,
                     "stop_loss_pct": stop_level,
                     "only_complete_rows": only[
@@ -1090,7 +1151,7 @@ def compare_groups(
                     "both_hit_rate_pct": both[
                         "hit_rate_pct"
                     ],
-                    "hit_rate_difference_pp": rounded(
+                    "hit_rate_difference_pp": rnd(
                         hit_diff
                     ),
                     "only_stop_touched_pct": only[
@@ -1099,7 +1160,7 @@ def compare_groups(
                     "both_stop_touched_pct": both[
                         "stop_touched_pct"
                     ],
-                    "stop_touch_difference_pp": rounded(
+                    "stop_touch_difference_pp": rnd(
                         stop_diff
                     ),
                     "only_target_first_lower_pct": only[
@@ -1108,7 +1169,7 @@ def compare_groups(
                     "both_target_first_lower_pct": both[
                         "target_first_lower_bound_pct"
                     ],
-                    "target_lower_difference_pp": rounded(
+                    "target_lower_difference_pp": rnd(
                         target_lower_diff
                     ),
                     "only_stop_first_upper_pct": only[
@@ -1117,7 +1178,7 @@ def compare_groups(
                     "both_stop_first_upper_pct": both[
                         "stop_first_upper_bound_pct"
                     ],
-                    "stop_upper_difference_pp": rounded(
+                    "stop_upper_difference_pp": rnd(
                         stop_upper_diff
                     ),
                     "only_conservative_margin_pp": only[
@@ -1126,7 +1187,7 @@ def compare_groups(
                     "both_conservative_margin_pp": both[
                         "conservative_target_minus_stop_pp"
                     ],
-                    "conservative_margin_difference_pp": rounded(
+                    "conservative_margin_difference_pp": rnd(
                         margin_diff
                     ),
                     "only_ambiguous_count": only[
@@ -1141,163 +1202,26 @@ def compare_groups(
                     "both_censored_pct": both[
                         "censored_pct"
                     ],
-                    "sample_warning": sample_warning,
-                    "censoring_warning": censoring_warning,
+                    "sample_warning": (
+                        "|".join(sorted(sample_warnings))
+                        if sample_warnings
+                        else "NONE"
+                    ),
+                    "censoring_warning": (
+                        "|".join(sorted(censor_warnings))
+                        if censor_warnings
+                        else "NONE"
+                    ),
                     "descriptive_direction": direction,
                     "interpretation": (
                         "NOT_A_TRADE_PERFORMANCE_ESTIMATE"
                     ),
                 })
 
-    return output
+    return comparisons
 
 
-def verify_cross_horizon_consistency(
-    summaries: dict,
-) -> None:
-    for timeframe in TIMEFRAMES:
-        for classification in CLASSIFICATIONS:
-
-            previous_total = None
-            previous_complete = None
-            previous_hits = None
-
-            for horizon in HORIZONS:
-                item = summaries[
-                    (
-                        timeframe,
-                        horizon,
-                        classification,
-                    )
-                ]
-
-                total = item["total_rows"]
-                complete = item["complete_rows"]
-                hits = item["hit_count"]
-
-                if previous_total is not None:
-                    if total != previous_total:
-                        raise ValidationError(
-                            "Total signal count changed "
-                            "between horizons: "
-                            f"{timeframe}/{classification}"
-                        )
-
-                    if complete > previous_complete:
-                        raise ValidationError(
-                            "Complete count unexpectedly "
-                            "increased with horizon: "
-                            f"{timeframe}/{classification}"
-                        )
-
-                    if hits < previous_hits:
-                        raise ValidationError(
-                            "HIT count decreased with horizon: "
-                            f"{timeframe}/{classification}"
-                        )
-
-                previous_total = total
-                previous_complete = complete
-                previous_hits = hits
-
-
-def verify_result_counts(
-    source_result: dict[str, Any],
-    summaries: dict,
-    stops: dict,
-) -> None:
-
-    if len(summaries) != 18:
-        raise ValidationError(
-            "Expected 18 summary groups."
-        )
-
-    if len(stops) != 72:
-        raise ValidationError(
-            "Expected 72 stop groups."
-        )
-
-    if to_int(
-        source_result.get("summary_rows"),
-        "summary_rows",
-    ) != len(summaries):
-        raise ValidationError(
-            "Source summary row count mismatch."
-        )
-
-    if to_int(
-        source_result.get("stop_scenario_rows"),
-        "stop_scenario_rows",
-    ) != len(stops):
-        raise ValidationError(
-            "Source stop row count mismatch."
-        )
-
-    # Each timeframe/classification signal is represented
-    # once per horizon. Therefore source_rows is checked
-    # using only the 24-bar groups, not all 18 groups.
-    total_source = sum(
-        summaries[
-            (timeframe, 24, classification)
-        ]["total_rows"]
-        for timeframe in TIMEFRAMES
-        for classification in CLASSIFICATIONS
-    )
-
-    if total_source != to_int(
-        source_result.get("source_rows"),
-        "source_rows",
-    ):
-        raise ValidationError(
-            "Source row accounting mismatch."
-        )
-
-    # The source program's included_rows is the sum of
-    # all horizon-specific group rows.
-    included = sum(
-        item["total_rows"]
-        for item in summaries.values()
-    )
-
-    if included != to_int(
-        source_result.get("included_rows"),
-        "included_rows",
-    ):
-        raise ValidationError(
-            "Included row accounting mismatch."
-        )
-
-    complete = sum(
-        item["complete_rows"]
-        for item in summaries.values()
-    )
-
-    hits = sum(
-        item["hit_count"]
-        for item in summaries.values()
-    )
-
-    if complete != to_int(
-        source_result.get("complete_rows"),
-        "complete_rows",
-    ):
-        raise ValidationError(
-            "Complete row accounting mismatch."
-        )
-
-    if hits != to_int(
-        source_result.get("hit_rows"),
-        "hit_rows",
-    ):
-        raise ValidationError(
-            "HIT row accounting mismatch."
-        )
-
-
-def atomic_write_bytes(
-    path: Path,
-    payload: bytes,
-) -> None:
+def atomic_write(path: Path, payload: bytes) -> None:
     path.parent.mkdir(
         parents=True,
         exist_ok=True,
@@ -1310,31 +1234,48 @@ def atomic_write_bytes(
     )
 
     try:
-        with os.fdopen(
-            descriptor,
-            "wb",
-        ) as handle:
+        with os.fdopen(descriptor, "wb") as handle:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
 
-        os.replace(
-            temporary,
-            path,
-        )
+        os.replace(temporary, path)
 
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
 
 
+def write_csv(
+    path: Path,
+    fields: list[str],
+    rows: list[dict[str, Any]],
+) -> None:
+    buffer = io.StringIO(newline="")
+
+    writer = csv.DictWriter(
+        buffer,
+        fieldnames=fields,
+        extrasaction="raise",
+        lineterminator="\n",
+    )
+
+    writer.writeheader()
+    writer.writerows(rows)
+
+    atomic_write(
+        path,
+        buffer.getvalue().encode("utf-8"),
+    )
+
+
 def write_json(
     path: Path,
-    data: dict[str, Any],
+    value: dict[str, Any],
 ) -> None:
     payload = (
         json.dumps(
-            data,
+            value,
             ensure_ascii=False,
             indent=2,
             sort_keys=True,
@@ -1342,51 +1283,17 @@ def write_json(
         + "\n"
     ).encode("utf-8")
 
-    atomic_write_bytes(
-        path,
-        payload,
-    )
+    atomic_write(path, payload)
 
 
-def write_csv(
-    path: Path,
-    fieldnames: list[str],
-    rows: list[dict[str, Any]],
-) -> None:
-    import io
-
-    buffer = io.StringIO(
-        newline="",
-    )
-
-    writer = csv.DictWriter(
-        buffer,
-        fieldnames=fieldnames,
-        extrasaction="raise",
-        lineterminator="\n",
-    )
-
-    writer.writeheader()
-
-    for row in rows:
-        writer.writerow(row)
-
-    atomic_write_bytes(
-        path,
-        buffer.getvalue().encode("utf-8"),
-    )
-
-
-def verify_input_hashes(
+def verify_hashes(
     paths: dict[str, Path],
     expected: dict[str, str],
 ) -> None:
-    for filename, path in paths.items():
-        actual = sha256_file(path)
-
-        if actual != expected[filename]:
+    for name, path in paths.items():
+        if sha256_file(path) != expected[name]:
             raise ValidationError(
-                f"Upstream input changed: {filename}"
+                f"Upstream input changed: {name}"
             )
 
     log("[PASS] Upstream input hashes unchanged")
@@ -1395,27 +1302,20 @@ def verify_input_hashes(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Validate risk-adjusted descriptive comparison "
-            "for Pattern 256 and accumulation signals."
+            "Pattern 256 risk-adjusted research validation."
         )
     )
 
     parser.add_argument(
         "--root",
         default=".",
-        help=(
-            "Project root containing data/reports. "
-            "Default: current working directory."
-        ),
+        help="Project root directory.",
     )
 
     parser.add_argument(
         "--output-dir",
         default=None,
-        help=(
-            "Optional separate output directory. "
-            "Must not equal an upstream input directory."
-        ),
+        help="Optional isolated output directory.",
     )
 
     return parser.parse_args()
@@ -1425,10 +1325,7 @@ def main() -> int:
     args = parse_args()
 
     root = Path(args.root).resolve()
-
-    source_dir = (
-        root / SOURCE_DIR
-    ).resolve()
+    source_dir = (root / SOURCE_DIR).resolve()
 
     output_dir = (
         Path(args.output_dir).resolve()
@@ -1442,7 +1339,7 @@ def main() -> int:
 
     if not source_dir.is_dir():
         raise ValidationError(
-            f"Source report directory missing: {source_dir}"
+            f"Source directory missing: {source_dir}"
         )
 
     if (
@@ -1451,8 +1348,7 @@ def main() -> int:
         or output_dir in source_dir.parents
     ):
         raise ValidationError(
-            "Output directory must be separate "
-            "from upstream input directory."
+            "Output directory overlaps source directory."
         )
 
     paths = {
@@ -1472,8 +1368,8 @@ def main() -> int:
     log("[CHECK] Capturing input SHA256")
 
     input_hashes = {
-        filename: sha256_file(path)
-        for filename, path in paths.items()
+        name: sha256_file(path)
+        for name, path in paths.items()
     }
 
     log("[CHECK] Reading upstream metadata")
@@ -1501,13 +1397,9 @@ def main() -> int:
         SUMMARY_REQUIRED,
     )
 
-    summaries = parse_summary(
-        raw_summary
-    )
+    summaries = parse_summary(raw_summary)
 
-    log(
-        f"[PASS] Summary groups: {len(summaries)}"
-    )
+    log(f"[PASS] Summary groups: {len(summaries)}")
 
     log("[CHECK] Reading stop scenarios")
 
@@ -1521,15 +1413,9 @@ def main() -> int:
         summaries,
     )
 
-    log(
-        f"[PASS] Stop scenario groups: {len(stops)}"
-    )
+    log(f"[PASS] Stop scenario groups: {len(stops)}")
 
     log("[CHECK] Cross-report accounting")
-
-    verify_cross_horizon_consistency(
-        summaries
-    )
 
     verify_result_counts(
         source_result,
@@ -1537,11 +1423,13 @@ def main() -> int:
         stops,
     )
 
+    verify_horizon_consistency(summaries)
+
     log("[PASS] Cross-report accounting")
 
-    log("[ANALYZE] Building group metrics")
+    log("[ANALYZE] Building risk-adjusted groups")
 
-    group_rows = build_group_rows(
+    group_rows = build_groups(
         summaries,
         stops,
     )
@@ -1554,7 +1442,7 @@ def main() -> int:
 
     if len(group_rows) != 72:
         raise ValidationError(
-            "Expected 72 output group rows."
+            "Expected 72 group rows."
         )
 
     if len(comparison_rows) != 36:
@@ -1562,33 +1450,19 @@ def main() -> int:
             "Expected 36 comparison rows."
         )
 
-    verify_input_hashes(
-        paths,
-        input_hashes,
-    )
-
-    log("[SAVE] Writing risk-adjusted reports")
+    verify_hashes(paths, input_hashes)
 
     output_dir.mkdir(
         parents=True,
         exist_ok=True,
     )
 
-    groups_path = (
-        output_dir / GROUPS_FILE
-    )
+    groups_path = output_dir / GROUPS_FILE
+    comparison_path = output_dir / COMPARISON_FILE
+    result_path = output_dir / RESULT_FILE
+    manifest_path = output_dir / MANIFEST_FILE
 
-    comparison_path = (
-        output_dir / COMPARISON_FILE
-    )
-
-    result_path = (
-        output_dir / RESULT_FILE
-    )
-
-    manifest_path = (
-        output_dir / MANIFEST_FILE
-    )
+    log("[SAVE] Writing reports")
 
     write_csv(
         groups_path,
@@ -1602,13 +1476,8 @@ def main() -> int:
         comparison_rows,
     )
 
-    group_hash = sha256_file(
-        groups_path
-    )
-
-    comparison_hash = sha256_file(
-        comparison_path
-    )
+    groups_hash = sha256_file(groups_path)
+    comparison_hash = sha256_file(comparison_path)
 
     sample_warning_rows = sum(
         row["sample_warning"] != "NONE"
@@ -1620,22 +1489,16 @@ def main() -> int:
         for row in comparison_rows
     )
 
-    direction_counts = dict(
-        sorted(
-            (
-                direction,
-                sum(
-                    row["descriptive_direction"]
-                    == direction
-                    for row in comparison_rows
-                ),
-            )
-            for direction in sorted({
-                row["descriptive_direction"]
-                for row in comparison_rows
-            })
+    direction_counts = {
+        direction: sum(
+            row["descriptive_direction"] == direction
+            for row in comparison_rows
         )
-    )
+        for direction in sorted({
+            row["descriptive_direction"]
+            for row in comparison_rows
+        })
+    }
 
     result = {
         "status": "PASS",
@@ -1655,7 +1518,7 @@ def main() -> int:
         "sample_warning_rows": sample_warning_rows,
         "censoring_warning_rows": censoring_warning_rows,
         "descriptive_direction_counts": direction_counts,
-        "risk_adjusted_groups_sha256": group_hash,
+        "risk_adjusted_groups_sha256": groups_hash,
         "risk_adjusted_comparison_sha256": comparison_hash,
         "methodology": {
             "target_return_pct": 30,
@@ -1672,12 +1535,11 @@ def main() -> int:
                 "complete HIT/MISS observations"
             ),
             "barrier_order": (
-                "Unknown when both target and stop "
-                "are touched in the observation window"
+                "Unknown when target and stop both touch"
             ),
             "conservative_margin": (
-                "target-first lower bound percentage "
-                "minus stop-first upper bound percentage"
+                "target-first lower percentage minus "
+                "stop-first upper percentage"
             ),
             "margin_is_trading_return": False,
             "statistical_significance_tested": False,
@@ -1689,75 +1551,46 @@ def main() -> int:
             "DESCRIPTIVE_RISK_COMPARISON_ONLY"
         ),
         "warnings": [
-            (
-                "Overlapping signals and multiple horizons "
-                "may cause strong observation dependence."
-            ),
-            (
-                "The same source signals are evaluated "
-                "under multiple stop thresholds."
-            ),
-            (
-                "Target and stop touch ordering is not "
-                "resolved from summary reports."
-            ),
-            (
-                "A stop touch does not prove that a stop "
-                "order executed before a target."
-            ),
-            (
-                "Small samples and censored observations "
-                "can distort comparisons."
-            ),
-            (
-                "No fees, slippage, position sizing, "
-                "or realized trading PnL are estimated."
-            ),
-            (
-                "No statistically independent out-of-sample "
-                "validation is performed in this stage."
-            ),
+            "Overlapping signals are not independent.",
+            "Multiple horizons reuse underlying signals.",
+            "Multiple stop levels reuse observations.",
+            "Target/stop touch ordering is unresolved.",
+            "Stop touch is not confirmed stop execution.",
+            "Small samples may distort comparisons.",
+            "Censored observations affect estimates.",
+            "Fees and slippage are not included.",
+            "No realized trading PnL is calculated.",
+            "No out-of-sample validation in this stage.",
         ],
     }
 
-    write_json(
-        result_path,
-        result,
-    )
+    write_json(result_path, result)
 
     manifest = {
         "status": "PASS",
         "program": PROGRAM,
         "version": VERSION,
         "generated_at_utc": utc_now(),
-        "inputs": dict(
-            sorted(input_hashes.items())
-        ),
+        "inputs": dict(sorted(input_hashes.items())),
         "outputs": {
-            GROUPS_FILE: group_hash,
+            GROUPS_FILE: groups_hash,
             COMPARISON_FILE: comparison_hash,
-            RESULT_FILE: sha256_file(
-                result_path
-            ),
+            RESULT_FILE: sha256_file(result_path),
         },
     }
 
-    write_json(
-        manifest_path,
-        manifest,
-    )
+    write_json(manifest_path, manifest)
 
-    # Confirm that output hashes match recorded hashes.
-    if sha256_file(groups_path) != group_hash:
+    if sha256_file(groups_path) != groups_hash:
         raise ValidationError(
-            "Group output hash changed."
+            "Group output hash mismatch."
         )
 
     if sha256_file(
         comparison_path
     ) != comparison_hash:
         raise ValidationError(
-            "Comparison output hash changed."
+            "Comparison output hash mismatch."
         )
 
     if (
@@ -1765,25 +1598,21 @@ def main() -> int:
         != manifest["outputs"][RESULT_FILE]
     ):
         raise ValidationError(
-            "Result output hash changed."
+            "Result output hash mismatch."
         )
 
-    verify_input_hashes(
-        paths,
-        input_hashes,
-    )
+    verify_hashes(paths, input_hashes)
 
     log("=" * 68)
-    log("[PASS] Risk-adjusted comparison completed")
-    log(f"Source summary groups: {len(raw_summary)}")
-    log(f"Source stop scenarios: {len(raw_stops)}")
-    log(f"Output group rows: {len(group_rows)}")
+    log("[PASS] Risk-adjusted validation completed")
+    log(f"Source rows: {source_result['source_rows']}")
+    log(f"Included rows: {source_result['included_rows']}")
+    log(f"Complete rows: {source_result['complete_rows']}")
+    log(f"HIT rows: {source_result['hit_rows']}")
+    log(f"Group rows: {len(group_rows)}")
     log(f"Comparison rows: {len(comparison_rows)}")
-    log(f"Sample warning rows: {sample_warning_rows}")
-    log(
-        "Censoring warning rows: "
-        f"{censoring_warning_rows}"
-    )
+    log(f"Sample warnings: {sample_warning_rows}")
+    log(f"Censoring warnings: {censoring_warning_rows}")
     log(f"Output: {output_dir}")
     log("=" * 68)
 
