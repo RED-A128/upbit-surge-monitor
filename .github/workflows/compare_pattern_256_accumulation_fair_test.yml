@@ -1,0 +1,555 @@
+
+name: compare_pattern_256_accumulation_fair_test.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compare-pattern-256-accumulation-fair-test
+  cancel-in-progress: false
+
+jobs:
+  fair-comparison-test:
+    name: Fair Comparison Test
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 360
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PRODUCTION_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+      PROGRAM_NAME: compare_pattern_256_accumulation_fair.py
+
+    steps:
+
+      # ============================================================
+      # 01. Checkout
+      # ============================================================
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          clean: false
+          persist-credentials: false
+
+      # ============================================================
+      # 02. Verify Python
+      # ============================================================
+
+      - name: Verify Python environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python launcher unavailable."
+          }
+
+          $program = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:PROGRAM_NAME
+
+          if (-not (Test-Path -LiteralPath $program -PathType Leaf)) {
+            throw "Fair comparison program missing: $program"
+          }
+
+          py -m py_compile $program
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax verification failed."
+          }
+
+          Write-Host "Python verification PASS"
+
+      # ============================================================
+      # 03. Check production input files
+      # ============================================================
+
+      - name: Verify production input files
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = $env:PRODUCTION_ROOT
+
+          if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+            throw "Production root missing: $root"
+          }
+
+          $relativeFiles = @(
+            "data\reports\pattern_256_accumulation_30pct\validation_detail.csv"
+            "data\reports\pattern_256_accumulation_30pct\validation_result.json"
+            "data\reports\pattern_256_accumulation_independent\working.sqlite3"
+            "data\reports\pattern_256_accumulation_independent\database_checkpoint.json"
+            "data\reports\pattern_256_accumulation_independent\independent_detail.csv"
+            "data\reports\pattern_256_accumulation_independent\independent_result.json"
+            "data\reports\pattern_256_accumulation_selection_audit\selection_audit.csv"
+            "data\reports\pattern_256_accumulation_selection_audit\matched_window_comparison.csv"
+            "data\reports\pattern_256_accumulation_selection_audit\selection_audit_result.json"
+            "data\reports\pattern_256_accumulation_selection_audit\selection_audit_manifest.json"
+          )
+
+          foreach ($relative in $relativeFiles) {
+            $path = Join-Path $root $relative
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Required production input missing: $path"
+            }
+
+            Write-Host "FOUND: $relative"
+          }
+
+          $validation = Get-Content `
+            -LiteralPath (Join-Path $root "data\reports\pattern_256_accumulation_30pct\validation_result.json") `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          $independent = Get-Content `
+            -LiteralPath (Join-Path $root "data\reports\pattern_256_accumulation_independent\independent_result.json") `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          $checkpoint = Get-Content `
+            -LiteralPath (Join-Path $root "data\reports\pattern_256_accumulation_independent\database_checkpoint.json") `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          $audit = Get-Content `
+            -LiteralPath (Join-Path $root "data\reports\pattern_256_accumulation_selection_audit\selection_audit_result.json") `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          if ($validation.status -ne "PASS") {
+            throw "Validation status is not PASS."
+          }
+
+          if ($independent.status -ne "PASS") {
+            throw "Independent validation status is not PASS."
+          }
+
+          if ($checkpoint.status -ne "COMPLETE") {
+            throw "Database checkpoint incomplete."
+          }
+
+          if ($audit.status -ne "PASS") {
+            throw "Selection audit status is not PASS."
+          }
+
+          if ([int64]$independent.imported_rows -ne 7949826) {
+            throw "Unexpected imported row count."
+          }
+
+          if ([int64]$independent.selected_rows -ne 297548) {
+            throw "Unexpected selected row count."
+          }
+
+          if ([int64]$independent.excluded_rows -ne 7652278) {
+            throw "Unexpected excluded row count."
+          }
+
+          Write-Host "Production input checks PASS"
+
+      # ============================================================
+      # 04. Capture production input SHA256
+      # ============================================================
+
+      - name: Capture production input SHA256
+        id: hashes
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = $env:PRODUCTION_ROOT
+
+          $relativeFiles = @(
+            "data\reports\pattern_256_accumulation_30pct\validation_detail.csv"
+            "data\reports\pattern_256_accumulation_30pct\validation_result.json"
+            "data\reports\pattern_256_accumulation_independent\working.sqlite3"
+            "data\reports\pattern_256_accumulation_independent\database_checkpoint.json"
+            "data\reports\pattern_256_accumulation_independent\independent_detail.csv"
+            "data\reports\pattern_256_accumulation_independent\independent_result.json"
+            "data\reports\pattern_256_accumulation_selection_audit\selection_audit.csv"
+            "data\reports\pattern_256_accumulation_selection_audit\matched_window_comparison.csv"
+            "data\reports\pattern_256_accumulation_selection_audit\selection_audit_result.json"
+            "data\reports\pattern_256_accumulation_selection_audit\selection_audit_manifest.json"
+          )
+
+          $manifestPath = Join-Path $env:RUNNER_TEMP `
+            "fair_test_input_hashes_${{ github.run_id }}_${{ github.run_attempt }}.json"
+
+          if (Test-Path -LiteralPath $manifestPath) {
+            throw "Input hash manifest already exists. Refusing overwrite."
+          }
+
+          $hashes = @{}
+
+          foreach ($relative in $relativeFiles) {
+            $path = Join-Path $root $relative
+
+            $hash = (Get-FileHash `
+              -LiteralPath $path `
+              -Algorithm SHA256).Hash.ToLowerInvariant()
+
+            $hashes[$relative] = $hash
+
+            Write-Host "SHA256: $relative = $hash"
+          }
+
+          $hashes | ConvertTo-Json -Depth 5 |
+            Set-Content -LiteralPath $manifestPath -Encoding UTF8
+
+          "manifest_path=$manifestPath" >> $env:GITHUB_OUTPUT
+
+          Write-Host "Production input SHA256 capture PASS"
+
+      # ============================================================
+      # 05. Create isolated test workspace
+      # ============================================================
+
+      - name: Prepare isolated fair comparison workspace
+        id: workspace
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $testRoot = Join-Path $env:RUNNER_TEMP `
+            "fair_comparison_${{ github.run_id }}_${{ github.run_attempt }}"
+
+          if (Test-Path -LiteralPath $testRoot) {
+            throw "Test workspace already exists. Refusing overwrite."
+          }
+
+          New-Item -ItemType Directory `
+            -Path $testRoot `
+            -Force | Out-Null
+
+          $sourceProgram = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:PROGRAM_NAME
+
+          $targetProgram = Join-Path `
+            $testRoot `
+            $env:PROGRAM_NAME
+
+          Copy-Item `
+            -LiteralPath $sourceProgram `
+            -Destination $targetProgram
+
+          $sourceHash = (Get-FileHash `
+            -LiteralPath $sourceProgram `
+            -Algorithm SHA256).Hash.ToLowerInvariant()
+
+          $targetHash = (Get-FileHash `
+            -LiteralPath $targetProgram `
+            -Algorithm SHA256).Hash.ToLowerInvariant()
+
+          if ($sourceHash -ne $targetHash) {
+            throw "Copied program SHA256 mismatch."
+          }
+
+          "test_root=$testRoot" >> $env:GITHUB_OUTPUT
+
+          Write-Host "Isolated workspace created: $testRoot"
+
+      # ============================================================
+      # 06. Copy inputs into isolated workspace
+      # ============================================================
+
+      - name: Copy verified inputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = $env:PRODUCTION_ROOT
+          $testRoot = "${{ steps.workspace.outputs.test_root }}"
+
+          $manifestPath = "${{ steps.hashes.outputs.manifest_path }}"
+
+          $expected = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          $relativeFiles = @(
+            "data\reports\pattern_256_accumulation_30pct\validation_detail.csv"
+            "data\reports\pattern_256_accumulation_30pct\validation_result.json"
+            "data\reports\pattern_256_accumulation_independent\working.sqlite3"
+            "data\reports\pattern_256_accumulation_independent\database_checkpoint.json"
+            "data\reports\pattern_256_accumulation_independent\independent_detail.csv"
+            "data\reports\pattern_256_accumulation_independent\independent_result.json"
+            "data\reports\pattern_256_accumulation_selection_audit\selection_audit.csv"
+            "data\reports\pattern_256_accumulation_selection_audit\matched_window_comparison.csv"
+            "data\reports\pattern_256_accumulation_selection_audit\selection_audit_result.json"
+            "data\reports\pattern_256_accumulation_selection_audit\selection_audit_manifest.json"
+          )
+
+          foreach ($relative in $relativeFiles) {
+            $source = Join-Path $root $relative
+            $target = Join-Path $testRoot $relative
+
+            $parent = Split-Path $target -Parent
+
+            New-Item -ItemType Directory `
+              -Path $parent `
+              -Force | Out-Null
+
+            if (Test-Path -LiteralPath $target) {
+              throw "Target already exists. Refusing overwrite: $target"
+            }
+
+            Copy-Item `
+              -LiteralPath $source `
+              -Destination $target
+
+            $sourceHash = (Get-FileHash `
+              -LiteralPath $source `
+              -Algorithm SHA256).Hash.ToLowerInvariant()
+
+            $targetHash = (Get-FileHash `
+              -LiteralPath $target `
+              -Algorithm SHA256).Hash.ToLowerInvariant()
+
+            $expectedHash = [string]$expected.$relative
+
+            if ($sourceHash -ne $expectedHash.ToLowerInvariant()) {
+              throw "Production input changed during copy: $relative"
+            }
+
+            if ($targetHash -ne $expectedHash.ToLowerInvariant()) {
+              throw "Copied input SHA256 mismatch: $relative"
+            }
+
+            Write-Host "COPY VERIFIED: $relative"
+          }
+
+          Write-Host "All isolated inputs verified PASS"
+
+      # ============================================================
+      # 07. Execute fair comparison
+      # ============================================================
+
+      - name: Execute fair comparison test
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $testRoot = "${{ steps.workspace.outputs.test_root }}"
+
+          $program = Join-Path `
+            $testRoot `
+            $env:PROGRAM_NAME
+
+          Set-Location $testRoot
+
+          Write-Host "========================================"
+          Write-Host "Fair Comparison Test"
+          Write-Host "========================================"
+
+          py $program
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Fair comparison execution failed."
+          }
+
+          Write-Host "Fair comparison execution PASS"
+
+      # ============================================================
+      # 08. Verify fair comparison outputs
+      # ============================================================
+
+      - name: Verify fair comparison test outputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $testRoot = "${{ steps.workspace.outputs.test_root }}"
+
+          $outputDir = Join-Path $testRoot `
+            "data\reports\pattern_256_accumulation_fair"
+
+          $comparison = Join-Path $outputDir "fair_comparison.csv"
+          $diagnostics = Join-Path $outputDir "fair_diagnostics.csv"
+          $resultFile = Join-Path $outputDir "fair_result.json"
+          $manifestFile = Join-Path $outputDir "fair_manifest.json"
+
+          foreach ($file in @(
+            $comparison,
+            $diagnostics,
+            $resultFile,
+            $manifestFile
+          )) {
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+              throw "Missing fair comparison output: $file"
+            }
+
+            Write-Host "FOUND: $file"
+          }
+
+          $result = Get-Content `
+            -LiteralPath $resultFile `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestFile `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          if ($result.status -ne "PASS") {
+            throw "Fair comparison result is not PASS."
+          }
+
+          if ($result.program -ne $env:PROGRAM_NAME) {
+            throw "Unexpected program name."
+          }
+
+          if ($result.version -ne "Clean V001") {
+            throw "Unexpected version."
+          }
+
+          if ([int64]$result.source_rows -ne 7949826) {
+            throw "Source row count mismatch."
+          }
+
+          if ([int]$result.comparison_rows -ne 18) {
+            throw "Comparison row count mismatch."
+          }
+
+          if ([int]$result.diagnostic_rows -ne 18) {
+            throw "Diagnostic row count mismatch."
+          }
+
+          if ($manifest.program -ne $result.program) {
+            throw "Manifest program mismatch."
+          }
+
+          if ($manifest.version -ne $result.version) {
+            throw "Manifest version mismatch."
+          }
+
+          $checks = @(
+            @{
+              Path = $comparison
+              ResultHash = [string]$result.fair_comparison_sha256
+              ManifestHash = [string]$manifest.outputs.'fair_comparison.csv'
+            },
+            @{
+              Path = $diagnostics
+              ResultHash = [string]$result.fair_diagnostics_sha256
+              ManifestHash = [string]$manifest.outputs.'fair_diagnostics.csv'
+            }
+          )
+
+          foreach ($check in $checks) {
+            $actual = (Get-FileHash `
+              -LiteralPath $check.Path `
+              -Algorithm SHA256).Hash.ToLowerInvariant()
+
+            if ($actual -ne $check.ResultHash.ToLowerInvariant()) {
+              throw "Result SHA256 mismatch: $($check.Path)"
+            }
+
+            if ($actual -ne $check.ManifestHash.ToLowerInvariant()) {
+              throw "Manifest SHA256 mismatch: $($check.Path)"
+            }
+
+            Write-Host "SHA256 PASS: $($check.Path)"
+          }
+
+          $comparisonRows = @(Import-Csv -LiteralPath $comparison)
+          $diagnosticRows = @(Import-Csv -LiteralPath $diagnostics)
+
+          if ($comparisonRows.Count -ne 18) {
+            throw "Fair comparison CSV row count mismatch."
+          }
+
+          if ($diagnosticRows.Count -ne 18) {
+            throw "Fair diagnostics CSV row count mismatch."
+          }
+
+          $pairSum = [int64]0
+
+          foreach ($row in $comparisonRows) {
+            $pairSum += [int64]$row.paired_windows
+          }
+
+          if (
+            $pairSum -ne
+            [int64]$result.total_paired_windows_across_horizons
+          ) {
+            throw "Total paired windows mismatch."
+          }
+
+          Write-Host "========================================"
+          Write-Host "Fair Comparison Test Summary"
+          Write-Host "========================================"
+
+          Write-Host "Source rows: $($result.source_rows)"
+          Write-Host "Comparison rows: $($result.comparison_rows)"
+          Write-Host "Diagnostic rows: $($result.diagnostic_rows)"
+          Write-Host "Total paired windows: $($result.total_paired_windows_across_horizons)"
+          Write-Host "Elapsed seconds: $($result.elapsed_seconds)"
+
+          Write-Host "Fair comparison output verification PASS"
+
+      # ============================================================
+      # 09. Verify production inputs unchanged
+      # ============================================================
+
+      - name: Verify production inputs unchanged
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $manifestPath = "${{ steps.hashes.outputs.manifest_path }}"
+
+          if (
+            -not $manifestPath -or
+            -not (Test-Path -LiteralPath $manifestPath -PathType Leaf)
+          ) {
+            Write-Host "Initial SHA256 manifest unavailable."
+            exit 0
+          }
+
+          $expected = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          $root = $env:PRODUCTION_ROOT
+
+          foreach ($property in $expected.PSObject.Properties) {
+            $relative = $property.Name
+            $expectedHash = [string]$property.Value
+
+            $path = Join-Path $root $relative
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Production input missing: $path"
+            }
+
+            $actual = (Get-FileHash `
+              -LiteralPath $path `
+              -Algorithm SHA256).Hash.ToLowerInvariant()
+
+            if ($actual -ne $expectedHash.ToLowerInvariant()) {
+              throw "Production input changed: $relative"
+            }
+
+            Write-Host "UNCHANGED PASS: $relative"
+          }
+
+          Write-Host "All production inputs unchanged PASS"
+
+      # ============================================================
+      # 10. Upload test reports
+      # ============================================================
+
+      - name: Upload fair comparison test reports
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-accumulation-fair-test
+          path: |
+            ${{ steps.workspace.outputs.test_root }}/data/reports/pattern_256_accumulation_fair/fair_comparison.csv
+            ${{ steps.workspace.outputs.test_root }}/data/reports/pattern_256_accumulation_fair/fair_diagnostics.csv
+            ${{ steps.workspace.outputs.test_root }}/data/reports/pattern_256_accumulation_fair/fair_result.json
+            ${{ steps.workspace.outputs.test_root }}/data/reports/pattern_256_accumulation_fair/fair_manifest.json
+          if-no-files-found: error
+          retention-days: 14
