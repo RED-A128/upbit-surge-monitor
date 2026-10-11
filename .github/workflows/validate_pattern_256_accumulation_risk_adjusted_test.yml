@@ -80,7 +80,7 @@ jobs:
             -LiteralPath $program `
             -Raw -Encoding UTF8
 
-          if ($source -notmatch 'VERSION\s*=\s*["'']Clean V001["'']') {
+          if ($source -notmatch 'VERSION\s*=\s*["'']Clean V002["'']') {
             throw "Unexpected Python program version."
           }
 
