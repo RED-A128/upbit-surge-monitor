@@ -1,0 +1,699 @@
+
+name: validate_pattern_256_accumulation_risk_adjusted.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern-256-accumulation-risk-adjusted-production
+  cancel-in-progress: false
+
+jobs:
+  risk-adjusted-production:
+    name: Risk Adjusted Validation Production
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 120
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PRODUCTION_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+      PROGRAM_NAME: validate_pattern_256_accumulation_risk_adjusted.py
+      EXPECTED_VERSION: Clean V002
+      SOURCE_REPORT: data\reports\pattern_256_accumulation_entry_risk
+      OUTPUT_REPORT: data\reports\pattern_256_accumulation_risk_adjusted
+
+    steps:
+
+      # ============================================================
+      # 01. Checkout repository
+      # ============================================================
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          clean: false
+          persist-credentials: false
+
+      # ============================================================
+      # 02. Verify Python program
+      # ============================================================
+
+      - name: Verify Python program
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python launcher unavailable."
+          }
+
+          $program = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:PROGRAM_NAME
+
+          if (-not (Test-Path -LiteralPath $program -PathType Leaf)) {
+            throw "Python program missing: $program"
+          }
+
+          $env:PYTHONPYCACHEPREFIX = Join-Path `
+            $env:RUNNER_TEMP `
+            "risk_adjusted_prod_pycache_${{ github.run_id }}_${{ github.run_attempt }}"
+
+          py -m py_compile $program
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax verification failed."
+          }
+
+          $source = Get-Content `
+            -LiteralPath $program `
+            -Raw -Encoding UTF8
+
+          if ($source -notmatch 'VERSION\s*=\s*["'']Clean V002["'']') {
+            throw "Unexpected Python program version."
+          }
+
+          if ($source -notmatch 'PROGRAM\s*=\s*["'']validate_pattern_256_accumulation_risk_adjusted\.py["'']') {
+            throw "Unexpected Python program identity."
+          }
+
+          Write-Host "Python program verification PASS"
+
+      # ============================================================
+      # 03. Capture production input SHA256
+      # ============================================================
+
+      - name: Capture production input SHA256
+        id: production_hashes
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $sourceDir = Join-Path `
+            $env:PRODUCTION_ROOT `
+            $env:SOURCE_REPORT
+
+          if (-not (Test-Path -LiteralPath $sourceDir -PathType Container)) {
+            throw "Production source directory missing: $sourceDir"
+          }
+
+          $files = @(
+            "entry_risk_summary.csv"
+            "entry_risk_stop_scenarios.csv"
+            "entry_risk_result.json"
+            "entry_risk_manifest.json"
+          )
+
+          $hashes = @{}
+
+          foreach ($filename in $files) {
+            $path = Join-Path $sourceDir $filename
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Production input missing: $path"
+            }
+
+            $hash = (Get-FileHash `
+              -LiteralPath $path `
+              -Algorithm SHA256).Hash.ToLowerInvariant()
+
+            $hashes[$filename] = $hash
+
+            Write-Host "SHA256: $filename = $hash"
+          }
+
+          $resultPath = Join-Path `
+            $sourceDir `
+            "entry_risk_result.json"
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          if ($result.status -ne "PASS") {
+            throw "Upstream production result is not PASS."
+          }
+
+          if ($result.program -ne "analyze_pattern_256_accumulation_entry_risk.py") {
+            throw "Unexpected upstream program."
+          }
+
+          if ($result.version -ne "Clean V002") {
+            throw "Unexpected upstream version."
+          }
+
+          $hashPath = Join-Path `
+            $env:RUNNER_TEMP `
+            "risk_adjusted_prod_input_hashes_${{ github.run_id }}_${{ github.run_attempt }}.json"
+
+          if (Test-Path -LiteralPath $hashPath) {
+            throw "Input hash manifest already exists."
+          }
+
+          $hashes |
+            ConvertTo-Json -Depth 5 |
+            Set-Content `
+              -LiteralPath $hashPath `
+              -Encoding UTF8
+
+          "hash_path=$hashPath" >> $env:GITHUB_OUTPUT
+
+          Write-Host "Production input hash capture PASS"
+
+      # ============================================================
+      # 04. Prepare isolated production workspace
+      # ============================================================
+
+      - name: Prepare isolated production workspace
+        id: workspace
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $workRoot = Join-Path `
+            $env:RUNNER_TEMP `
+            "risk_adjusted_prod_${{ github.run_id }}_${{ github.run_attempt }}"
+
+          if (Test-Path -LiteralPath $workRoot) {
+            throw "Workspace already exists. Refusing overwrite."
+          }
+
+          $sourceDir = Join-Path `
+            $env:PRODUCTION_ROOT `
+            $env:SOURCE_REPORT
+
+          $targetDir = Join-Path `
+            $workRoot `
+            $env:SOURCE_REPORT
+
+          New-Item `
+            -ItemType Directory `
+            -Path $targetDir `
+            -Force | Out-Null
+
+          $files = @(
+            "entry_risk_summary.csv"
+            "entry_risk_stop_scenarios.csv"
+            "entry_risk_result.json"
+            "entry_risk_manifest.json"
+          )
+
+          foreach ($filename in $files) {
+            $source = Join-Path $sourceDir $filename
+            $target = Join-Path $targetDir $filename
+
+            Copy-Item `
+              -LiteralPath $source `
+              -Destination $target
+
+            $sourceHash = (Get-FileHash `
+              -LiteralPath $source `
+              -Algorithm SHA256).Hash.ToLowerInvariant()
+
+            $targetHash = (Get-FileHash `
+              -LiteralPath $target `
+              -Algorithm SHA256).Hash.ToLowerInvariant()
+
+            if ($sourceHash -ne $targetHash) {
+              throw "Copied input SHA256 mismatch: $filename"
+            }
+
+            Write-Host "COPY VERIFIED: $filename"
+          }
+
+          $programSource = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:PROGRAM_NAME
+
+          $programTarget = Join-Path `
+            $workRoot `
+            $env:PROGRAM_NAME
+
+          Copy-Item `
+            -LiteralPath $programSource `
+            -Destination $programTarget
+
+          $programSourceHash = (Get-FileHash `
+            -LiteralPath $programSource `
+            -Algorithm SHA256).Hash.ToLowerInvariant()
+
+          $programTargetHash = (Get-FileHash `
+            -LiteralPath $programTarget `
+            -Algorithm SHA256).Hash.ToLowerInvariant()
+
+          if ($programSourceHash -ne $programTargetHash) {
+            throw "Copied Python program SHA256 mismatch."
+          }
+
+          "work_root=$workRoot" >> $env:GITHUB_OUTPUT
+          "work_program=$programTarget" >> $env:GITHUB_OUTPUT
+
+          Write-Host "Isolated production workspace PASS"
+
+      # ============================================================
+      # 05. Execute risk-adjusted validation
+      # ============================================================
+
+      - name: Execute risk adjusted validation
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $workRoot = "${{ steps.workspace.outputs.work_root }}"
+          $program = "${{ steps.workspace.outputs.work_program }}"
+
+          Write-Host "========================================"
+          Write-Host "Risk Adjusted Validation Production"
+          Write-Host "========================================"
+
+          py $program --root $workRoot
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Risk adjusted validation execution failed."
+          }
+
+          Write-Host "Risk adjusted validation execution PASS"
+
+      # ============================================================
+      # 06. Verify production outputs
+      # ============================================================
+
+      - name: Verify production outputs
+        id: verify_outputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $workRoot = "${{ steps.workspace.outputs.work_root }}"
+
+          $outputDir = Join-Path `
+            $workRoot `
+            $env:OUTPUT_REPORT
+
+          $groupsPath = Join-Path `
+            $outputDir `
+            "risk_adjusted_groups.csv"
+
+          $comparisonPath = Join-Path `
+            $outputDir `
+            "risk_adjusted_comparison.csv"
+
+          $resultPath = Join-Path `
+            $outputDir `
+            "risk_adjusted_result.json"
+
+          $manifestPath = Join-Path `
+            $outputDir `
+            "risk_adjusted_manifest.json"
+
+          foreach ($path in @(
+            $groupsPath,
+            $comparisonPath,
+            $resultPath,
+            $manifestPath
+          )) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Required output missing: $path"
+            }
+
+            Write-Host "FOUND: $path"
+          }
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          if ($result.status -ne "PASS") {
+            throw "Result status is not PASS."
+          }
+
+          if ($result.program -ne $env:PROGRAM_NAME) {
+            throw "Unexpected result program."
+          }
+
+          if ($result.version -ne $env:EXPECTED_VERSION) {
+            throw "Unexpected result version."
+          }
+
+          if ($result.source_program -ne "analyze_pattern_256_accumulation_entry_risk.py") {
+            throw "Unexpected source program."
+          }
+
+          if ($result.source_version -ne "Clean V002") {
+            throw "Unexpected source version."
+          }
+
+          if ([int]$result.summary_source_rows -ne 18) {
+            throw "Expected 18 summary source rows."
+          }
+
+          if ([int]$result.stop_source_rows -ne 72) {
+            throw "Expected 72 stop scenario source rows."
+          }
+
+          if ([int]$result.group_rows -ne 72) {
+            throw "Expected 72 risk-adjusted groups."
+          }
+
+          if ([int]$result.comparison_rows -ne 36) {
+            throw "Expected 36 comparisons."
+          }
+
+          if ($result.assessment -ne "DESCRIPTIVE_RISK_COMPARISON_ONLY") {
+            throw "Unexpected assessment."
+          }
+
+          if ($result.methodology.margin_is_trading_return -ne $false) {
+            throw "Margin must not be interpreted as trading return."
+          }
+
+          if ($result.methodology.statistical_significance_tested -ne $false) {
+            throw "Unexpected significance claim."
+          }
+
+          if ($result.methodology.intrabar_order_resolved -ne $false) {
+            throw "Unexpected intrabar ordering claim."
+          }
+
+          if ($result.methodology.out_of_sample_verified -ne $false) {
+            throw "Unexpected out-of-sample claim."
+          }
+
+          if ($manifest.status -ne "PASS") {
+            throw "Manifest status is not PASS."
+          }
+
+          if ($manifest.program -ne $result.program) {
+            throw "Manifest program mismatch."
+          }
+
+          if ($manifest.version -ne $result.version) {
+            throw "Manifest version mismatch."
+          }
+
+          $hashChecks = @(
+            @{
+              Path = $groupsPath
+              ResultHash = [string]$result.risk_adjusted_groups_sha256
+              ManifestHash = [string]$manifest.outputs.'risk_adjusted_groups.csv'
+            },
+            @{
+              Path = $comparisonPath
+              ResultHash = [string]$result.risk_adjusted_comparison_sha256
+              ManifestHash = [string]$manifest.outputs.'risk_adjusted_comparison.csv'
+            },
+            @{
+              Path = $resultPath
+              ResultHash = [string]$manifest.outputs.'risk_adjusted_result.json'
+              ManifestHash = [string]$manifest.outputs.'risk_adjusted_result.json'
+            }
+          )
+
+          foreach ($check in $hashChecks) {
+            $actual = (Get-FileHash `
+              -LiteralPath $check.Path `
+              -Algorithm SHA256).Hash.ToLowerInvariant()
+
+            if ([string]::IsNullOrWhiteSpace($check.ResultHash)) {
+              throw "Missing result SHA256."
+            }
+
+            if ([string]::IsNullOrWhiteSpace($check.ManifestHash)) {
+              throw "Missing manifest SHA256."
+            }
+
+            if ($actual -ne $check.ResultHash.ToLowerInvariant()) {
+              throw "Result SHA256 mismatch: $($check.Path)"
+            }
+
+            if ($actual -ne $check.ManifestHash.ToLowerInvariant()) {
+              throw "Manifest SHA256 mismatch: $($check.Path)"
+            }
+
+            Write-Host "SHA256 PASS: $($check.Path)"
+          }
+
+          $groups = @(
+            Import-Csv -LiteralPath $groupsPath
+          )
+
+          $comparisons = @(
+            Import-Csv -LiteralPath $comparisonPath
+          )
+
+          if ($groups.Count -ne 72) {
+            throw "Group CSV row count mismatch."
+          }
+
+          if ($comparisons.Count -ne 36) {
+            throw "Comparison CSV row count mismatch."
+          }
+
+          $timeframes = @("h1", "h4", "d1")
+          $horizons = @(24, 72, 168)
+          $stopLevels = @(5, 10, 15, 20)
+          $classifications = @(
+            "PATTERN_256_ONLY",
+            "BOTH"
+          )
+
+          foreach ($timeframe in $timeframes) {
+            foreach ($horizon in $horizons) {
+              foreach ($stopLevel in $stopLevels) {
+
+                $comparisonMatch = @(
+                  $comparisons | Where-Object {
+                    $_.timeframe -eq $timeframe -and
+                    [int]$_.horizon -eq $horizon -and
+                    [int]$_.stop_loss_pct -eq $stopLevel
+                  }
+                )
+
+                if ($comparisonMatch.Count -ne 1) {
+                  throw "Missing or duplicate comparison group."
+                }
+
+                foreach ($classification in $classifications) {
+                  $groupMatch = @(
+                    $groups | Where-Object {
+                      $_.timeframe -eq $timeframe -and
+                      [int]$_.horizon -eq $horizon -and
+                      $_.classification -eq $classification -and
+                      [int]$_.stop_loss_pct -eq $stopLevel
+                    }
+                  )
+
+                  if ($groupMatch.Count -ne 1) {
+                    throw "Missing or duplicate risk group."
+                  }
+                }
+              }
+            }
+          }
+
+          foreach ($row in $comparisons) {
+            $onlyHit = [double]$row.only_hit_rate_pct
+            $bothHit = [double]$row.both_hit_rate_pct
+            $hitDiff = [double]$row.hit_rate_difference_pp
+
+            $onlyStop = [double]$row.only_stop_touched_pct
+            $bothStop = [double]$row.both_stop_touched_pct
+            $stopDiff = [double]$row.stop_touch_difference_pp
+
+            if ([math]::Abs(($bothHit - $onlyHit) - $hitDiff) -gt 0.00001) {
+              throw "HIT difference mismatch."
+            }
+
+            if ([math]::Abs(($bothStop - $onlyStop) - $stopDiff) -gt 0.00001) {
+              throw "Stop touch difference mismatch."
+            }
+
+            if ($row.interpretation -ne "NOT_A_TRADE_PERFORMANCE_ESTIMATE") {
+              throw "Unexpected comparison interpretation."
+            }
+          }
+
+          "output_dir=$outputDir" >> $env:GITHUB_OUTPUT
+
+          Write-Host "Production output verification PASS"
+
+      # ============================================================
+      # 07. Verify production inputs unchanged
+      # ============================================================
+
+      - name: Verify production inputs unchanged
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $hashPath = "${{ steps.production_hashes.outputs.hash_path }}"
+
+          if (
+            [string]::IsNullOrWhiteSpace($hashPath) -or
+            -not (Test-Path -LiteralPath $hashPath -PathType Leaf)
+          ) {
+            throw "Initial input SHA256 manifest unavailable."
+          }
+
+          $expected = Get-Content `
+            -LiteralPath $hashPath `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          $sourceDir = Join-Path `
+            $env:PRODUCTION_ROOT `
+            $env:SOURCE_REPORT
+
+          foreach ($property in $expected.PSObject.Properties) {
+            $filename = $property.Name
+            $expectedHash = [string]$property.Value
+
+            $path = Join-Path $sourceDir $filename
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Production input disappeared: $filename"
+            }
+
+            $actualHash = (Get-FileHash `
+              -LiteralPath $path `
+              -Algorithm SHA256).Hash.ToLowerInvariant()
+
+            if ($actualHash -ne $expectedHash.ToLowerInvariant()) {
+              throw "Production input changed: $filename"
+            }
+
+            Write-Host "UNCHANGED PASS: $filename"
+          }
+
+          Write-Host "All production inputs unchanged PASS"
+
+      # ============================================================
+      # 08. Publish verified reports to production
+      # ============================================================
+
+      - name: Publish verified production reports
+        id: publish
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $sourceDir = "${{ steps.verify_outputs.outputs.output_dir }}"
+
+          $destinationDir = Join-Path `
+            $env:PRODUCTION_ROOT `
+            $env:OUTPUT_REPORT
+
+          if (-not (Test-Path -LiteralPath $sourceDir -PathType Container)) {
+            throw "Verified source output directory missing."
+          }
+
+          $files = @(
+            "risk_adjusted_groups.csv"
+            "risk_adjusted_comparison.csv"
+            "risk_adjusted_result.json"
+            "risk_adjusted_manifest.json"
+          )
+
+          # Protect previous production reports.
+          # An existing complete, identical report is reusable.
+          # A differing or incomplete report must not be overwritten.
+
+          if (Test-Path -LiteralPath $destinationDir) {
+            if (-not (Test-Path -LiteralPath $destinationDir -PathType Container)) {
+              throw "Production destination is not a directory."
+            }
+
+            foreach ($filename in $files) {
+              $source = Join-Path $sourceDir $filename
+              $target = Join-Path $destinationDir $filename
+
+              if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
+                throw "Existing production report is incomplete. Refusing overwrite."
+              }
+
+              $sourceHash = (Get-FileHash `
+                -LiteralPath $source `
+                -Algorithm SHA256).Hash.ToLowerInvariant()
+
+              $targetHash = (Get-FileHash `
+                -LiteralPath $target `
+                -Algorithm SHA256).Hash.ToLowerInvariant()
+
+              if ($sourceHash -ne $targetHash) {
+                throw "Existing production report differs. Refusing overwrite: $filename"
+              }
+            }
+
+            Write-Host "Existing production reports are identical. Reuse PASS"
+          }
+          else {
+            $parent = Split-Path `
+              -Path $destinationDir `
+              -Parent
+
+            New-Item `
+              -ItemType Directory `
+              -Path $parent `
+              -Force | Out-Null
+
+            # Copy the entire verified report directory.
+            # No existing production report is deleted.
+
+            Copy-Item `
+              -LiteralPath $sourceDir `
+              -Destination $destinationDir `
+              -Recurse
+
+            foreach ($filename in $files) {
+              $source = Join-Path $sourceDir $filename
+              $target = Join-Path $destinationDir $filename
+
+              if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
+                throw "Published report missing: $filename"
+              }
+
+              $sourceHash = (Get-FileHash `
+                -LiteralPath $source `
+                -Algorithm SHA256).Hash.ToLowerInvariant()
+
+              $targetHash = (Get-FileHash `
+                -LiteralPath $target `
+                -Algorithm SHA256).Hash.ToLowerInvariant()
+
+              if ($sourceHash -ne $targetHash) {
+                throw "Published SHA256 mismatch: $filename"
+              }
+
+              Write-Host "PUBLISHED VERIFIED: $filename"
+            }
+          }
+
+          "production_output_dir=$destinationDir" >> $env:GITHUB_OUTPUT
+
+          Write-Host "Production publication PASS"
+
+      # ============================================================
+      # 09. Upload verified production reports
+      # ============================================================
+
+      - name: Upload risk adjusted production reports
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-accumulation-risk-adjusted-production
+          path: |
+            ${{ steps.verify_outputs.outputs.output_dir }}/risk_adjusted_groups.csv
+            ${{ steps.verify_outputs.outputs.output_dir }}/risk_adjusted_comparison.csv
+            ${{ steps.verify_outputs.outputs.output_dir }}/risk_adjusted_result.json
+            ${{ steps.verify_outputs.outputs.output_dir }}/risk_adjusted_manifest.json
+          if-no-files-found: error
+          retention-days: 30
