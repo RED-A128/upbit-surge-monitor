@@ -58,18 +58,13 @@ jobs:
             throw "Python launcher unavailable."
           }
 
-          $program = Join-Path `
-            $env:GITHUB_WORKSPACE `
-            $env:PROGRAM_NAME
+          $program = Join-Path $env:GITHUB_WORKSPACE $env:PROGRAM_NAME
 
           if (-not (Test-Path -LiteralPath $program -PathType Leaf)) {
             throw "Python program missing: $program"
           }
 
-          $source = Get-Content `
-            -LiteralPath $program `
-            -Raw `
-            -Encoding UTF8
+          $source = Get-Content -LiteralPath $program -Raw -Encoding UTF8
 
           if ($source -notmatch 'VERSION\s*=\s*["'']Clean V001["'']') {
             throw "Unexpected Python program version."
@@ -79,11 +74,9 @@ jobs:
             throw "Unexpected Python program identity."
           }
 
-          $pycache = Join-Path `
+          $env:PYTHONPYCACHEPREFIX = Join-Path `
             $env:RUNNER_TEMP `
             "candidate_rules_production_pycache_${{ github.run_id }}_${{ github.run_attempt }}"
-
-          $env:PYTHONPYCACHEPREFIX = $pycache
 
           py -m py_compile $program
 
@@ -102,9 +95,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          $sourceDir = Join-Path `
-            $env:PRODUCTION_ROOT `
-            $env:SOURCE_REPORT
+          $sourceDir = Join-Path $env:PRODUCTION_ROOT $env:SOURCE_REPORT
 
           if (-not (Test-Path -LiteralPath $sourceDir -PathType Container)) {
             throw "Production source directory missing: $sourceDir"
@@ -127,31 +118,19 @@ jobs:
             }
 
             $hashes[$filename] = (
-              Get-FileHash `
-                -LiteralPath $path `
-                -Algorithm SHA256
+              Get-FileHash -LiteralPath $path -Algorithm SHA256
             ).Hash.ToLowerInvariant()
 
             Write-Host "INPUT SHA256: $filename = $($hashes[$filename])"
           }
 
-          $resultPath = Join-Path `
-            $sourceDir `
-            "risk_adjusted_result.json"
-
-          $manifestPath = Join-Path `
-            $sourceDir `
-            "risk_adjusted_manifest.json"
-
           $result = Get-Content `
-            -LiteralPath $resultPath `
-            -Raw `
-            -Encoding UTF8 | ConvertFrom-Json
+            -LiteralPath (Join-Path $sourceDir "risk_adjusted_result.json") `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
 
           $manifest = Get-Content `
-            -LiteralPath $manifestPath `
-            -Raw `
-            -Encoding UTF8 | ConvertFrom-Json
+            -LiteralPath (Join-Path $sourceDir "risk_adjusted_manifest.json") `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
 
           if ($result.status -ne "PASS") {
             throw "Upstream result status is not PASS."
@@ -211,56 +190,58 @@ jobs:
 
           $hashes |
             ConvertTo-Json -Depth 5 |
-            Set-Content `
-              -LiteralPath $hashPath `
-              -Encoding UTF8
+            Set-Content -LiteralPath $hashPath -Encoding UTF8
 
           "hash_path=$hashPath" >> $env:GITHUB_OUTPUT
 
           Write-Host "Production input SHA256 capture PASS"
 
       # ============================================================
-      # 04. Verify output destination is new
+      # 04. Detect existing production outputs
       # ============================================================
 
-      - name: Verify production output destination
+      - name: Detect existing production outputs
+        id: detect_outputs
         run: |
           $ErrorActionPreference = "Stop"
 
-          $outputDir = Join-Path `
-            $env:PRODUCTION_ROOT `
-            $env:OUTPUT_REPORT
+          $outputDir = Join-Path $env:PRODUCTION_ROOT $env:OUTPUT_REPORT
 
-          if (Test-Path -LiteralPath $outputDir) {
-            throw "Output already exists. Refusing overwrite: $outputDir"
+          if (Test-Path -LiteralPath $outputDir -PathType Container) {
+            Write-Host "Existing production output detected."
+            Write-Host "Will verify and reuse without overwriting."
+
+            "reuse_existing=true" >> $env:GITHUB_OUTPUT
+          }
+          elseif (Test-Path -LiteralPath $outputDir) {
+            throw "Output destination exists but is not a directory."
+          }
+          else {
+            Write-Host "No existing production output."
+            Write-Host "Research program will run."
+
+            "reuse_existing=false" >> $env:GITHUB_OUTPUT
           }
 
-          Write-Host "Production output destination available."
-          Write-Host "No existing research outputs will be overwritten."
-
       # ============================================================
-      # 05. Execute candidate rules research
+      # 05. Execute only if output does not exist
       # ============================================================
 
       - name: Execute candidate rules research
+        if: steps.detect_outputs.outputs.reuse_existing == 'false'
         run: |
           $ErrorActionPreference = "Stop"
 
-          $program = Join-Path `
-            $env:GITHUB_WORKSPACE `
-            $env:PROGRAM_NAME
+          $program = Join-Path $env:GITHUB_WORKSPACE $env:PROGRAM_NAME
 
           Write-Host "========================================"
           Write-Host "Candidate Rules Research Production"
           Write-Host "========================================"
 
-          Write-Host "Program: $program"
-          Write-Host "Root: $env:PRODUCTION_ROOT"
-
           py $program --root $env:PRODUCTION_ROOT
 
           if ($LASTEXITCODE -ne 0) {
-            throw "Candidate rules research production execution failed."
+            throw "Candidate rules research execution failed."
           }
 
           Write-Host "Candidate rules research execution PASS"
@@ -274,29 +255,44 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          $outputDir = Join-Path `
-            $env:PRODUCTION_ROOT `
-            $env:OUTPUT_REPORT
+          $culture = [System.Globalization.CultureInfo]::InvariantCulture
+
+          function Parse-FiniteNumber {
+            param(
+              [Parameter(Mandatory=$true)]
+              [string]$Value,
+
+              [Parameter(Mandatory=$true)]
+              [string]$Field
+            )
+
+            $number = [double]::Parse(
+              $Value,
+              [System.Globalization.NumberStyles]::Float,
+              $culture
+            )
+
+            # Compatible with Windows PowerShell 5.1
+            if (
+              [double]::IsNaN($number) -or
+              [double]::IsInfinity($number)
+            ) {
+              throw "Non-finite numeric value: $Field"
+            }
+
+            return $number
+          }
+
+          $outputDir = Join-Path $env:PRODUCTION_ROOT $env:OUTPUT_REPORT
 
           if (-not (Test-Path -LiteralPath $outputDir -PathType Container)) {
             throw "Production output directory missing."
           }
 
-          $researchPath = Join-Path `
-            $outputDir `
-            "candidate_rule_research.csv"
-
-          $comparisonPath = Join-Path `
-            $outputDir `
-            "candidate_rule_comparison.csv"
-
-          $resultPath = Join-Path `
-            $outputDir `
-            "candidate_rule_result.json"
-
-          $manifestPath = Join-Path `
-            $outputDir `
-            "candidate_rule_manifest.json"
+          $researchPath = Join-Path $outputDir "candidate_rule_research.csv"
+          $comparisonPath = Join-Path $outputDir "candidate_rule_comparison.csv"
+          $resultPath = Join-Path $outputDir "candidate_rule_result.json"
+          $manifestPath = Join-Path $outputDir "candidate_rule_manifest.json"
 
           foreach ($path in @(
             $researchPath
@@ -313,13 +309,11 @@ jobs:
 
           $result = Get-Content `
             -LiteralPath $resultPath `
-            -Raw `
-            -Encoding UTF8 | ConvertFrom-Json
+            -Raw -Encoding UTF8 | ConvertFrom-Json
 
           $manifest = Get-Content `
             -LiteralPath $manifestPath `
-            -Raw `
-            -Encoding UTF8 | ConvertFrom-Json
+            -Raw -Encoding UTF8 | ConvertFrom-Json
 
           if ($result.status -ne "PASS") {
             throw "Candidate rules result status is not PASS."
@@ -374,13 +368,13 @@ jobs:
           }
 
           # --------------------------------------------------------
-          # Verify methodology restrictions
+          # Verify methodology
           # --------------------------------------------------------
 
           $methodology = $result.methodology
 
           if ($methodology.historical_outcomes_used_for_evaluation -ne $true) {
-            throw "Historical outcome evaluation flag mismatch."
+            throw "Historical evaluation flag mismatch."
           }
 
           if ($methodology.historical_outcomes_allowed_as_live_features -ne $false) {
@@ -388,7 +382,7 @@ jobs:
           }
 
           if ($methodology.rule_thresholds_predeclared -ne $true) {
-            throw "Rule thresholds were not declared in advance."
+            throw "Predeclared rule flag mismatch."
           }
 
           if ($methodology.thresholds_optimized_on_current_data -ne $false) {
@@ -396,7 +390,7 @@ jobs:
           }
 
           if ($methodology.statistical_significance_tested -ne $false) {
-            throw "Unexpected significance claim."
+            throw "Unexpected statistical significance claim."
           }
 
           if ($methodology.out_of_sample_verified -ne $false) {
@@ -412,7 +406,7 @@ jobs:
           }
 
           if ($methodology.live_scanner_ready -ne $false) {
-            throw "Scanner readiness must remain false."
+            throw "Unexpected scanner readiness claim."
           }
 
           if ($methodology.automatic_trading_enabled -ne $false) {
@@ -420,7 +414,7 @@ jobs:
           }
 
           # --------------------------------------------------------
-          # Verify CSV row counts
+          # Load CSV
           # --------------------------------------------------------
 
           $research = @(
@@ -438,10 +432,6 @@ jobs:
           if ($comparisons.Count -ne 180) {
             throw "Comparison CSV row count mismatch."
           }
-
-          # --------------------------------------------------------
-          # Verify every expected research combination
-          # --------------------------------------------------------
 
           $ruleIds = @(
             "R00_BASELINE"
@@ -462,6 +452,10 @@ jobs:
 
           $researchKeys = @{}
           $comparisonKeys = @{}
+
+          # --------------------------------------------------------
+          # Verify research rows
+          # --------------------------------------------------------
 
           foreach ($row in $research) {
             $key = "{0}|{1}|{2}|{3}|{4}" -f `
@@ -485,28 +479,17 @@ jobs:
               throw "Unexpected research status."
             }
 
-            $hit = [double]::Parse(
-              $row.historical_hit_rate_pct,
-              [System.Globalization.CultureInfo]::InvariantCulture
-            )
+            $hit = Parse-FiniteNumber `
+              -Value $row.historical_hit_rate_pct `
+              -Field "historical_hit_rate_pct"
 
-            $stop = [double]::Parse(
-              $row.historical_stop_touched_pct,
-              [System.Globalization.CultureInfo]::InvariantCulture
-            )
+            $stop = Parse-FiniteNumber `
+              -Value $row.historical_stop_touched_pct `
+              -Field "historical_stop_touched_pct"
 
-            $margin = [double]::Parse(
-              $row.historical_hit_minus_stop_pp,
-              [System.Globalization.CultureInfo]::InvariantCulture
-            )
-
-            if (-not (
-              [double]::IsFinite($hit) -and
-              [double]::IsFinite($stop) -and
-              [double]::IsFinite($margin)
-            )) {
-              throw "Non-finite research metric."
-            }
+            $margin = Parse-FiniteNumber `
+              -Value $row.historical_hit_minus_stop_pp `
+              -Field "historical_hit_minus_stop_pp"
 
             if ($hit -lt 0 -or $hit -gt 100) {
               throw "Invalid historical HIT percentage."
@@ -520,6 +503,10 @@ jobs:
               throw "Historical margin mismatch."
             }
           }
+
+          # --------------------------------------------------------
+          # Verify comparison rows
+          # --------------------------------------------------------
 
           foreach ($row in $comparisons) {
             $key = "{0}|{1}|{2}|{3}" -f `
@@ -546,43 +533,44 @@ jobs:
               throw "Unexpected comparison interpretation."
             }
 
-            $onlyHit = [double]::Parse(
-              $row.only_hit_rate_pct,
-              [System.Globalization.CultureInfo]::InvariantCulture
-            )
+            $onlyHit = Parse-FiniteNumber `
+              -Value $row.only_hit_rate_pct `
+              -Field "only_hit_rate_pct"
 
-            $bothHit = [double]::Parse(
-              $row.both_hit_rate_pct,
-              [System.Globalization.CultureInfo]::InvariantCulture
-            )
+            $bothHit = Parse-FiniteNumber `
+              -Value $row.both_hit_rate_pct `
+              -Field "both_hit_rate_pct"
 
-            $hitDiff = [double]::Parse(
-              $row.hit_rate_difference_pp,
-              [System.Globalization.CultureInfo]::InvariantCulture
-            )
+            $hitDiff = Parse-FiniteNumber `
+              -Value $row.hit_rate_difference_pp `
+              -Field "hit_rate_difference_pp"
 
-            $onlyStop = [double]::Parse(
-              $row.only_stop_touched_pct,
-              [System.Globalization.CultureInfo]::InvariantCulture
-            )
+            $onlyStop = Parse-FiniteNumber `
+              -Value $row.only_stop_touched_pct `
+              -Field "only_stop_touched_pct"
 
-            $bothStop = [double]::Parse(
-              $row.both_stop_touched_pct,
-              [System.Globalization.CultureInfo]::InvariantCulture
-            )
+            $bothStop = Parse-FiniteNumber `
+              -Value $row.both_stop_touched_pct `
+              -Field "both_stop_touched_pct"
 
-            $stopDiff = [double]::Parse(
-              $row.stop_touch_difference_pp,
-              [System.Globalization.CultureInfo]::InvariantCulture
-            )
+            $stopDiff = Parse-FiniteNumber `
+              -Value $row.stop_touch_difference_pp `
+              -Field "stop_touch_difference_pp"
 
-            foreach ($value in @(
-              $onlyHit, $bothHit, $hitDiff,
-              $onlyStop, $bothStop, $stopDiff
-            )) {
-              if ([double]::IsNaN($value) -or [double]::IsInfinity($value)) {
-                throw "Non-finite comparison metric."
-              }
+            if ($onlyHit -lt 0 -or $onlyHit -gt 100) {
+              throw "Invalid ONLY HIT percentage."
+            }
+
+            if ($bothHit -lt 0 -or $bothHit -gt 100) {
+              throw "Invalid BOTH HIT percentage."
+            }
+
+            if ($onlyStop -lt 0 -or $onlyStop -gt 100) {
+              throw "Invalid ONLY stop percentage."
+            }
+
+            if ($bothStop -lt 0 -or $bothStop -gt 100) {
+              throw "Invalid BOTH stop percentage."
             }
 
             if ([math]::Abs(($bothHit - $onlyHit) - $hitDiff) -gt 0.00001) {
@@ -610,6 +598,10 @@ jobs:
               throw "Historical preference mismatch."
             }
           }
+
+          # --------------------------------------------------------
+          # Verify all combinations
+          # --------------------------------------------------------
 
           foreach ($ruleId in $ruleIds) {
             foreach ($timeframe in $timeframes) {
@@ -702,12 +694,10 @@ jobs:
           }
 
           # --------------------------------------------------------
-          # Verify exact upstream input hashes
+          # Verify upstream input SHA256
           # --------------------------------------------------------
 
-          $sourceDir = Join-Path `
-            $env:PRODUCTION_ROOT `
-            $env:SOURCE_REPORT
+          $sourceDir = Join-Path $env:PRODUCTION_ROOT $env:SOURCE_REPORT
 
           foreach ($filename in @(
             "risk_adjusted_groups.csv"
@@ -774,12 +764,9 @@ jobs:
 
           $expected = Get-Content `
             -LiteralPath $hashPath `
-            -Raw `
-            -Encoding UTF8 | ConvertFrom-Json
+            -Raw -Encoding UTF8 | ConvertFrom-Json
 
-          $sourceDir = Join-Path `
-            $env:PRODUCTION_ROOT `
-            $env:SOURCE_REPORT
+          $sourceDir = Join-Path $env:PRODUCTION_ROOT $env:SOURCE_REPORT
 
           foreach ($property in $expected.PSObject.Properties) {
             $filename = $property.Name
