@@ -4,75 +4,23 @@
 
 """
 validate_pattern_256_accumulation_candidate_oos.py
-Clean V002
+Clean V003
 
-Purpose
--------
-Perform a leakage-aware, chronological out-of-sample audit of
-Pattern 256 + Accumulation candidate signals.
+Pattern 256 + Accumulation Candidate OOS Validation
 
-This program deliberately distinguishes:
+- Chronological train/OOS split
+- Unique signal event grouping
+- 168-bar embargo
+- No future outcomes in signal eligibility
+- No OOS threshold optimization
+- Incomplete outcomes treated as censored
+- Missing entry records excluded explicitly
+- Upstream SHA256 integrity verification
+- No source OHLCV modification
+- No automatic trading
 
-1. Historical descriptive candidate-rule research.
-2. Signal-time features that could have been known in real time.
-3. Future outcome labels used only for evaluation.
-4. Chronological train/test separation.
-
-IMPORTANT
----------
-The historical candidate_rule_research.csv contains aggregated,
-outcome-dependent research results.
-
-Those aggregate rule results are NOT valid live entry features.
-
-This program therefore does not pretend that those historical
-rules have already passed an out-of-sample test.
-
-Instead, it evaluates a separately declared signal-time
-candidate rule using individual validation records.
-
-No automatic trading.
-No live scanner activation.
-No source OHLCV modification.
-No upstream report modification.
-
-Expected upstream files
------------------------
-data/reports/pattern_256_accumulation_candidate_rules/
-    candidate_rule_research.csv
-    candidate_rule_comparison.csv
-    candidate_rule_result.json
-    candidate_rule_manifest.json
-
-data/reports/pattern_256_accumulation_30pct/
-    validation_detail.csv
-
-Output
-------
-data/reports/pattern_256_accumulation_candidate_oos/
-    candidate_oos_summary.csv
-    candidate_oos_yearly.csv
-    candidate_oos_result.json
-    candidate_oos_manifest.json
-
-Execution
----------
+Execution:
 py validate_pattern_256_accumulation_candidate_oos.py --root "C:\\Users\\USER\\Documents\\upbit-surge-monitor"
-
-Methodology
------------
-- Chronological split by signal timestamp.
-- Separate splits for each timeframe.
-- Split by unique signal events, not horizon rows.
-- Embargo around the train/test boundary.
-- No future outcome in signal eligibility.
-- No optimization of rule thresholds on the test period.
-- Explicitly report insufficient sample sizes.
-- Treat incomplete horizons as censored.
-- Never convert censored observations into misses.
-- Group repeated horizons by one unique signal event.
-- No statistical independence claim.
-- No trading profitability claim.
 """
 
 from __future__ import annotations
@@ -86,14 +34,14 @@ import os
 import sys
 import tempfile
 
-from collections import defaultdict
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 
 PROGRAM = "validate_pattern_256_accumulation_candidate_oos.py"
-VERSION = "Clean V002"
+VERSION = "Clean V003"
 
 SOURCE_CANDIDATE_DIR = (
     "data/reports/pattern_256_accumulation_candidate_rules"
@@ -124,13 +72,6 @@ CLASSIFICATIONS = (
     "BOTH",
 )
 
-# Fixed before examining the OOS results.
-#
-# These are provisional signal-time eligibility rules.
-# They are NOT the same as the historical R00-R04 rules.
-#
-# Historical outcome-based thresholds must not be
-# reinterpreted as real-time features.
 SIGNAL_RULES = (
     {
         "rule_id": "S00_ALL_SIGNALS",
@@ -172,15 +113,8 @@ SIGNAL_RULES = (
     },
 )
 
-# Chronological split fraction.
 TRAIN_FRACTION = 0.70
 
-# Conservative exclusion around the split.
-#
-# At least 168 bars must separate the last training
-# signal and the first OOS signal.
-#
-# This is expressed in elapsed hours for each timeframe.
 TIMEFRAME_HOURS = {
     "h1": 1,
     "h4": 4,
@@ -188,9 +122,7 @@ TIMEFRAME_HOURS = {
 }
 
 EMBARGO_BARS = 168
-
 MIN_OOS_EVENTS = 30
-
 PROGRESS_INTERVAL = 500_000
 
 REQUIRED_DETAIL_COLUMNS = (
@@ -208,6 +140,38 @@ REQUIRED_DETAIL_COLUMNS = (
     "observed_bars",
     "required_bars",
 )
+
+SUMMARY_FIELDS = [
+    "timeframe",
+    "rule_id",
+    "horizon",
+    "train_selected_events",
+    "train_complete_events",
+    "train_hit_events",
+    "train_censored_events",
+    "train_hit_rate_pct",
+    "oos_selected_events",
+    "oos_complete_events",
+    "oos_hit_events",
+    "oos_censored_events",
+    "oos_hit_rate_pct",
+    "oos_minus_train_pp",
+    "status",
+]
+
+YEARLY_FIELDS = [
+    "timeframe",
+    "year",
+    "rule_id",
+    "horizon",
+    "selected_events",
+    "complete_events",
+    "hit_events",
+    "miss_events",
+    "censored_events",
+    "hit_rate_pct",
+    "status",
+]
 
 
 def log(message: str) -> None:
@@ -230,8 +194,8 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def parse_timestamp(value: str) -> datetime:
-    text = str(value).strip()
+def parse_timestamp(value: Any) -> datetime:
+    text = str(value if value is not None else "").strip()
 
     if not text:
         raise ValueError("Empty timestamp.")
@@ -249,7 +213,7 @@ def parse_timestamp(value: str) -> datetime:
     return result.astimezone(timezone.utc)
 
 
-def parse_float(value: str, field: str) -> float:
+def parse_float(value: Any, field: str) -> float:
     number = float(value)
 
     if not math.isfinite(number):
@@ -260,28 +224,29 @@ def parse_float(value: str, field: str) -> float:
     return number
 
 
-def parse_int(value: str, field: str) -> int:
-    text = str(value).strip()
+def parse_int(value: Any, field: str) -> int:
+    text = str(value if value is not None else "").strip()
 
     if not text:
         raise ValueError(f"Empty integer field: {field}")
 
-    result = int(text)
-
-    return result
+    return int(text)
 
 
-def safe_rate(numerator: int, denominator: int) -> Optional[float]:
+def safe_rate(
+    numerator: int,
+    denominator: int,
+) -> float | None:
     if denominator <= 0:
         return None
 
-    return round(
-        100.0 * numerator / denominator,
-        8,
-    )
+    return round(100.0 * numerator / denominator, 8)
 
 
-def atomic_write_json(path: Path, data: Dict[str, Any]) -> None:
+def atomic_write_json(
+    path: Path,
+    data: dict[str, Any],
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
     fd, temporary_name = tempfile.mkstemp(
@@ -291,7 +256,11 @@ def atomic_write_json(path: Path, data: Dict[str, Any]) -> None:
     )
 
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        with os.fdopen(
+            fd,
+            "w",
+            encoding="utf-8",
+        ) as handle:
             json.dump(
                 data,
                 handle,
@@ -313,8 +282,8 @@ def atomic_write_json(path: Path, data: Dict[str, Any]) -> None:
 
 def atomic_write_csv(
     path: Path,
-    fieldnames: List[str],
-    rows: List[Dict[str, Any]],
+    fieldnames: list[str],
+    rows: list[dict[str, Any]],
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -352,7 +321,7 @@ def atomic_write_csv(
 
 def verify_candidate_metadata(
     candidate_dir: Path,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     log("[CHECK] Candidate research metadata")
 
     paths = {
@@ -395,11 +364,9 @@ def verify_candidate_metadata(
             "Unexpected candidate research program."
         )
 
-    expected_assessment = (
+    if result.get("assessment") != (
         "DESCRIPTIVE_CANDIDATE_RULE_RESEARCH_ONLY"
-    )
-
-    if result.get("assessment") != expected_assessment:
+    ):
         raise ValueError(
             "Candidate research assessment mismatch."
         )
@@ -410,11 +377,12 @@ def verify_candidate_metadata(
         "historical_outcomes_allowed_as_live_features"
     ) is not False:
         raise ValueError(
-            "Candidate research does not prohibit "
-            "future outcome features."
+            "Future outcome features are not prohibited."
         )
 
-    if methodology.get("out_of_sample_verified") is not False:
+    if methodology.get(
+        "out_of_sample_verified"
+    ) is not False:
         raise ValueError(
             "Candidate research unexpectedly claims OOS."
         )
@@ -458,12 +426,15 @@ def verify_candidate_metadata(
 
 
 def signal_rule_passes(
-    rule: Dict[str, Any],
+    rule: dict[str, Any],
     classification: str,
     pattern_score: float,
     accumulation_score: float,
 ) -> bool:
-    if rule["require_both"] and classification != "BOTH":
+    if (
+        rule["require_both"]
+        and classification != "BOTH"
+    ):
         return False
 
     if pattern_score < rule["min_pattern_256_score"]:
@@ -475,24 +446,41 @@ def signal_rule_passes(
     return True
 
 
-def create_event_key(
-    timeframe: str,
-    market: str,
-    signal_timestamp: str,
-) -> Tuple[str, str, str]:
-    return (
-        timeframe,
-        market,
-        signal_timestamp,
+def parse_hit_indicator(
+    value: Any,
+    row_number: int,
+) -> int | None:
+    text = str(
+        value if value is not None else ""
+    ).strip().upper()
+
+    if text in (
+        "1", "1.0", "TRUE", "T",
+        "YES", "Y", "HIT",
+    ):
+        return 1
+
+    if text in (
+        "0", "0.0", "FALSE", "F",
+        "NO", "N", "MISS",
+    ):
+        return 0
+
+    if text in (
+        "", "NONE", "NULL",
+        "NAN", "NA", "N/A",
+    ):
+        return None
+
+    raise ValueError(
+        f"Invalid HIT indicator at CSV row {row_number}: "
+        f"{text!r}"
     )
 
 
 def scan_validation_detail(
     detail_path: Path,
-) -> Tuple[
-    Dict[str, Dict[Tuple[str, str, str], Dict[str, Any]]],
-    Dict[str, Any],
-]:
+) -> tuple[dict[str, dict], dict[str, Any]]:
     log("[SCAN] Reading individual validation records")
 
     events = {
@@ -504,6 +492,10 @@ def scan_validation_detail(
     eligible_rows = 0
     excluded_rows = 0
 
+    exclusion_reasons = Counter()
+    missing_entry_keys = set()
+    seen_valid_keys = set()
+
     with detail_path.open(
         "r",
         encoding="utf-8-sig",
@@ -512,7 +504,6 @@ def scan_validation_detail(
         reader = csv.DictReader(handle)
 
         columns = set(reader.fieldnames or [])
-
         missing = set(REQUIRED_DETAIL_COLUMNS) - columns
 
         if missing:
@@ -523,6 +514,7 @@ def scan_validation_detail(
 
         for row in reader:
             source_rows += 1
+            csv_row = source_rows + 1
 
             if source_rows % PROGRESS_INTERVAL == 0:
                 log(
@@ -530,39 +522,96 @@ def scan_validation_detail(
                 )
 
             timeframe = str(
-                row["timeframe"]
+                row["timeframe"] or ""
             ).strip()
 
             classification = str(
-                row["classification"]
+                row["classification"] or ""
             ).strip()
 
             if timeframe not in TIMEFRAMES:
                 excluded_rows += 1
+                exclusion_reasons["unsupported_timeframe"] += 1
                 continue
 
             if classification not in CLASSIFICATIONS:
                 excluded_rows += 1
+                exclusion_reasons["unsupported_classification"] += 1
                 continue
 
-            market = str(row["market"]).strip()
+            horizon = parse_int(
+                row["horizon"],
+                "horizon",
+            )
+
+            if horizon not in HORIZONS:
+                excluded_rows += 1
+                exclusion_reasons["unsupported_horizon"] += 1
+                continue
+
+            market = str(
+                row["market"] or ""
+            ).strip()
 
             if not market:
                 raise ValueError(
-                    f"Missing market at row {source_rows}"
+                    f"Missing market at CSV row {csv_row}"
                 )
 
-            signal_dt = parse_timestamp(
-                row["signal_timestamp"]
+            try:
+                signal_dt = parse_timestamp(
+                    row["signal_timestamp"]
+                )
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid signal timestamp at "
+                    f"CSV row {csv_row}: {exc}"
+                ) from exc
+
+            key = (
+                timeframe,
+                market,
+                signal_dt.isoformat(),
             )
 
-            entry_dt = parse_timestamp(
-                row["entry_timestamp"]
-            )
+            entry_text = str(
+                row["entry_timestamp"] or ""
+            ).strip()
+
+            entry_price_text = str(
+                row["entry_price"] or ""
+            ).strip()
+
+            # A signal without an actual entry cannot be
+            # evaluated as a successful or failed trade.
+            # Preserve an explicit exclusion count.
+            if not entry_text or not entry_price_text:
+                excluded_rows += 1
+
+                if not entry_text:
+                    exclusion_reasons[
+                        "missing_entry_timestamp"
+                    ] += 1
+                else:
+                    exclusion_reasons[
+                        "missing_entry_price"
+                    ] += 1
+
+                missing_entry_keys.add(key)
+                continue
+
+            try:
+                entry_dt = parse_timestamp(entry_text)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid entry timestamp at "
+                    f"CSV row {csv_row}: {exc}"
+                ) from exc
 
             if entry_dt <= signal_dt:
                 raise ValueError(
-                    "Entry timestamp must follow signal timestamp."
+                    f"Entry timestamp must follow signal "
+                    f"timestamp at CSV row {csv_row}"
                 )
 
             pattern_score = parse_float(
@@ -576,26 +625,18 @@ def scan_validation_detail(
             )
 
             entry_price = parse_float(
-                row["entry_price"],
+                entry_price_text,
                 "entry_price",
             )
 
             if entry_price <= 0:
                 raise ValueError(
-                    "Entry price must be positive."
+                    f"Entry price must be positive "
+                    f"at CSV row {csv_row}"
                 )
 
-            horizon = parse_int(
-                row["horizon"],
-                "horizon",
-            )
-
-            if horizon not in HORIZONS:
-                excluded_rows += 1
-                continue
-
             status = str(
-                row["status"]
+                row["status"] or ""
             ).strip().upper()
 
             observed_bars = parse_int(
@@ -610,62 +651,44 @@ def scan_validation_detail(
 
             if required_bars != horizon:
                 raise ValueError(
-                    "Required bars and horizon mismatch."
+                    f"Required bars and horizon mismatch "
+                    f"at CSV row {csv_row}"
                 )
 
-            if observed_bars < 0:
+            if not 0 <= observed_bars <= required_bars:
                 raise ValueError(
-                    "Negative observed bars."
+                    f"Invalid observed bars "
+                    f"at CSV row {csv_row}"
                 )
 
-            if observed_bars > required_bars:
-                raise ValueError(
-                    "Observed bars exceed required bars."
-                )
+            hit = parse_hit_indicator(
+                row["hit_30pct"],
+                csv_row,
+            )
 
-            # Only a fully observed HIT/MISS is an evaluable outcome.
-            # Early HIT, incomplete and unknown outcomes are censored;
-            # never silently count them as MISS.
             complete = (
                 observed_bars == required_bars
                 and status in ("HIT", "MISS")
             )
 
-            hit_value = str(row["hit_30pct"] or "").strip().upper()
-            if hit_value in ("1", "1.0", "TRUE", "T", "YES", "Y", "HIT"):
-                hit = 1
-            elif hit_value in ("0", "0.0", "FALSE", "F", "NO", "N", "MISS"):
-                hit = 0
-            elif hit_value in ("", "NONE", "NULL", "NAN", "NA", "N/A"):
-                hit = None
-            else:
-                raise ValueError(
-                    f"Invalid HIT indicator at CSV row {source_rows + 1}: "
-                    f"status={status!r}, hit_30pct={hit_value!r}"
-                )
-
             if complete:
                 if hit is None:
                     raise ValueError(
-                        f"Missing HIT indicator for complete outcome "
-                        f"at CSV row {source_rows + 1}: status={status!r}"
-                    )
-                if status == "HIT" and hit != 1:
-                    raise ValueError(
-                        f"HIT status and indicator mismatch "
-                        f"at CSV row {source_rows + 1}"
-                    )
-                if status == "MISS" and hit != 0:
-                    raise ValueError(
-                        f"MISS status and indicator mismatch "
-                        f"at CSV row {source_rows + 1}"
+                        f"Missing HIT indicator for complete "
+                        f"outcome at CSV row {csv_row}"
                     )
 
-            key = create_event_key(
-                timeframe,
-                market,
-                signal_dt.isoformat(),
-            )
+                if status == "HIT" and hit != 1:
+                    raise ValueError(
+                        f"HIT indicator mismatch "
+                        f"at CSV row {csv_row}"
+                    )
+
+                if status == "MISS" and hit != 0:
+                    raise ValueError(
+                        f"MISS indicator mismatch "
+                        f"at CSV row {csv_row}"
+                    )
 
             group = events[timeframe]
 
@@ -692,12 +715,14 @@ def scan_validation_detail(
                 or event["entry_price"] != entry_price
             ):
                 raise ValueError(
-                    "Inconsistent repeated signal event."
+                    f"Inconsistent repeated signal event "
+                    f"at CSV row {csv_row}"
                 )
 
             if horizon in event["outcomes"]:
                 raise ValueError(
-                    "Duplicate horizon for signal event."
+                    f"Duplicate horizon for signal event "
+                    f"at CSV row {csv_row}"
                 )
 
             event["outcomes"][horizon] = {
@@ -707,12 +732,36 @@ def scan_validation_detail(
                 "observed_bars": observed_bars,
             }
 
+            seen_valid_keys.add(key)
             eligible_rows += 1
 
     if source_rows == 0:
         raise ValueError(
             "Validation detail contains no data rows."
         )
+
+    # If any horizon of a signal lacks an entry, exclude
+    # the whole event. Do not retain other horizons of
+    # the same event as though entry data were complete.
+    partially_missing = (
+        missing_entry_keys & seen_valid_keys
+    )
+
+    removed_valid_rows = 0
+
+    for key in partially_missing:
+        timeframe = key[0]
+        event = events[timeframe].pop(key, None)
+
+        if event is not None:
+            count = len(event["outcomes"])
+            removed_valid_rows += count
+            eligible_rows -= count
+            excluded_rows += count
+
+            exclusion_reasons[
+                "event_with_inconsistent_entry_availability"
+            ] += count
 
     event_count = sum(
         len(group)
@@ -721,38 +770,45 @@ def scan_validation_detail(
 
     if event_count == 0:
         raise ValueError(
-            "No eligible signal events."
+            "No eligible signal events after exclusions."
         )
 
-    log(
-        f"[PASS] Source rows: {source_rows:,}"
-    )
+    if source_rows != eligible_rows + excluded_rows:
+        raise ValueError(
+            "Source row accounting mismatch."
+        )
 
-    log(
-        f"[PASS] Eligible rows: {eligible_rows:,}"
-    )
+    log(f"[PASS] Source rows: {source_rows:,}")
+    log(f"[PASS] Eligible rows: {eligible_rows:,}")
+    log(f"[PASS] Excluded rows: {excluded_rows:,}")
+    log(f"[PASS] Unique signal events: {event_count:,}")
 
-    log(
-        f"[PASS] Unique signal events: {event_count:,}"
-    )
+    for reason, count in sorted(
+        exclusion_reasons.items()
+    ):
+        log(f"[EXCLUDED] {reason}: {count:,}")
 
     return events, {
         "source_rows": source_rows,
         "eligible_rows": eligible_rows,
         "excluded_rows": excluded_rows,
         "unique_events": event_count,
+        "missing_entry_event_keys": len(
+            missing_entry_keys
+        ),
+        "partially_missing_entry_events": len(
+            partially_missing
+        ),
+        "removed_valid_rows": removed_valid_rows,
+        "exclusion_reasons": dict(
+            sorted(exclusion_reasons.items())
+        ),
     }
 
 
 def chronological_split(
-    events: Dict[
-        str,
-        Dict[Tuple[str, str, str], Dict[str, Any]],
-    ],
-) -> Tuple[
-    Dict[str, Dict[str, List[Dict[str, Any]]]],
-    Dict[str, Any],
-]:
+    events: dict[str, dict],
+) -> tuple[dict[str, dict], dict[str, Any]]:
     log("[CHECK] Chronological train/OOS split")
 
     partitions = {}
@@ -772,7 +828,7 @@ def chronological_split(
         if total < 2:
             partitions[timeframe] = {
                 "train": [],
-                "embargo": [],
+                "embargo": ordered,
                 "oos": [],
             }
 
@@ -824,12 +880,6 @@ def chronological_split(
 
             else:
                 embargo.append(event)
-
-        # All training labels require a fully observed
-        # maximum horizon before the OOS boundary.
-        #
-        # The embargo removes train-side signals whose
-        # maximum horizon could overlap the OOS start.
 
         if train and oos:
             last_train = max(
@@ -884,10 +934,10 @@ def chronological_split(
 
 
 def summarize_events(
-    events: List[Dict[str, Any]],
-    rule: Dict[str, Any],
+    events: list[dict[str, Any]],
+    rule: dict[str, Any],
     horizon: int,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     selected = 0
     complete = 0
     hits = 0
@@ -907,11 +957,7 @@ def summarize_events(
 
         outcome = event["outcomes"].get(horizon)
 
-        if outcome is None:
-            censored += 1
-            continue
-
-        if not outcome["complete"]:
+        if outcome is None or not outcome["complete"]:
             censored += 1
             continue
 
@@ -938,19 +984,13 @@ def summarize_events(
         "hit_events": hits,
         "miss_events": misses,
         "censored_events": censored,
-        "hit_rate_pct": safe_rate(
-            hits,
-            complete,
-        ),
+        "hit_rate_pct": safe_rate(hits, complete),
     }
 
 
 def make_summary_rows(
-    partitions: Dict[
-        str,
-        Dict[str, List[Dict[str, Any]]],
-    ],
-) -> List[Dict[str, Any]]:
+    partitions: dict[str, dict],
+) -> list[dict[str, Any]]:
     rows = []
 
     for timeframe in TIMEFRAMES:
@@ -987,13 +1027,12 @@ def make_summary_rows(
                         8,
                     )
 
-                if (
-                    oos_stats["complete_events"]
-                    < MIN_OOS_EVENTS
-                ):
-                    status = "INSUFFICIENT_OOS_SAMPLE"
-                else:
-                    status = "DESCRIPTIVE_OOS_ONLY"
+                status = (
+                    "DESCRIPTIVE_OOS_ONLY"
+                    if oos_stats["complete_events"]
+                    >= MIN_OOS_EVENTS
+                    else "INSUFFICIENT_OOS_SAMPLE"
+                )
 
                 rows.append({
                     "timeframe": timeframe,
@@ -1033,11 +1072,8 @@ def make_summary_rows(
 
 
 def make_yearly_rows(
-    partitions: Dict[
-        str,
-        Dict[str, List[Dict[str, Any]]],
-    ],
-) -> List[Dict[str, Any]]:
+    partitions: dict[str, dict],
+) -> list[dict[str, Any]]:
     rows = []
 
     for timeframe in TIMEFRAMES:
@@ -1071,16 +1107,14 @@ def make_yearly_rows(
                         "rule_id": rule["rule_id"],
                         "horizon": horizon,
                         **stats,
-                        "status": (
-                            "DESCRIPTIVE_YEARLY_ONLY"
-                        ),
+                        "status": "DESCRIPTIVE_YEARLY_ONLY",
                     })
 
     return rows
 
 
 def verify_accounting(
-    summary_rows: List[Dict[str, Any]],
+    summary_rows: list[dict[str, Any]],
 ) -> None:
     expected = (
         len(TIMEFRAMES)
@@ -1144,7 +1178,6 @@ def prepare_output_directory(
 ) -> Path:
     output = root / OUTPUT_DIR
 
-    # Never silently overwrite prior research.
     if output.exists():
         raise FileExistsError(
             "OOS output already exists. "
@@ -1163,6 +1196,27 @@ def prepare_output_directory(
     )
 
     return output
+
+
+def capture_input_hashes(
+    candidate_dir: Path,
+    detail_path: Path,
+) -> dict[str, str]:
+    hashes = {
+        DETAIL_FILE: sha256_file(detail_path),
+    }
+
+    for filename in CANDIDATE_FILES:
+        path = candidate_dir / filename
+
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"Candidate input missing: {path}"
+            )
+
+        hashes[filename] = sha256_file(path)
+
+    return hashes
 
 
 def main() -> int:
@@ -1195,33 +1249,22 @@ def main() -> int:
     log("=" * 70)
 
     candidate_dir = root / SOURCE_CANDIDATE_DIR
-    detail_path = root / SOURCE_VALIDATION_DIR / DETAIL_FILE
+
+    detail_path = (
+        root / SOURCE_VALIDATION_DIR / DETAIL_FILE
+    )
 
     if not detail_path.is_file():
         raise FileNotFoundError(
             f"Validation detail missing: {detail_path}"
         )
 
-    # Capture immutable upstream hashes.
-    source_hashes_before = {
-        DETAIL_FILE: sha256_file(detail_path),
-    }
-
-    for filename in CANDIDATE_FILES:
-        path = candidate_dir / filename
-
-        if not path.is_file():
-            raise FileNotFoundError(
-                f"Candidate input missing: {path}"
-            )
-
-        source_hashes_before[
-            filename
-        ] = sha256_file(path)
-
-    metadata = verify_candidate_metadata(
-        candidate_dir
+    source_hashes_before = capture_input_hashes(
+        candidate_dir,
+        detail_path,
     )
+
+    verify_candidate_metadata(candidate_dir)
 
     events, scan_metadata = scan_validation_detail(
         detail_path
@@ -1239,21 +1282,12 @@ def main() -> int:
         partitions
     )
 
-    verify_accounting(
-        summary_rows
+    verify_accounting(summary_rows)
+
+    source_hashes_after = capture_input_hashes(
+        candidate_dir,
+        detail_path,
     )
-
-    # Check upstream data before creating any outputs.
-    source_hashes_after = {
-        DETAIL_FILE: sha256_file(detail_path),
-    }
-
-    for filename in CANDIDATE_FILES:
-        source_hashes_after[
-            filename
-        ] = sha256_file(
-            candidate_dir / filename
-        )
 
     if source_hashes_before != source_hashes_after:
         raise ValueError(
@@ -1262,9 +1296,7 @@ def main() -> int:
 
     log("[PASS] Upstream input hashes unchanged")
 
-    output_dir = prepare_output_directory(
-        root
-    )
+    output_dir = prepare_output_directory(root)
 
     summary_path = (
         output_dir / "candidate_oos_summary.csv"
@@ -1282,47 +1314,15 @@ def main() -> int:
         output_dir / "candidate_oos_manifest.json"
     )
 
-    summary_fields = [
-        "timeframe",
-        "rule_id",
-        "horizon",
-        "train_selected_events",
-        "train_complete_events",
-        "train_hit_events",
-        "train_censored_events",
-        "train_hit_rate_pct",
-        "oos_selected_events",
-        "oos_complete_events",
-        "oos_hit_events",
-        "oos_censored_events",
-        "oos_hit_rate_pct",
-        "oos_minus_train_pp",
-        "status",
-    ]
-
-    yearly_fields = [
-        "timeframe",
-        "year",
-        "rule_id",
-        "horizon",
-        "selected_events",
-        "complete_events",
-        "hit_events",
-        "miss_events",
-        "censored_events",
-        "hit_rate_pct",
-        "status",
-    ]
-
     atomic_write_csv(
         summary_path,
-        summary_fields,
+        SUMMARY_FIELDS,
         summary_rows,
     )
 
     atomic_write_csv(
         yearly_path,
-        yearly_fields,
+        YEARLY_FIELDS,
         yearly_rows,
     )
 
@@ -1330,7 +1330,9 @@ def main() -> int:
         "status": "PASS",
         "program": PROGRAM,
         "version": VERSION,
-        "assessment": "DESCRIPTIVE_CHRONOLOGICAL_OOS_ONLY",
+        "assessment": (
+            "DESCRIPTIVE_CHRONOLOGICAL_OOS_ONLY"
+        ),
         "source_program": (
             "research_pattern_256_accumulation_candidate_rules.py"
         ),
@@ -1338,7 +1340,18 @@ def main() -> int:
         "source_rows": scan_metadata["source_rows"],
         "eligible_rows": scan_metadata["eligible_rows"],
         "excluded_rows": scan_metadata["excluded_rows"],
-        "unique_signal_events": scan_metadata["unique_events"],
+        "unique_signal_events": scan_metadata[
+            "unique_events"
+        ],
+        "exclusion_reasons": scan_metadata[
+            "exclusion_reasons"
+        ],
+        "missing_entry_event_keys": scan_metadata[
+            "missing_entry_event_keys"
+        ],
+        "partially_missing_entry_events": scan_metadata[
+            "partially_missing_entry_events"
+        ],
         "summary_rows": len(summary_rows),
         "yearly_rows": len(yearly_rows),
         "rule_count": len(SIGNAL_RULES),
@@ -1359,6 +1372,8 @@ def main() -> int:
             "thresholds_optimized_on_oos": False,
             "oos_outcomes_used_for_evaluation_only": True,
             "incomplete_horizons_treated_as_censored": True,
+            "missing_entry_records_excluded": True,
+            "missing_entry_events_not_counted_as_misses": True,
             "statistical_significance_tested": False,
             "independent_events_proven": False,
             "trading_return_estimated": False,
@@ -1368,40 +1383,44 @@ def main() -> int:
         },
         "limitations": [
             (
-                "The S00-S04 rules are provisional "
-                "signal-time filters, not the historical "
-                "R00-R04 outcome-based research rules."
+                "S00-S04 are provisional signal-time filters, "
+                "not historical outcome-based R00-R04 rules."
             ),
             (
-                "A chronological split alone does not "
+                "Chronological splitting alone does not "
                 "prove predictive effectiveness."
             ),
             (
-                "The signal scores must be independently "
-                "verified as causal and reproducible."
+                "Signal scores require independent "
+                "causality and reproducibility checks."
             ),
             (
-                "Repeated and overlapping market events "
-                "may be statistically dependent."
+                "Overlapping market events may be "
+                "statistically dependent."
             ),
             (
                 "Intrabar order, trading fees, slippage "
                 "and execution feasibility are not modeled."
             ),
             (
-                "Rule selection after inspecting OOS "
-                "results invalidates a pristine holdout."
+                "Rules selected after examining OOS "
+                "results invalidate a pristine holdout."
+            ),
+            (
+                "Missing-entry signals are excluded "
+                "rather than assigned HIT or MISS. "
+                "Exclusion can introduce selection bias."
             ),
         ],
         "input_sha256": source_hashes_before,
     }
 
-    result["candidate_oos_summary_sha256"] = sha256_file(
-        summary_path
+    result["candidate_oos_summary_sha256"] = (
+        sha256_file(summary_path)
     )
 
-    result["candidate_oos_yearly_sha256"] = sha256_file(
-        yearly_path
+    result["candidate_oos_yearly_sha256"] = (
+        sha256_file(yearly_path)
     )
 
     atomic_write_json(
@@ -1432,27 +1451,23 @@ def main() -> int:
         manifest,
     )
 
-    # Final source integrity check.
-    if sha256_file(detail_path) != source_hashes_before[
-        DETAIL_FILE
-    ]:
-        raise ValueError(
-            "Validation detail changed during output."
-        )
+    final_hashes = capture_input_hashes(
+        candidate_dir,
+        detail_path,
+    )
 
-    for filename in CANDIDATE_FILES:
-        if sha256_file(
-            candidate_dir / filename
-        ) != source_hashes_before[filename]:
-            raise ValueError(
-                f"Upstream file changed: {filename}"
-            )
+    if final_hashes != source_hashes_before:
+        raise ValueError(
+            "Upstream inputs changed during output."
+        )
 
     log("[PASS] Final upstream integrity verification")
 
     log("=" * 70)
     log("[PASS] Candidate OOS validation completed")
     log(f"Source rows: {scan_metadata['source_rows']:,}")
+    log(f"Eligible rows: {scan_metadata['eligible_rows']:,}")
+    log(f"Excluded rows: {scan_metadata['excluded_rows']:,}")
     log(f"Unique events: {scan_metadata['unique_events']:,}")
     log(f"Summary rows: {len(summary_rows):,}")
     log(f"Yearly rows: {len(yearly_rows):,}")
