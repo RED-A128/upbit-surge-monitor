@@ -1,0 +1,329 @@
+
+name: validate_pattern_256_accumulation_candidate_oos.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-pattern-256-accumulation-candidate-oos-production
+  cancel-in-progress: false
+
+jobs:
+  candidate-oos-production:
+    name: Candidate OOS Validation Production
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 180
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PRODUCTION_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+      PROGRAM_NAME: validate_pattern_256_accumulation_candidate_oos.py
+      OUTPUT_RELATIVE: data\reports\pattern_256_accumulation_candidate_oos
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Verify Python program
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $program = Join-Path $env:GITHUB_WORKSPACE $env:PROGRAM_NAME
+
+          if (-not (Test-Path -LiteralPath $program -PathType Leaf)) {
+            throw "Python program missing: $program"
+          }
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable."
+          }
+
+          py -m py_compile $program
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax verification failed."
+          }
+
+          Write-Host "Python program verification PASS"
+
+      - name: Capture production input SHA256
+        id: input_snapshot
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = $env:PRODUCTION_ROOT
+
+          if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+            throw "Production root missing: $root"
+          }
+
+          $relativePaths = @(
+            "data\reports\pattern_256_accumulation_candidate_rules\candidate_rule_research.csv"
+            "data\reports\pattern_256_accumulation_candidate_rules\candidate_rule_comparison.csv"
+            "data\reports\pattern_256_accumulation_candidate_rules\candidate_rule_result.json"
+            "data\reports\pattern_256_accumulation_candidate_rules\candidate_rule_manifest.json"
+            "data\reports\pattern_256_accumulation_30pct\validation_detail.csv"
+          )
+
+          $snapshot = @()
+
+          foreach ($relativePath in $relativePaths) {
+            $path = Join-Path -Path $root -ChildPath $relativePath
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Required production input missing: $path"
+            }
+
+            $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+
+            $snapshot += [PSCustomObject]@{
+              relative_path = $relativePath
+              sha256 = $hash
+            }
+
+            Write-Host "INPUT VERIFIED: $relativePath"
+          }
+
+          $snapshotPath = Join-Path $env:RUNNER_TEMP "candidate_oos_production_input_snapshot.json"
+
+          $snapshot |
+            ConvertTo-Json -Depth 5 |
+            Set-Content -LiteralPath $snapshotPath -Encoding UTF8
+
+          "SNAPSHOT_PATH=$snapshotPath" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          Write-Host "Production input SHA256 snapshot PASS"
+
+      - name: Verify production output destination
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = [System.IO.Path]::GetFullPath($env:PRODUCTION_ROOT)
+          $output = [System.IO.Path]::GetFullPath(
+            (Join-Path $root $env:OUTPUT_RELATIVE)
+          )
+
+          $rootPrefix = $root.TrimEnd('\') + '\'
+
+          if (-not $output.StartsWith(
+            $rootPrefix,
+            [System.StringComparison]::OrdinalIgnoreCase
+          )) {
+            throw "Output path is outside production root."
+          }
+
+          $inputDirectories = @(
+            "data\ohlcv"
+            "data\reports\pattern_256_accumulation_candidate_rules"
+            "data\reports\pattern_256_accumulation_30pct"
+          )
+
+          foreach ($relativePath in $inputDirectories) {
+            $protected = [System.IO.Path]::GetFullPath(
+              (Join-Path $root $relativePath)
+            )
+
+            $protectedPrefix = $protected.TrimEnd('\') + '\'
+
+            if (
+              $output.Equals(
+                $protected,
+                [System.StringComparison]::OrdinalIgnoreCase
+              ) -or
+              $output.StartsWith(
+                $protectedPrefix,
+                [System.StringComparison]::OrdinalIgnoreCase
+              )
+            ) {
+              throw "Output destination overlaps protected input: $protected"
+            }
+          }
+
+          if (-not (Test-Path -LiteralPath $output)) {
+            New-Item -ItemType Directory -Path $output -Force | Out-Null
+          }
+
+          Write-Host "OUTPUT DIRECTORY: $output"
+          Write-Host "Production output destination PASS"
+
+      - name: Execute candidate OOS validation
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $program = Join-Path $env:GITHUB_WORKSPACE $env:PROGRAM_NAME
+
+          Write-Host "========================================"
+          Write-Host "Candidate OOS Validation Production"
+          Write-Host "========================================"
+
+          Push-Location $env:PRODUCTION_ROOT
+
+          try {
+            py $program
+
+            if ($LASTEXITCODE -ne 0) {
+              throw "Candidate OOS validation execution failed."
+            }
+          }
+          finally {
+            Pop-Location
+          }
+
+          Write-Host "Candidate OOS validation execution PASS"
+
+      - name: Verify candidate OOS production outputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $output = Join-Path $env:PRODUCTION_ROOT $env:OUTPUT_RELATIVE
+
+          if (-not (Test-Path -LiteralPath $output -PathType Container)) {
+            throw "Production output directory missing: $output"
+          }
+
+          $files = Get-ChildItem -LiteralPath $output -File
+
+          if (@($files).Count -eq 0) {
+            throw "Production output directory is empty."
+          }
+
+          $jsonFiles = @($files | Where-Object {
+            $_.Extension -eq ".json"
+          })
+
+          $csvFiles = @($files | Where-Object {
+            $_.Extension -eq ".csv"
+          })
+
+          if ($jsonFiles.Count -eq 0) {
+            throw "No JSON output found."
+          }
+
+          if ($csvFiles.Count -eq 0) {
+            throw "No CSV output found."
+          }
+
+          foreach ($file in $jsonFiles) {
+            if ($file.Length -le 0) {
+              throw "Empty JSON output: $($file.FullName)"
+            }
+
+            $null = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8 |
+              ConvertFrom-Json
+
+            Write-Host "JSON VERIFIED: $($file.Name)"
+          }
+
+          foreach ($file in $csvFiles) {
+            if ($file.Length -le 0) {
+              throw "Empty CSV output: $($file.FullName)"
+            }
+
+            $reader = [System.IO.File]::OpenText($file.FullName)
+
+            try {
+              $header = $reader.ReadLine()
+
+              if ([string]::IsNullOrWhiteSpace($header)) {
+                throw "CSV header missing: $($file.FullName)"
+              }
+            }
+            finally {
+              $reader.Dispose()
+            }
+
+            Write-Host "CSV VERIFIED: $($file.Name)"
+          }
+
+          $resultFiles = @(
+            $jsonFiles | Where-Object {
+              $_.Name -match "result"
+            }
+          )
+
+          if ($resultFiles.Count -eq 0) {
+            throw "OOS result JSON missing."
+          }
+
+          $passed = $false
+
+          foreach ($file in $resultFiles) {
+            $result = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8 |
+              ConvertFrom-Json
+
+            if ($null -ne $result.status) {
+              if ([string]$result.status -eq "PASS") {
+                $passed = $true
+              }
+            }
+          }
+
+          if (-not $passed) {
+            throw "No OOS result JSON reports status PASS."
+          }
+
+          Write-Host "Production output verification PASS"
+
+      - name: Verify production inputs unchanged
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $snapshotPath = $env:SNAPSHOT_PATH
+
+          if ([string]::IsNullOrWhiteSpace($snapshotPath)) {
+            throw "Production input snapshot unavailable."
+          }
+
+          if (-not (Test-Path -LiteralPath $snapshotPath -PathType Leaf)) {
+            throw "Production input snapshot missing."
+          }
+
+          $snapshot = @(
+            Get-Content -LiteralPath $snapshotPath -Raw -Encoding UTF8 |
+              ConvertFrom-Json
+          )
+
+          foreach ($item in $snapshot) {
+            $relativePath = [string]$item.relative_path
+            $expected = [string]$item.sha256
+
+            $path = Join-Path $env:PRODUCTION_ROOT $relativePath
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Production input disappeared: $relativePath"
+            }
+
+            $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+
+            if ($actual -ne $expected) {
+              throw "Production input SHA256 changed: $relativePath"
+            }
+
+            Write-Host "UNCHANGED: $relativePath"
+          }
+
+          Write-Host "Production input integrity PASS"
+
+      - name: Upload candidate OOS production reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-accumulation-candidate-oos-production
+          path: C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_accumulation_candidate_oos\
+          if-no-files-found: warn
+          retention-days: 30
