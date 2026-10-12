@@ -41,9 +41,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          $program = Join-Path `
-            -Path $env:GITHUB_WORKSPACE `
-            -ChildPath $env:PROGRAM_NAME
+          $program = Join-Path $env:GITHUB_WORKSPACE $env:PROGRAM_NAME
 
           if (-not (Test-Path -LiteralPath $program -PathType Leaf)) {
             throw "Python program missing: $program"
@@ -84,15 +82,13 @@ jobs:
           $snapshot = @()
 
           foreach ($relativePath in $relativePaths) {
-            $path = Join-Path -Path $root -ChildPath $relativePath
+            $path = Join-Path $root $relativePath
 
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
               throw "Required production input missing: $path"
             }
 
-            $hash = (
-              Get-FileHash -LiteralPath $path -Algorithm SHA256
-            ).Hash
+            $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
 
             $snapshot += [PSCustomObject]@{
               relative_path = [string]$relativePath
@@ -103,12 +99,10 @@ jobs:
           }
 
           if ($snapshot.Count -ne 5) {
-            throw "Unexpected input snapshot count: $($snapshot.Count)"
+            throw "Unexpected input snapshot count."
           }
 
-          $snapshotPath = Join-Path `
-            -Path $env:RUNNER_TEMP `
-            -ChildPath $env:SNAPSHOT_NAME
+          $snapshotPath = Join-Path $env:RUNNER_TEMP $env:SNAPSHOT_NAME
 
           $json = ConvertTo-Json -InputObject @($snapshot) -Depth 5
 
@@ -118,11 +112,10 @@ jobs:
             (New-Object System.Text.UTF8Encoding($false))
           )
 
-          Write-Host "SNAPSHOT: $snapshotPath"
-          Write-Host "SNAPSHOT COUNT: $($snapshot.Count)"
           Write-Host "Production input SHA256 snapshot PASS"
 
-      - name: Verify production output destination
+      - name: Inspect existing OOS output
+        id: inspect
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -131,7 +124,7 @@ jobs:
           )
 
           $output = [System.IO.Path]::GetFullPath(
-            (Join-Path -Path $root -ChildPath $env:OUTPUT_RELATIVE)
+            (Join-Path $root $env:OUTPUT_RELATIVE)
           )
 
           $rootPrefix = $root.TrimEnd('\') + '\'
@@ -140,7 +133,7 @@ jobs:
             $rootPrefix,
             [System.StringComparison]::OrdinalIgnoreCase
           )) {
-            throw "Output path is outside production root."
+            throw "Output path outside production root."
           }
 
           $protectedPaths = @(
@@ -151,10 +144,8 @@ jobs:
 
           foreach ($relativePath in $protectedPaths) {
             $protected = [System.IO.Path]::GetFullPath(
-              (Join-Path -Path $root -ChildPath $relativePath)
+              (Join-Path $root $relativePath)
             )
-
-            $protectedPrefix = $protected.TrimEnd('\') + '\'
 
             if (
               $output.Equals(
@@ -162,35 +153,102 @@ jobs:
                 [System.StringComparison]::OrdinalIgnoreCase
               ) -or
               $output.StartsWith(
-                $protectedPrefix,
+                ($protected.TrimEnd('\') + '\'),
                 [System.StringComparison]::OrdinalIgnoreCase
               )
             ) {
-              throw "Output overlaps protected input: $protected"
+              throw "Output overlaps protected input."
             }
           }
 
-          if (Test-Path -LiteralPath $output) {
-            throw "OOS output already exists. Refusing to overwrite: $output"
+          if (Test-Path -LiteralPath $output -PathType Leaf) {
+            throw "Output path is a file: $output"
           }
 
-          $parent = Split-Path -Path $output -Parent
+          $mode = "run"
 
-          if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
-            New-Item -ItemType Directory -Path $parent -Force |
-              Out-Null
+          if (Test-Path -LiteralPath $output -PathType Container) {
+            $files = @(
+              Get-ChildItem -LiteralPath $output -File -Recurse
+            )
+
+            if ($files.Count -eq 0) {
+              throw "Existing OOS output directory is empty. Manual inspection required: $output"
+            }
+
+            $resultFiles = @(
+              $files | Where-Object {
+                $_.Extension -eq ".json" -and
+                $_.Name -match "result"
+              }
+            )
+
+            if ($resultFiles.Count -eq 0) {
+              throw "Existing OOS output has no result JSON. Manual inspection required: $output"
+            }
+
+            $passed = $false
+
+            foreach ($file in $resultFiles) {
+              $resultText = Get-Content `
+                -LiteralPath $file.FullName `
+                -Raw `
+                -Encoding UTF8
+
+              $result = ConvertFrom-Json -InputObject $resultText
+
+              if (
+                $null -ne $result.status -and
+                [string]$result.status -eq "PASS"
+              ) {
+                $passed = $true
+              }
+            }
+
+            if (-not $passed) {
+              throw "Existing OOS result is not PASS. Manual inspection required: $output"
+            }
+
+            $csvFiles = @(
+              $files | Where-Object { $_.Extension -eq ".csv" }
+            )
+
+            if ($csvFiles.Count -eq 0) {
+              throw "Existing OOS CSV reports missing."
+            }
+
+            foreach ($file in $files) {
+              if ($file.Length -le 0) {
+                throw "Empty existing OOS output: $($file.FullName)"
+              }
+            }
+
+            $mode = "reuse"
+            Write-Host "Existing PASS output detected."
+            Write-Host "Existing reports will be preserved."
+          }
+          else {
+            $parent = Split-Path $output -Parent
+
+            if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+              New-Item -ItemType Directory -Path $parent -Force |
+                Out-Null
+            }
+
+            Write-Host "No existing OOS output. New analysis required."
           }
 
-          Write-Host "OUTPUT RESERVED FOR PYTHON: $output"
-          Write-Host "Production output destination PASS"
+          "mode=$mode" |
+            Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+          Write-Host "OUTPUT MODE: $mode"
 
       - name: Execute candidate OOS validation
+        if: steps.inspect.outputs.mode == 'run'
         run: |
           $ErrorActionPreference = "Stop"
 
-          $program = Join-Path `
-            -Path $env:GITHUB_WORKSPACE `
-            -ChildPath $env:PROGRAM_NAME
+          $program = Join-Path $env:GITHUB_WORKSPACE $env:PROGRAM_NAME
 
           Write-Host "========================================"
           Write-Host "Candidate OOS Validation Production"
@@ -216,15 +274,15 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           $output = Join-Path `
-            -Path $env:PRODUCTION_ROOT `
-            -ChildPath $env:OUTPUT_RELATIVE
+            $env:PRODUCTION_ROOT `
+            $env:OUTPUT_RELATIVE
 
           if (-not (Test-Path -LiteralPath $output -PathType Container)) {
-            throw "Production output directory missing: $output"
+            throw "Production output directory missing."
           }
 
           $files = @(
-            Get-ChildItem -LiteralPath $output -File
+            Get-ChildItem -LiteralPath $output -File -Recurse
           )
 
           if ($files.Count -eq 0) {
@@ -240,18 +298,20 @@ jobs:
           )
 
           if ($jsonFiles.Count -eq 0) {
-            throw "No JSON output found."
+            throw "JSON output missing."
           }
 
           if ($csvFiles.Count -eq 0) {
-            throw "No CSV output found."
+            throw "CSV output missing."
+          }
+
+          foreach ($file in $files) {
+            if ($file.Length -le 0) {
+              throw "Empty output file: $($file.FullName)"
+            }
           }
 
           foreach ($file in $jsonFiles) {
-            if ($file.Length -le 0) {
-              throw "Empty JSON output: $($file.FullName)"
-            }
-
             $jsonText = Get-Content `
               -LiteralPath $file.FullName `
               -Raw `
@@ -263,10 +323,6 @@ jobs:
           }
 
           foreach ($file in $csvFiles) {
-            if ($file.Length -le 0) {
-              throw "Empty CSV output: $($file.FullName)"
-            }
-
             $reader = [System.IO.File]::OpenText($file.FullName)
 
             try {
@@ -284,9 +340,7 @@ jobs:
           }
 
           $resultFiles = @(
-            $jsonFiles | Where-Object {
-              $_.Name -match "result"
-            }
+            $jsonFiles | Where-Object { $_.Name -match "result" }
           )
 
           if ($resultFiles.Count -eq 0) {
@@ -312,7 +366,7 @@ jobs:
           }
 
           if (-not $passed) {
-            throw "No OOS result JSON reports status PASS."
+            throw "OOS result does not report PASS."
           }
 
           Write-Host "Production output verification PASS"
@@ -323,8 +377,8 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           $snapshotPath = Join-Path `
-            -Path $env:RUNNER_TEMP `
-            -ChildPath $env:SNAPSHOT_NAME
+            $env:RUNNER_TEMP `
+            $env:SNAPSHOT_NAME
 
           if (-not (Test-Path -LiteralPath $snapshotPath -PathType Leaf)) {
             throw "Production input snapshot unavailable."
@@ -335,28 +389,19 @@ jobs:
             -Raw `
             -Encoding UTF8
 
-          $parsed = ConvertFrom-Json -InputObject $snapshotText
-
-          $snapshot = @($parsed)
+          $snapshot = @(
+            ConvertFrom-Json -InputObject $snapshotText
+          )
 
           if ($snapshot.Count -ne 5) {
-            throw "Unexpected input snapshot count: $($snapshot.Count)"
+            throw "Unexpected input snapshot count."
           }
 
           foreach ($item in $snapshot) {
             $relativePath = [string]$item.relative_path
             $expected = [string]$item.sha256
 
-            if (
-              [string]::IsNullOrWhiteSpace($relativePath) -or
-              [string]::IsNullOrWhiteSpace($expected)
-            ) {
-              throw "Invalid production input snapshot entry."
-            }
-
-            $path = Join-Path `
-              -Path $env:PRODUCTION_ROOT `
-              -ChildPath $relativePath
+            $path = Join-Path $env:PRODUCTION_ROOT $relativePath
 
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
               throw "Production input disappeared: $relativePath"
