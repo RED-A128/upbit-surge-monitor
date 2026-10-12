@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: validate-pattern-256-accumulation-candidate-oos-production
+  group: pattern-256-candidate-oos-production
   cancel-in-progress: false
 
 jobs:
@@ -29,6 +29,7 @@ jobs:
       PRODUCTION_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
       PROGRAM_NAME: validate_pattern_256_accumulation_candidate_oos.py
       OUTPUT_RELATIVE: data\reports\pattern_256_accumulation_candidate_oos
+      SNAPSHOT_NAME: candidate_oos_production_input_snapshot.json
 
     steps:
       - name: Checkout repository
@@ -41,8 +42,8 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           $program = Join-Path `
-            $env:GITHUB_WORKSPACE `
-            $env:PROGRAM_NAME
+            -Path $env:GITHUB_WORKSPACE `
+            -ChildPath $env:PROGRAM_NAME
 
           if (-not (Test-Path -LiteralPath $program -PathType Leaf)) {
             throw "Python program missing: $program"
@@ -73,10 +74,10 @@ jobs:
           }
 
           $relativePaths = @(
-            "data\reports\pattern_256_accumulation_candidate_rules\candidate_rule_research.csv",
-            "data\reports\pattern_256_accumulation_candidate_rules\candidate_rule_comparison.csv",
-            "data\reports\pattern_256_accumulation_candidate_rules\candidate_rule_result.json",
-            "data\reports\pattern_256_accumulation_candidate_rules\candidate_rule_manifest.json",
+            "data\reports\pattern_256_accumulation_candidate_rules\candidate_rule_research.csv"
+            "data\reports\pattern_256_accumulation_candidate_rules\candidate_rule_comparison.csv"
+            "data\reports\pattern_256_accumulation_candidate_rules\candidate_rule_result.json"
+            "data\reports\pattern_256_accumulation_candidate_rules\candidate_rule_manifest.json"
             "data\reports\pattern_256_accumulation_30pct\validation_detail.csv"
           )
 
@@ -89,27 +90,36 @@ jobs:
               throw "Required production input missing: $path"
             }
 
-            $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+            $hash = (
+              Get-FileHash -LiteralPath $path -Algorithm SHA256
+            ).Hash
 
             $snapshot += [PSCustomObject]@{
-              relative_path = $relativePath
-              sha256 = $hash
+              relative_path = [string]$relativePath
+              sha256 = [string]$hash
             }
 
             Write-Host "INPUT VERIFIED: $relativePath"
           }
 
+          if ($snapshot.Count -ne 5) {
+            throw "Unexpected input snapshot count: $($snapshot.Count)"
+          }
+
           $snapshotPath = Join-Path `
-            $env:RUNNER_TEMP `
-            "candidate_oos_production_input_snapshot.json"
+            -Path $env:RUNNER_TEMP `
+            -ChildPath $env:SNAPSHOT_NAME
 
-          $snapshot |
-            ConvertTo-Json -Depth 5 |
-            Set-Content -LiteralPath $snapshotPath -Encoding UTF8
+          $json = ConvertTo-Json -InputObject @($snapshot) -Depth 5
 
-          "SNAPSHOT_PATH=$snapshotPath" |
-            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          [System.IO.File]::WriteAllText(
+            $snapshotPath,
+            $json,
+            (New-Object System.Text.UTF8Encoding($false))
+          )
 
+          Write-Host "SNAPSHOT: $snapshotPath"
+          Write-Host "SNAPSHOT COUNT: $($snapshot.Count)"
           Write-Host "Production input SHA256 snapshot PASS"
 
       - name: Verify production output destination
@@ -121,7 +131,7 @@ jobs:
           )
 
           $output = [System.IO.Path]::GetFullPath(
-            (Join-Path $root $env:OUTPUT_RELATIVE)
+            (Join-Path -Path $root -ChildPath $env:OUTPUT_RELATIVE)
           )
 
           $rootPrefix = $root.TrimEnd('\') + '\'
@@ -134,14 +144,14 @@ jobs:
           }
 
           $protectedPaths = @(
-            "data\ohlcv",
-            "data\reports\pattern_256_accumulation_candidate_rules",
+            "data\ohlcv"
+            "data\reports\pattern_256_accumulation_candidate_rules"
             "data\reports\pattern_256_accumulation_30pct"
           )
 
           foreach ($relativePath in $protectedPaths) {
             $protected = [System.IO.Path]::GetFullPath(
-              (Join-Path $root $relativePath)
+              (Join-Path -Path $root -ChildPath $relativePath)
             )
 
             $protectedPrefix = $protected.TrimEnd('\') + '\'
@@ -160,12 +170,18 @@ jobs:
             }
           }
 
-          if (-not (Test-Path -LiteralPath $output -PathType Container)) {
-            New-Item -ItemType Directory -Path $output -Force |
+          if (Test-Path -LiteralPath $output) {
+            throw "OOS output already exists. Refusing to overwrite: $output"
+          }
+
+          $parent = Split-Path -Path $output -Parent
+
+          if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+            New-Item -ItemType Directory -Path $parent -Force |
               Out-Null
           }
 
-          Write-Host "OUTPUT DIRECTORY: $output"
+          Write-Host "OUTPUT RESERVED FOR PYTHON: $output"
           Write-Host "Production output destination PASS"
 
       - name: Execute candidate OOS validation
@@ -173,8 +189,8 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           $program = Join-Path `
-            $env:GITHUB_WORKSPACE `
-            $env:PROGRAM_NAME
+            -Path $env:GITHUB_WORKSPACE `
+            -ChildPath $env:PROGRAM_NAME
 
           Write-Host "========================================"
           Write-Host "Candidate OOS Validation Production"
@@ -200,8 +216,8 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           $output = Join-Path `
-            $env:PRODUCTION_ROOT `
-            $env:OUTPUT_RELATIVE
+            -Path $env:PRODUCTION_ROOT `
+            -ChildPath $env:OUTPUT_RELATIVE
 
           if (-not (Test-Path -LiteralPath $output -PathType Container)) {
             throw "Production output directory missing: $output"
@@ -216,15 +232,11 @@ jobs:
           }
 
           $jsonFiles = @(
-            $files | Where-Object {
-              $_.Extension -eq ".json"
-            }
+            $files | Where-Object { $_.Extension -eq ".json" }
           )
 
           $csvFiles = @(
-            $files | Where-Object {
-              $_.Extension -eq ".csv"
-            }
+            $files | Where-Object { $_.Extension -eq ".csv" }
           )
 
           if ($jsonFiles.Count -eq 0) {
@@ -245,7 +257,7 @@ jobs:
               -Raw `
               -Encoding UTF8
 
-            $null = $jsonText | ConvertFrom-Json
+            $null = ConvertFrom-Json -InputObject $jsonText
 
             Write-Host "JSON VERIFIED: $($file.Name)"
           }
@@ -255,9 +267,7 @@ jobs:
               throw "Empty CSV output: $($file.FullName)"
             }
 
-            $reader = [System.IO.File]::OpenText(
-              $file.FullName
-            )
+            $reader = [System.IO.File]::OpenText($file.FullName)
 
             try {
               $header = $reader.ReadLine()
@@ -291,12 +301,13 @@ jobs:
               -Raw `
               -Encoding UTF8
 
-            $result = $resultText | ConvertFrom-Json
+            $result = ConvertFrom-Json -InputObject $resultText
 
-            if ($null -ne $result.status) {
-              if ([string]$result.status -eq "PASS") {
-                $passed = $true
-              }
+            if (
+              $null -ne $result.status -and
+              [string]$result.status -eq "PASS"
+            ) {
+              $passed = $true
             }
           }
 
@@ -312,8 +323,8 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           $snapshotPath = Join-Path `
-            $env:RUNNER_TEMP `
-            "candidate_oos_production_input_snapshot.json"
+            -Path $env:RUNNER_TEMP `
+            -ChildPath $env:SNAPSHOT_NAME
 
           if (-not (Test-Path -LiteralPath $snapshotPath -PathType Leaf)) {
             throw "Production input snapshot unavailable."
@@ -324,17 +335,24 @@ jobs:
             -Raw `
             -Encoding UTF8
 
-          $snapshot = @(
-            $snapshotText | ConvertFrom-Json
-          )
+          $parsed = ConvertFrom-Json -InputObject $snapshotText
+
+          $snapshot = @($parsed)
 
           if ($snapshot.Count -ne 5) {
-            throw "Unexpected input snapshot count."
+            throw "Unexpected input snapshot count: $($snapshot.Count)"
           }
 
           foreach ($item in $snapshot) {
             $relativePath = [string]$item.relative_path
             $expected = [string]$item.sha256
+
+            if (
+              [string]::IsNullOrWhiteSpace($relativePath) -or
+              [string]::IsNullOrWhiteSpace($expected)
+            ) {
+              throw "Invalid production input snapshot entry."
+            }
 
             $path = Join-Path `
               -Path $env:PRODUCTION_ROOT `
