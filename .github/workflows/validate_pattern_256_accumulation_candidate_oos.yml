@@ -72,10 +72,10 @@ jobs:
           }
 
           $relativePaths = @(
-            "data\reports\pattern_256_accumulation_candidate_rules\candidate_rule_research.csv",
-            "data\reports\pattern_256_accumulation_candidate_rules\candidate_rule_comparison.csv",
-            "data\reports\pattern_256_accumulation_candidate_rules\candidate_rule_result.json",
-            "data\reports\pattern_256_accumulation_candidate_rules\candidate_rule_manifest.json",
+            "data\reports\pattern_256_accumulation_candidate_rules\candidate_rule_research.csv"
+            "data\reports\pattern_256_accumulation_candidate_rules\candidate_rule_comparison.csv"
+            "data\reports\pattern_256_accumulation_candidate_rules\candidate_rule_result.json"
+            "data\reports\pattern_256_accumulation_candidate_rules\candidate_rule_manifest.json"
             "data\reports\pattern_256_accumulation_30pct\validation_detail.csv"
           )
 
@@ -137,8 +137,8 @@ jobs:
           }
 
           $protectedPaths = @(
-            "data\ohlcv",
-            "data\reports\pattern_256_accumulation_candidate_rules",
+            "data\ohlcv"
+            "data\reports\pattern_256_accumulation_candidate_rules"
             "data\reports\pattern_256_accumulation_30pct"
           )
 
@@ -162,6 +162,7 @@ jobs:
           }
 
           $mode = "run"
+          $pythonRoot = $root
 
           if (Test-Path -LiteralPath $output -PathType Leaf) {
             throw "Output path is a file: $output"
@@ -173,9 +174,12 @@ jobs:
             )
 
             if ($files.Count -eq 0) {
-              $mode = "run"
-              Write-Host "Existing OOS directory is empty."
-              Write-Host "Python will use the existing empty directory."
+              # Python Clean V003 refuses an existing output directory,
+              # including an empty one.
+              # Preserve that directory and run in a new isolated root.
+              $mode = "isolated"
+              Write-Host "Existing empty OOS directory detected."
+              Write-Host "Will generate reports in isolated workspace."
             }
             else {
               $resultFiles = @(
@@ -184,10 +188,6 @@ jobs:
                   $_.Name -match "result"
                 }
               )
-
-              if ($resultFiles.Count -eq 0) {
-                throw "Existing OOS output is incomplete. Refusing overwrite."
-              }
 
               $passed = $false
 
@@ -207,39 +207,29 @@ jobs:
                 }
               }
 
-              if (-not $passed) {
-                throw "Existing OOS result is not PASS."
-              }
-
               $csvFiles = @(
                 $files | Where-Object { $_.Extension -eq ".csv" }
               )
 
-              if ($csvFiles.Count -eq 0) {
-                throw "Existing OOS CSV reports missing."
-              }
-
-              foreach ($file in $files) {
-                if ($file.Length -le 0) {
-                  throw "Empty existing OOS output: $($file.FullName)"
+              if ($passed -and $csvFiles.Count -gt 0) {
+                foreach ($file in $files) {
+                  if ($file.Length -le 0) {
+                    throw "Empty existing OOS output: $($file.FullName)"
+                  }
                 }
-              }
 
-              $mode = "reuse"
-              Write-Host "Existing PASS output detected."
-              Write-Host "Existing reports will be preserved."
+                $mode = "reuse"
+                Write-Host "Existing PASS reports detected."
+                Write-Host "Reports will be preserved."
+              }
+              else {
+                throw "Existing nonempty OOS output is incomplete. Manual inspection required."
+              }
             }
           }
           else {
-            $parent = Split-Path $output -Parent
-
-            if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
-              New-Item -ItemType Directory -Path $parent -Force |
-                Out-Null
-            }
-
+            $mode = "run"
             Write-Host "No existing OOS output."
-            Write-Host "New analysis required."
           }
 
           "mode=$mode" |
@@ -247,21 +237,112 @@ jobs:
 
           Write-Host "OUTPUT MODE: $mode"
 
+      - name: Prepare isolated OOS workspace
+        if: steps.inspect.outputs.mode == 'isolated'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $sourceRoot = $env:PRODUCTION_ROOT
+
+          $isolatedRoot = Join-Path `
+            $env:RUNNER_TEMP `
+            ("candidate_oos_production_" + $env:GITHUB_RUN_ID + "_" + $env:GITHUB_RUN_ATTEMPT)
+
+          if (Test-Path -LiteralPath $isolatedRoot) {
+            throw "Isolated workspace already exists: $isolatedRoot"
+          }
+
+          New-Item -ItemType Directory -Path $isolatedRoot |
+            Out-Null
+
+          $relativePaths = @(
+            "data\reports\pattern_256_accumulation_candidate_rules\candidate_rule_research.csv"
+            "data\reports\pattern_256_accumulation_candidate_rules\candidate_rule_comparison.csv"
+            "data\reports\pattern_256_accumulation_candidate_rules\candidate_rule_result.json"
+            "data\reports\pattern_256_accumulation_candidate_rules\candidate_rule_manifest.json"
+            "data\reports\pattern_256_accumulation_30pct\validation_detail.csv"
+          )
+
+          foreach ($relativePath in $relativePaths) {
+            $source = Join-Path $sourceRoot $relativePath
+            $target = Join-Path $isolatedRoot $relativePath
+
+            if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+              throw "Required input missing: $source"
+            }
+
+            $targetParent = Split-Path $target -Parent
+
+            if (-not (Test-Path -LiteralPath $targetParent)) {
+              New-Item `
+                -ItemType Directory `
+                -Path $targetParent `
+                -Force |
+                Out-Null
+            }
+
+            Copy-Item `
+              -LiteralPath $source `
+              -Destination $target `
+              -ErrorAction Stop
+
+            $sourceHash = (
+              Get-FileHash -LiteralPath $source -Algorithm SHA256
+            ).Hash
+
+            $targetHash = (
+              Get-FileHash -LiteralPath $target -Algorithm SHA256
+            ).Hash
+
+            if ($sourceHash -ne $targetHash) {
+              throw "Isolated input copy SHA256 mismatch: $relativePath"
+            }
+
+            Write-Host "COPIED AND VERIFIED: $relativePath"
+          }
+
+          $isolatedOutput = Join-Path `
+            $isolatedRoot `
+            $env:OUTPUT_RELATIVE
+
+          if (Test-Path -LiteralPath $isolatedOutput) {
+            throw "Isolated output already exists."
+          }
+
+          "ISOLATED_ROOT=$isolatedRoot" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          Write-Host "Isolated OOS workspace prepared."
+
       - name: Execute candidate OOS validation
-        if: steps.inspect.outputs.mode == 'run'
+        if: steps.inspect.outputs.mode != 'reuse'
         run: |
           $ErrorActionPreference = "Stop"
 
           $program = Join-Path $env:GITHUB_WORKSPACE $env:PROGRAM_NAME
 
+          $executionRoot = $env:PRODUCTION_ROOT
+
+          if ($env:ISOLATED_ROOT) {
+            $executionRoot = $env:ISOLATED_ROOT
+          }
+
+          $executionOutput = Join-Path `
+            $executionRoot `
+            $env:OUTPUT_RELATIVE
+
+          if (Test-Path -LiteralPath $executionOutput) {
+            throw "Python output destination already exists: $executionOutput"
+          }
+
           Write-Host "========================================"
           Write-Host "Candidate OOS Validation Production"
           Write-Host "========================================"
 
-          Push-Location $env:PRODUCTION_ROOT
+          Push-Location $executionRoot
 
           try {
-            py $program --root $env:PRODUCTION_ROOT
+            py $program --root $executionRoot
 
             if ($LASTEXITCODE -ne 0) {
               throw "Candidate OOS validation execution failed."
@@ -277,12 +358,18 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
+          $verificationRoot = $env:PRODUCTION_ROOT
+
+          if ($env:ISOLATED_ROOT) {
+            $verificationRoot = $env:ISOLATED_ROOT
+          }
+
           $output = Join-Path `
-            $env:PRODUCTION_ROOT `
+            $verificationRoot `
             $env:OUTPUT_RELATIVE
 
           if (-not (Test-Path -LiteralPath $output -PathType Container)) {
-            throw "Production output directory missing."
+            throw "OOS output directory missing."
           }
 
           $files = @(
@@ -290,7 +377,7 @@ jobs:
           )
 
           if ($files.Count -eq 0) {
-            throw "Production output directory is empty."
+            throw "OOS output directory is empty."
           }
 
           $jsonFiles = @(
@@ -373,7 +460,86 @@ jobs:
             throw "OOS result does not report PASS."
           }
 
-          Write-Host "Production output verification PASS"
+          Write-Host "OOS output verification PASS"
+
+      - name: Preserve isolated OOS reports
+        if: steps.inspect.outputs.mode == 'isolated'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $source = Join-Path `
+            $env:ISOLATED_ROOT `
+            $env:OUTPUT_RELATIVE
+
+          $destination = Join-Path `
+            $env:PRODUCTION_ROOT `
+            $env:OUTPUT_RELATIVE
+
+          if (-not (Test-Path -LiteralPath $source -PathType Container)) {
+            throw "Verified isolated output missing."
+          }
+
+          if (-not (Test-Path -LiteralPath $destination -PathType Container)) {
+            throw "Expected existing empty destination missing."
+          }
+
+          $existingFiles = @(
+            Get-ChildItem -LiteralPath $destination -Force
+          )
+
+          if ($existingFiles.Count -ne 0) {
+            throw "Production destination changed. Refusing to overwrite."
+          }
+
+          $sourceFiles = @(
+            Get-ChildItem -LiteralPath $source -File -Recurse
+          )
+
+          if ($sourceFiles.Count -eq 0) {
+            throw "No isolated reports to preserve."
+          }
+
+          foreach ($file in $sourceFiles) {
+            $relative = $file.FullName.Substring(
+              $source.TrimEnd('\').Length + 1
+            )
+
+            $target = Join-Path $destination $relative
+            $targetParent = Split-Path $target -Parent
+
+            if (-not (Test-Path -LiteralPath $targetParent)) {
+              New-Item `
+                -ItemType Directory `
+                -Path $targetParent `
+                -Force |
+                Out-Null
+            }
+
+            if (Test-Path -LiteralPath $target) {
+              throw "Destination file already exists: $target"
+            }
+
+            Copy-Item `
+              -LiteralPath $file.FullName `
+              -Destination $target `
+              -ErrorAction Stop
+
+            $sourceHash = (
+              Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256
+            ).Hash
+
+            $targetHash = (
+              Get-FileHash -LiteralPath $target -Algorithm SHA256
+            ).Hash
+
+            if ($sourceHash -ne $targetHash) {
+              throw "Preserved output SHA256 mismatch: $relative"
+            }
+
+            Write-Host "PRESERVED: $relative"
+          }
+
+          Write-Host "Isolated reports preserved in production output directory."
 
       - name: Verify production inputs unchanged
         if: always()
