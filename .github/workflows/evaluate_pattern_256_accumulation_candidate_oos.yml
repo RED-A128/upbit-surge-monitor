@@ -1,0 +1,438 @@
+
+name: evaluate_pattern_256_accumulation_candidate_oos.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-oos-evaluation-production
+  cancel-in-progress: false
+
+jobs:
+  candidate-oos-evaluation-production:
+    name: Candidate OOS Evaluation Production
+    runs-on: self-hosted
+
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PRODUCTION_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+      INPUT_RELATIVE: data\reports\pattern_256_accumulation_candidate_oos
+      OUTPUT_RELATIVE: data\reports\pattern_256_accumulation_candidate_oos_evaluation
+
+    steps:
+      # ============================================================
+      # 01. Checkout
+      # ============================================================
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ============================================================
+      # 02. Verify Python program
+      # ============================================================
+
+      - name: Verify Python program
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $program = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "evaluate_pattern_256_accumulation_candidate_oos.py"
+
+          if (-not (Test-Path -LiteralPath $program -PathType Leaf)) {
+            throw "Python program not found: $program"
+          }
+
+          & py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python execution unavailable."
+          }
+
+          $env:PROGRAM_PATH = $program
+
+          Write-Host "[PASS] Python program found."
+          Write-Host "[PASS] Python executable verified."
+
+      # ============================================================
+      # 03. Verify production inputs
+      # ============================================================
+
+      - name: Verify production inputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $inputDir = Join-Path `
+            $env:PRODUCTION_ROOT `
+            $env:INPUT_RELATIVE
+
+          if (-not (Test-Path -LiteralPath $inputDir -PathType Container)) {
+            throw "Production input directory missing: $inputDir"
+          }
+
+          $required = @(
+            "candidate_oos_summary.csv",
+            "candidate_oos_yearly.csv",
+            "candidate_oos_result.json"
+          )
+
+          foreach ($name in $required) {
+            $path = Join-Path $inputDir $name
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Required production input missing: $path"
+            }
+
+            if ((Get-Item -LiteralPath $path).Length -eq 0) {
+              throw "Empty production input: $path"
+            }
+
+            Write-Host "[FOUND] $name"
+          }
+
+          $resultPath = Join-Path $inputDir "candidate_oos_result.json"
+          $result = Get-Content -LiteralPath $resultPath -Raw |
+            ConvertFrom-Json
+
+          if ($result.status -ne "PASS") {
+            throw "Upstream candidate OOS result is not PASS."
+          }
+
+          Write-Host "[PASS] Production inputs verified."
+
+      # ============================================================
+      # 04. Capture production input SHA256
+      # ============================================================
+
+      - name: Capture production input SHA256
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $inputDir = Join-Path `
+            $env:PRODUCTION_ROOT `
+            $env:INPUT_RELATIVE
+
+          $snapshotPath = Join-Path `
+            $env:RUNNER_TEMP `
+            "candidate_oos_evaluation_production_inputs_$env:GITHUB_RUN_ID`_$env:GITHUB_RUN_ATTEMPT.json"
+
+          $required = @(
+            "candidate_oos_summary.csv",
+            "candidate_oos_yearly.csv",
+            "candidate_oos_result.json"
+          )
+
+          $snapshot = @()
+
+          foreach ($name in $required) {
+            $path = Join-Path $inputDir $name
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Production input missing: $path"
+            }
+
+            $hash = (Get-FileHash `
+              -LiteralPath $path `
+              -Algorithm SHA256).Hash
+
+            $snapshot += [PSCustomObject]@{
+              name = $name
+              sha256 = $hash
+            }
+
+            Write-Host "[SHA256] $name = $hash"
+          }
+
+          if ($snapshot.Count -ne 3) {
+            throw "Unexpected input snapshot count."
+          }
+
+          $json = ConvertTo-Json `
+            -InputObject $snapshot `
+            -Depth 5
+
+          [System.IO.File]::WriteAllText(
+            $snapshotPath,
+            $json,
+            (New-Object System.Text.UTF8Encoding($false))
+          )
+
+          "INPUT_SNAPSHOT=$snapshotPath" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Append `
+              -Encoding utf8
+
+          Write-Host "[PASS] Production input SHA256 captured."
+
+      # ============================================================
+      # 05. Verify output destination
+      # ============================================================
+
+      - name: Verify production output destination
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $outputDir = Join-Path `
+            $env:PRODUCTION_ROOT `
+            $env:OUTPUT_RELATIVE
+
+          if (Test-Path -LiteralPath $outputDir) {
+            throw "Production evaluation output already exists. Refusing to overwrite: $outputDir"
+          }
+
+          $reportsDir = Join-Path `
+            $env:PRODUCTION_ROOT `
+            "data\reports"
+
+          if (-not (Test-Path -LiteralPath $reportsDir -PathType Container)) {
+            throw "Production reports directory missing: $reportsDir"
+          }
+
+          Write-Host "[PASS] Production output destination available."
+          Write-Host "Output: $outputDir"
+
+      # ============================================================
+      # 06. Execute production evaluation
+      # ============================================================
+
+      - name: Execute candidate OOS evaluation
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $program = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "evaluate_pattern_256_accumulation_candidate_oos.py"
+
+          Write-Host "=================================================="
+          Write-Host "Candidate OOS Evaluation Production"
+          Write-Host "=================================================="
+
+          & py $program --root $env:PRODUCTION_ROOT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Candidate OOS production evaluation failed."
+          }
+
+          Write-Host "[PASS] Candidate OOS production evaluation executed."
+
+      # ============================================================
+      # 07. Verify production outputs
+      # ============================================================
+
+      - name: Verify candidate OOS production outputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $outputDir = Join-Path `
+            $env:PRODUCTION_ROOT `
+            $env:OUTPUT_RELATIVE
+
+          if (-not (Test-Path -LiteralPath $outputDir -PathType Container)) {
+            throw "Production output directory missing: $outputDir"
+          }
+
+          $required = @(
+            "oos_evaluation_summary.csv",
+            "oos_evaluation_comparison.csv",
+            "oos_evaluation_decision.csv",
+            "oos_evaluation_result.json",
+            "oos_evaluation_manifest.json"
+          )
+
+          foreach ($name in $required) {
+            $path = Join-Path $outputDir $name
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Production output missing: $path"
+            }
+
+            if ((Get-Item -LiteralPath $path).Length -eq 0) {
+              throw "Empty production output: $path"
+            }
+
+            Write-Host "[FOUND] $name"
+          }
+
+          $resultPath = Join-Path `
+            $outputDir `
+            "oos_evaluation_result.json"
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw |
+            ConvertFrom-Json
+
+          if ($result.status -ne "PASS") {
+            throw "Production evaluation result status is not PASS."
+          }
+
+          if ($result.approved_for_live_trading -ne $false) {
+            throw "Unexpected live trading approval."
+          }
+
+          Write-Host "[PASS] Production evaluation result verified."
+
+          # --------------------------------------------------------
+          # Manifest SHA256 verification
+          # --------------------------------------------------------
+
+          $manifestPath = Join-Path `
+            $outputDir `
+            "oos_evaluation_manifest.json"
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw |
+            ConvertFrom-Json
+
+          if ($null -eq $manifest.output_sha256) {
+            throw "Output SHA256 manifest section missing."
+          }
+
+          $hashFiles = @(
+            "oos_evaluation_summary.csv",
+            "oos_evaluation_comparison.csv",
+            "oos_evaluation_decision.csv",
+            "oos_evaluation_result.json"
+          )
+
+          foreach ($name in $hashFiles) {
+            $property = $manifest.output_sha256.PSObject.Properties[$name]
+
+            if ($null -eq $property) {
+              throw "Manifest SHA256 missing: $name"
+            }
+
+            $expected = [string]$property.Value
+
+            if ($expected -notmatch '^[0-9A-Fa-f]{64}$') {
+              throw "Invalid manifest SHA256: $name"
+            }
+
+            $path = Join-Path $outputDir $name
+
+            $actual = (Get-FileHash `
+              -LiteralPath $path `
+              -Algorithm SHA256).Hash
+
+            if ($actual -ne $expected) {
+              throw "Manifest SHA256 mismatch: $name"
+            }
+
+            Write-Host "[SHA256 PASS] $name"
+          }
+
+          Write-Host "[PASS] All production output SHA256 values verified."
+
+      # ============================================================
+      # 08. Verify production inputs unchanged
+      # ============================================================
+
+      - name: Verify production inputs unchanged
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if (-not $env:INPUT_SNAPSHOT) {
+            throw "Production input snapshot path missing."
+          }
+
+          if (-not (Test-Path -LiteralPath $env:INPUT_SNAPSHOT -PathType Leaf)) {
+            throw "Production input snapshot file missing."
+          }
+
+          $inputDir = Join-Path `
+            $env:PRODUCTION_ROOT `
+            $env:INPUT_RELATIVE
+
+          $json = Get-Content `
+            -LiteralPath $env:INPUT_SNAPSHOT `
+            -Raw
+
+          $parsed = ConvertFrom-Json -InputObject $json
+
+          # Explicit enumeration avoids PowerShell JSON array
+          # wrapping and snapshot count errors.
+
+          $snapshot = @()
+
+          foreach ($entry in $parsed) {
+            $snapshot += $entry
+          }
+
+          if ($snapshot.Count -ne 3) {
+            throw "Unexpected snapshot count: $($snapshot.Count)"
+          }
+
+          $expectedNames = @(
+            "candidate_oos_summary.csv",
+            "candidate_oos_yearly.csv",
+            "candidate_oos_result.json"
+          )
+
+          $seen = @{}
+
+          foreach ($entry in $snapshot) {
+            $name = [string]$entry.name
+            $expectedHash = [string]$entry.sha256
+
+            if ($expectedNames -cnotcontains $name) {
+              throw "Unexpected snapshot input: $name"
+            }
+
+            if ($seen.ContainsKey($name)) {
+              throw "Duplicate snapshot input: $name"
+            }
+
+            $seen[$name] = $true
+
+            if ($expectedHash -notmatch '^[0-9A-Fa-f]{64}$') {
+              throw "Invalid snapshot SHA256: $name"
+            }
+
+            $path = Join-Path $inputDir $name
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Production input disappeared: $path"
+            }
+
+            $actual = (Get-FileHash `
+              -LiteralPath $path `
+              -Algorithm SHA256).Hash
+
+            if ($actual -ne $expectedHash) {
+              throw "Production input SHA256 changed: $name"
+            }
+
+            Write-Host "[UNCHANGED] $name"
+          }
+
+          foreach ($name in $expectedNames) {
+            if (-not $seen.ContainsKey($name)) {
+              throw "Required snapshot input missing: $name"
+            }
+          }
+
+          Write-Host "[PASS] All production inputs unchanged."
+
+      # ============================================================
+      # 09. Upload production reports
+      # ============================================================
+
+      - name: Upload candidate OOS evaluation production reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-accumulation-candidate-oos-evaluation-production
+          path: C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_accumulation_candidate_oos_evaluation\
+          if-no-files-found: warn
+          retention-days: 30
