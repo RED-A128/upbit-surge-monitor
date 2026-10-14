@@ -15,7 +15,6 @@ jobs:
   candidate-oos-evaluation-test:
     name: Candidate OOS Evaluation Test
     runs-on: self-hosted
-
     timeout-minutes: 30
 
     defaults:
@@ -42,11 +41,9 @@ jobs:
           }
 
           py --version
-
           Write-Host "[PASS] Python program found."
 
       - name: Prepare isolated test workspace
-        id: prepare
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -62,14 +59,6 @@ jobs:
             "candidate_oos_result.json"
           )
 
-          foreach ($name in $required) {
-            $path = Join-Path $productionInput $name
-
-            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-              throw "Required production input missing: $path"
-            }
-          }
-
           $testRoot = Join-Path $env:RUNNER_TEMP "candidate_oos_evaluation_test_$env:GITHUB_RUN_ID`_$env:GITHUB_RUN_ATTEMPT"
 
           if (Test-Path -LiteralPath $testRoot) {
@@ -77,14 +66,26 @@ jobs:
           }
 
           $testInput = Join-Path $testRoot $env:INPUT_RELATIVE
-
           New-Item -ItemType Directory -Path $testInput -Force | Out-Null
 
           foreach ($name in $required) {
-            Copy-Item `
-              -LiteralPath (Join-Path $productionInput $name) `
-              -Destination (Join-Path $testInput $name) `
-              -ErrorAction Stop
+            $source = Join-Path $productionInput $name
+            $destination = Join-Path $testInput $name
+
+            if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+              throw "Required production input missing: $source"
+            }
+
+            Copy-Item -LiteralPath $source -Destination $destination -ErrorAction Stop
+
+            $sourceHash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
+            $copyHash = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash
+
+            if ($sourceHash -ne $copyHash) {
+              throw "Test input copy SHA256 mismatch: $name"
+            }
+
+            Write-Host "[COPIED] $name"
           }
 
           "TEST_ROOT=$testRoot" | Out-File `
@@ -93,13 +94,13 @@ jobs:
             -Encoding utf8
 
           Write-Host "[PASS] Isolated test workspace prepared."
-          Write-Host "Test root: $testRoot"
 
       - name: Capture production input SHA256
         run: |
           $ErrorActionPreference = "Stop"
 
           $productionInput = Join-Path $env:PRODUCTION_ROOT $env:INPUT_RELATIVE
+
           $snapshotPath = Join-Path $env:RUNNER_TEMP "candidate_oos_evaluation_inputs_$env:GITHUB_RUN_ID`_$env:GITHUB_RUN_ATTEMPT.json"
 
           $required = @(
@@ -114,7 +115,7 @@ jobs:
             $path = Join-Path $productionInput $name
 
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-              throw "Input missing: $path"
+              throw "Production input missing: $path"
             }
 
             $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
@@ -127,16 +128,24 @@ jobs:
             Write-Host "[SHA256] $name = $hash"
           }
 
-          $snapshot | ConvertTo-Json -Depth 5 | Set-Content `
-            -LiteralPath $snapshotPath `
-            -Encoding UTF8
+          if ($snapshot.Count -ne 3) {
+            throw "Unexpected input count before snapshot."
+          }
+
+          $json = ConvertTo-Json -InputObject $snapshot -Depth 5
+
+          [System.IO.File]::WriteAllText(
+            $snapshotPath,
+            $json,
+            (New-Object System.Text.UTF8Encoding($false))
+          )
 
           "INPUT_SNAPSHOT=$snapshotPath" | Out-File `
             -FilePath $env:GITHUB_ENV `
             -Append `
             -Encoding utf8
 
-          Write-Host "[PASS] Required production input SHA256 captured."
+          Write-Host "[PASS] Production input SHA256 captured."
 
       - name: Execute candidate OOS evaluation test
         run: |
@@ -210,14 +219,14 @@ jobs:
           )
 
           foreach ($name in $hashFiles) {
-            $expected = $manifest.output_sha256.PSObject.Properties[$name].Value
+            $property = $manifest.output_sha256.PSObject.Properties[$name]
 
-            if (-not $expected) {
+            if ($null -eq $property) {
               throw "Manifest SHA256 missing: $name"
             }
 
-            $path = Join-Path $outputDir $name
-            $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+            $expected = [string]$property.Value
+            $actual = (Get-FileHash -LiteralPath (Join-Path $outputDir $name) -Algorithm SHA256).Hash
 
             if ($actual -ne $expected) {
               throw "Manifest SHA256 mismatch: $name"
@@ -242,17 +251,50 @@ jobs:
 
           $productionInput = Join-Path $env:PRODUCTION_ROOT $env:INPUT_RELATIVE
 
-          $snapshot = @(
-            Get-Content -LiteralPath $env:INPUT_SNAPSHOT -Raw |
-              ConvertFrom-Json
-          )
+          # IMPORTANT:
+          # ConvertFrom-Json returns one array object when
+          # -NoEnumerate is used. Force actual array elements.
+          # Do not use @(... | ConvertFrom-Json) here.
+
+          $json = Get-Content -LiteralPath $env:INPUT_SNAPSHOT -Raw
+          $parsed = ConvertFrom-Json -InputObject $json
+
+          $snapshot = @()
+          foreach ($entry in $parsed) {
+            $snapshot += $entry
+          }
 
           if ($snapshot.Count -ne 3) {
             throw "Unexpected snapshot count: $($snapshot.Count)"
           }
 
+          $expectedNames = @(
+            "candidate_oos_summary.csv",
+            "candidate_oos_yearly.csv",
+            "candidate_oos_result.json"
+          )
+
+          $seen = @{}
+
           foreach ($entry in $snapshot) {
-            $path = Join-Path $productionInput $entry.name
+            $name = [string]$entry.name
+            $expectedHash = [string]$entry.sha256
+
+            if ($expectedNames -cnotcontains $name) {
+              throw "Unexpected input in snapshot: $name"
+            }
+
+            if ($seen.ContainsKey($name)) {
+              throw "Duplicate input in snapshot: $name"
+            }
+
+            $seen[$name] = $true
+
+            if ($expectedHash -notmatch '^[0-9A-Fa-f]{64}$') {
+              throw "Invalid SHA256 in snapshot: $name"
+            }
+
+            $path = Join-Path $productionInput $name
 
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
               throw "Production input disappeared: $path"
@@ -260,11 +302,17 @@ jobs:
 
             $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
 
-            if ($actual -ne $entry.sha256) {
-              throw "Production input SHA256 changed: $($entry.name)"
+            if ($actual -ne $expectedHash) {
+              throw "Production input SHA256 changed: $name"
             }
 
-            Write-Host "[UNCHANGED] $($entry.name)"
+            Write-Host "[UNCHANGED] $name"
+          }
+
+          foreach ($name in $expectedNames) {
+            if (-not $seen.ContainsKey($name)) {
+              throw "Expected input missing from snapshot: $name"
+            }
           }
 
           Write-Host "[PASS] All required production inputs unchanged."
