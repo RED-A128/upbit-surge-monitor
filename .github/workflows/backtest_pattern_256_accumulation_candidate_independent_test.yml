@@ -1,0 +1,635 @@
+
+name: backtest_pattern_256_accumulation_candidate_independent_test.yml
+
+on:
+  workflow_dispatch:
+    inputs:
+      signals_path:
+        description: "Candidate feature CSV path relative to production root"
+        required: true
+        type: string
+
+      rules_path:
+        description: "Frozen candidate rules JSON path relative to production root"
+        required: true
+        type: string
+
+      research_end:
+        description: "Verified research end UTC timestamp, e.g. 2025-12-31T23:00:00Z"
+        required: true
+        type: string
+
+      holdout_start:
+        description: "Verified unseen holdout start UTC timestamp, e.g. 2026-01-01T00:00:00Z"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern-256-accumulation-independent-backtest-test
+  cancel-in-progress: false
+
+jobs:
+  independent-backtest-test:
+    name: Candidate Independent Backtest Test
+    runs-on: self-hosted
+    timeout-minutes: 120
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PRODUCTION_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+      PROGRAM_NAME: backtest_pattern_256_accumulation_candidate_independent.py
+      SIGNALS_RELATIVE: ${{ inputs.signals_path }}
+      RULES_RELATIVE: ${{ inputs.rules_path }}
+      RESEARCH_END: ${{ inputs.research_end }}
+      HOLDOUT_START: ${{ inputs.holdout_start }}
+      OUTPUT_RELATIVE: data\reports\pattern_256_accumulation_candidate_independent_backtest
+
+    steps:
+
+      # ============================================================
+      # 01. Checkout repository
+      # ============================================================
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ============================================================
+      # 02. Verify Python program
+      # ============================================================
+
+      - name: Verify Python environment and program
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $program = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:PROGRAM_NAME
+
+          if (-not (Test-Path -LiteralPath $program -PathType Leaf)) {
+            throw "Python program missing: $program"
+          }
+
+          & py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable."
+          }
+
+          & py -m py_compile $program
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax check failed."
+          }
+
+          Write-Host "[PASS] Python environment verified."
+          Write-Host "[PASS] Python source syntax verified."
+
+      # ============================================================
+      # 03. Resolve and validate production inputs
+      # ============================================================
+
+      - name: Validate production input paths
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = [System.IO.Path]::GetFullPath(
+            $env:PRODUCTION_ROOT
+          )
+
+          if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+            throw "Production root missing: $root"
+          }
+
+          function Resolve-SafeInput {
+            param(
+              [string]$Root,
+              [string]$Relative
+            )
+
+            if ([string]::IsNullOrWhiteSpace($Relative)) {
+              throw "Empty input path."
+            }
+
+            if ([System.IO.Path]::IsPathRooted($Relative)) {
+              throw "Absolute input paths are not allowed: $Relative"
+            }
+
+            $full = [System.IO.Path]::GetFullPath(
+              (Join-Path $Root $Relative)
+            )
+
+            $prefix = $Root.TrimEnd('\') + '\'
+
+            if (-not $full.StartsWith(
+              $prefix,
+              [System.StringComparison]::OrdinalIgnoreCase
+            )) {
+              throw "Input path escapes production root: $Relative"
+            }
+
+            if (-not (Test-Path -LiteralPath $full -PathType Leaf)) {
+              throw "Input file missing: $full"
+            }
+
+            if ((Get-Item -LiteralPath $full).Length -le 0) {
+              throw "Input file empty: $full"
+            }
+
+            return $full
+          }
+
+          $signals = Resolve-SafeInput `
+            -Root $root `
+            -Relative $env:SIGNALS_RELATIVE
+
+          $rules = Resolve-SafeInput `
+            -Root $root `
+            -Relative $env:RULES_RELATIVE
+
+          if ([System.IO.Path]::GetExtension($signals) -ne ".csv") {
+            throw "Signals input must be CSV."
+          }
+
+          if ([System.IO.Path]::GetExtension($rules) -ne ".json") {
+            throw "Rules input must be JSON."
+          }
+
+          if ($signals -eq $rules) {
+            throw "Signals and rules cannot be the same file."
+          }
+
+          $ohlcv = Join-Path $root "data\ohlcv"
+
+          if (-not (Test-Path -LiteralPath $ohlcv -PathType Container)) {
+            throw "OHLCV root missing: $ohlcv"
+          }
+
+          foreach ($tf in @("h1", "h4", "d1")) {
+            $directory = Join-Path $ohlcv $tf
+
+            if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+              throw "OHLCV timeframe directory missing: $directory"
+            }
+          }
+
+          try {
+            $researchEnd = [DateTimeOffset]::Parse(
+              $env:RESEARCH_END,
+              [System.Globalization.CultureInfo]::InvariantCulture
+            )
+
+            $holdoutStart = [DateTimeOffset]::Parse(
+              $env:HOLDOUT_START,
+              [System.Globalization.CultureInfo]::InvariantCulture
+            )
+          }
+          catch {
+            throw "Invalid research/holdout timestamp."
+          }
+
+          if ($holdoutStart -le $researchEnd) {
+            throw "Holdout start must be later than research end."
+          }
+
+          "PRODUCTION_SIGNALS=$signals" |
+            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+          "PRODUCTION_RULES=$rules" |
+            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+          "PRODUCTION_OHLCV=$ohlcv" |
+            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+          Write-Host "[PASS] Production input paths verified."
+          Write-Host "[PASS] Holdout chronology verified."
+          Write-Host "Signals: $signals"
+          Write-Host "Rules: $rules"
+
+      # ============================================================
+      # 04. Capture production input SHA256
+      # ============================================================
+
+      - name: Capture production input SHA256
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $snapshotPath = Join-Path `
+            $env:RUNNER_TEMP `
+            "independent_backtest_inputs_$env:GITHUB_RUN_ID`_$env:GITHUB_RUN_ATTEMPT.json"
+
+          $files = @(
+            $env:PRODUCTION_SIGNALS,
+            $env:PRODUCTION_RULES
+          )
+
+          $snapshot = @()
+
+          foreach ($path in $files) {
+            $snapshot += [PSCustomObject]@{
+              path = $path
+              sha256 = (
+                Get-FileHash -LiteralPath $path -Algorithm SHA256
+              ).Hash
+              length = (Get-Item -LiteralPath $path).Length
+            }
+          }
+
+          $json = ConvertTo-Json -InputObject $snapshot -Depth 5
+
+          [System.IO.File]::WriteAllText(
+            $snapshotPath,
+            $json,
+            (New-Object System.Text.UTF8Encoding($false))
+          )
+
+          "INPUT_SNAPSHOT=$snapshotPath" |
+            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+          Write-Host "[PASS] Signals and rules SHA256 captured."
+
+      # ============================================================
+      # 05. Prepare isolated test workspace
+      # ============================================================
+
+      - name: Prepare isolated test workspace
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $testRoot = Join-Path `
+            $env:RUNNER_TEMP `
+            "independent_backtest_test_$env:GITHUB_RUN_ID`_$env:GITHUB_RUN_ATTEMPT"
+
+          if (Test-Path -LiteralPath $testRoot) {
+            throw "Test workspace already exists: $testRoot"
+          }
+
+          New-Item -ItemType Directory -Path $testRoot | Out-Null
+
+          $testInput = Join-Path $testRoot "inputs"
+
+          New-Item -ItemType Directory -Path $testInput | Out-Null
+
+          $testSignals = Join-Path $testInput "candidate_features.csv"
+          $testRules = Join-Path $testInput "frozen_candidate_rules.json"
+
+          Copy-Item `
+            -LiteralPath $env:PRODUCTION_SIGNALS `
+            -Destination $testSignals `
+            -ErrorAction Stop
+
+          Copy-Item `
+            -LiteralPath $env:PRODUCTION_RULES `
+            -Destination $testRules `
+            -ErrorAction Stop
+
+          foreach ($pair in @(
+            @{ Source = $env:PRODUCTION_SIGNALS; Copy = $testSignals },
+            @{ Source = $env:PRODUCTION_RULES; Copy = $testRules }
+          )) {
+            $sourceHash = (
+              Get-FileHash -LiteralPath $pair.Source -Algorithm SHA256
+            ).Hash
+
+            $copyHash = (
+              Get-FileHash -LiteralPath $pair.Copy -Algorithm SHA256
+            ).Hash
+
+            if ($sourceHash -ne $copyHash) {
+              throw "Test input copy SHA256 mismatch."
+            }
+          }
+
+          # OHLCV is intentionally read from the production directory.
+          # The Python program opens it read-only and verifies SHA256.
+          # This avoids duplicating the entire long-term OHLCV archive.
+
+          $reports = Join-Path $testRoot "data\reports"
+
+          New-Item `
+            -ItemType Directory `
+            -Path $reports `
+            -Force | Out-Null
+
+          "TEST_ROOT=$testRoot" |
+            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+          "TEST_SIGNALS=$testSignals" |
+            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+          "TEST_RULES=$testRules" |
+            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+          Write-Host "[PASS] Isolated test workspace prepared."
+
+      # ============================================================
+      # 06. Execute independent backtest
+      # ============================================================
+
+      - name: Execute independent candidate backtest
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $program = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:PROGRAM_NAME
+
+          Write-Host "=================================================="
+          Write-Host "INDEPENDENT CANDIDATE BACKTEST TEST"
+          Write-Host "=================================================="
+
+          & py $program `
+            --root $env:TEST_ROOT `
+            --signals $env:TEST_SIGNALS `
+            --rules $env:TEST_RULES `
+            --research-end $env:RESEARCH_END `
+            --holdout-start $env:HOLDOUT_START `
+            --ohlcv-root $env:PRODUCTION_OHLCV
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Independent candidate backtest failed."
+          }
+
+          Write-Host "[PASS] Independent candidate backtest executed."
+
+      # ============================================================
+      # 07. Verify test output files
+      # ============================================================
+
+      - name: Verify independent backtest outputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $outputDir = Join-Path `
+            $env:TEST_ROOT `
+            $env:OUTPUT_RELATIVE
+
+          if (-not (Test-Path -LiteralPath $outputDir -PathType Container)) {
+            throw "Backtest output directory missing."
+          }
+
+          $required = @(
+            "independent_backtest_trades.csv",
+            "independent_backtest_summary.csv",
+            "independent_backtest_checks.csv",
+            "independent_backtest_result.json",
+            "independent_backtest_manifest.json"
+          )
+
+          foreach ($name in $required) {
+            $path = Join-Path $outputDir $name
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Required output missing: $name"
+            }
+
+            if ((Get-Item -LiteralPath $path).Length -le 0) {
+              throw "Empty output: $name"
+            }
+
+            Write-Host "[FOUND] $name"
+          }
+
+          $resultPath = Join-Path `
+            $outputDir `
+            "independent_backtest_result.json"
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw |
+            ConvertFrom-Json
+
+          if ($result.execution_status -ne "PASS") {
+            throw "Backtest execution status is not PASS."
+          }
+
+          if ($result.backtest_status -ne "DESCRIPTIVE_HOLDOUT_BACKTEST") {
+            throw "Unexpected backtest status."
+          }
+
+          if ($result.independent_oos_proven -ne $false) {
+            throw "Independent OOS must not be marked proven."
+          }
+
+          if ($result.approved_for_live_trading -ne $false) {
+            throw "Live trading must not be approved."
+          }
+
+          if ([int]$result.backtest_event_rows -lt 1) {
+            throw "No backtest events produced."
+          }
+
+          $trades = @(
+            Import-Csv (
+              Join-Path $outputDir "independent_backtest_trades.csv"
+            )
+          )
+
+          if ($trades.Count -ne [int]$result.backtest_event_rows) {
+            throw "Trade CSV row count does not match result JSON."
+          }
+
+          foreach ($trade in $trades) {
+            if ($trade.status -notin @("HIT", "MISS", "INCOMPLETE")) {
+              throw "Unexpected trade status."
+            }
+
+            if ($trade.timeframe -notin @("h1", "h4", "d1")) {
+              throw "Unexpected trade timeframe."
+            }
+
+            if ([int]$trade.horizon -notin @(24, 72, 168)) {
+              throw "Unexpected backtest horizon."
+            }
+          }
+
+          Write-Host "[PASS] Result JSON verified."
+          Write-Host "[PASS] Trade CSV verified."
+          Write-Host "Events: $($result.backtest_event_rows)"
+
+      # ============================================================
+      # 08. Verify output SHA256 manifest
+      # ============================================================
+
+      - name: Verify backtest output SHA256
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $outputDir = Join-Path `
+            $env:TEST_ROOT `
+            $env:OUTPUT_RELATIVE
+
+          $manifestPath = Join-Path `
+            $outputDir `
+            "independent_backtest_manifest.json"
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw |
+            ConvertFrom-Json
+
+          $expectedFiles = @(
+            "independent_backtest_trades.csv",
+            "independent_backtest_summary.csv",
+            "independent_backtest_checks.csv",
+            "independent_backtest_result.json"
+          )
+
+          $properties = @(
+            $manifest.output_sha256.PSObject.Properties
+          )
+
+          if ($properties.Count -ne 4) {
+            throw "Unexpected output manifest file count."
+          }
+
+          foreach ($name in $expectedFiles) {
+            $property = $manifest.output_sha256.PSObject.Properties[$name]
+
+            if ($null -eq $property) {
+              throw "Output SHA256 missing: $name"
+            }
+
+            $expectedHash = [string]$property.Value
+
+            if ($expectedHash -notmatch '^[0-9A-Fa-f]{64}$') {
+              throw "Invalid SHA256 value: $name"
+            }
+
+            $actualHash = (
+              Get-FileHash `
+                -LiteralPath (Join-Path $outputDir $name) `
+                -Algorithm SHA256
+            ).Hash
+
+            if ($actualHash -ne $expectedHash) {
+              throw "Output SHA256 mismatch: $name"
+            }
+
+            Write-Host "[SHA256 PASS] $name"
+          }
+
+          Write-Host "[PASS] Backtest output manifest verified."
+
+      # ============================================================
+      # 09. Verify production signals and rules unchanged
+      # ============================================================
+
+      - name: Verify production inputs unchanged
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if (-not $env:INPUT_SNAPSHOT) {
+            throw "Input snapshot path missing."
+          }
+
+          if (-not (Test-Path -LiteralPath $env:INPUT_SNAPSHOT -PathType Leaf)) {
+            throw "Input snapshot missing."
+          }
+
+          $parsed = Get-Content `
+            -LiteralPath $env:INPUT_SNAPSHOT `
+            -Raw |
+            ConvertFrom-Json
+
+          $snapshot = @()
+
+          foreach ($entry in $parsed) {
+            $snapshot += $entry
+          }
+
+          if ($snapshot.Count -ne 2) {
+            throw "Unexpected production input snapshot count."
+          }
+
+          $expectedPaths = @(
+            $env:PRODUCTION_SIGNALS,
+            $env:PRODUCTION_RULES
+          )
+
+          $seen = @{}
+
+          foreach ($entry in $snapshot) {
+            $path = [string]$entry.path
+            $expectedHash = [string]$entry.sha256
+            $expectedLength = [long]$entry.length
+
+            if ($expectedPaths -notcontains $path) {
+              throw "Unexpected snapshot path: $path"
+            }
+
+            if ($seen.ContainsKey($path)) {
+              throw "Duplicate snapshot path: $path"
+            }
+
+            $seen[$path] = $true
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Production input disappeared: $path"
+            }
+
+            if ((Get-Item -LiteralPath $path).Length -ne $expectedLength) {
+              throw "Production input length changed: $path"
+            }
+
+            $actualHash = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash
+
+            if ($actualHash -ne $expectedHash) {
+              throw "Production input SHA256 changed: $path"
+            }
+
+            Write-Host "[UNCHANGED] $path"
+          }
+
+          foreach ($path in $expectedPaths) {
+            if (-not $seen.ContainsKey($path)) {
+              throw "Expected input missing from snapshot: $path"
+            }
+          }
+
+          Write-Host "[PASS] Production signals and rules unchanged."
+
+      # ============================================================
+      # 10. Final test report
+      # ============================================================
+
+      - name: Final independent backtest test report
+        run: |
+          Write-Host ""
+          Write-Host "=================================================="
+          Write-Host "INDEPENDENT CANDIDATE BACKTEST TEST"
+          Write-Host "=================================================="
+          Write-Host "[PASS] Python source syntax"
+          Write-Host "[PASS] Input path validation"
+          Write-Host "[PASS] Holdout chronology validation"
+          Write-Host "[PASS] Isolated test execution"
+          Write-Host "[PASS] Backtest report generation"
+          Write-Host "[PASS] Output SHA256 manifest"
+          Write-Host "[PASS] Production signals/rules unchanged"
+          Write-Host ""
+          Write-Host "[INFO] Independent OOS proven: FALSE"
+          Write-Host "[INFO] Live trading approval: FALSE"
+          Write-Host "=================================================="
+
+      # ============================================================
+      # 11. Upload test artifact
+      # ============================================================
+
+      - name: Upload independent backtest test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-accumulation-independent-backtest-test
+          path: ${{ env.TEST_ROOT }}\data\reports\pattern_256_accumulation_candidate_independent_backtest\
+          if-no-files-found: warn
+          retention-days: 14
