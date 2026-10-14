@@ -3,88 +3,57 @@
 # -*- coding: utf-8 -*-
 
 """
-backtest_pattern_256_accumulation_candidate_independent.py
-
 UPBIT SURGE MONITOR
-PATTERN 256 + ACCUMULATION
-INDEPENDENT CANDIDATE BACKTEST
-CLEAN V001
+Pattern 256 + Accumulation
+Candidate Independent Backtest
+Clean V002
 
-IMPORTANT
----------
-This program evaluates frozen candidate rules on
-historical OHLCV data.
+PURPOSE
+-------
+Recalculate historical candidate outcomes using original OHLCV.
 
-It does not:
-- Modify original OHLCV files
-- Modify research reports
-- Refit candidate thresholds
-- Execute trades
-- Approve candidates for live trading
-- Prove that supplied features are free from leakage
+This version is a REPRODUCIBILITY AUDIT, not proof of
+a new independent out-of-sample validation.
 
-Required inputs
----------------
-1. Frozen candidate rules JSON
-2. Historical candidate feature CSV
-3. OHLCV CSV files
-4. Research end timestamp
-5. Holdout start timestamp
+INPUTS
+------
+data/reports/pattern_256_accumulation_30pct/
+    validation_detail.csv
 
-Feature CSV required columns:
-    market
-    timeframe
-    timestamp
-    pattern_256_score
-    accumulation_score
+data/reports/pattern_256_accumulation_candidate_oos/
+    candidate_oos_result.json
 
-OHLCV CSV required columns:
-    timestamp (or candle_date_time_utc)
-    opening_price (or open)
-    high_price (or high)
-    low_price (or low)
-    trade_price (or close)
+data/ohlcv/
+    h1/
+    h4/
+    d1/
 
-Example rules JSON:
-{
-  "version": "frozen-v1",
-  "frozen_before_holdout": true,
-  "rules": [
-    {
-      "candidate_id": "CANDIDATE_001",
-      "timeframe": "h1",
-      "pattern_256_min": 70,
-      "accumulation_min": 70
-    }
-  ]
-}
-
-IMPORTANT:
-The example thresholds above are illustrative only.
-They are NOT verified project candidate thresholds.
-
-Execution example:
-py backtest_pattern_256_accumulation_candidate_independent.py ^
-  --root "C:\\Users\\USER\\Documents\\upbit-surge-monitor" ^
-  --signals "C:\\PATH\\TO\\candidate_features.csv" ^
-  --rules "C:\\PATH\\TO\\frozen_candidate_rules.json" ^
-  --research-end "2025-12-31T23:00:00Z" ^
-  --holdout-start "2026-01-01T00:00:00Z"
-
-Replace the example paths and dates with verified values.
-
-Output:
+OUTPUTS
+-------
 data/reports/
-  pattern_256_accumulation_candidate_independent_backtest/
-    independent_backtest_trades.csv
-    independent_backtest_summary.csv
-    independent_backtest_checks.csv
-    independent_backtest_result.json
-    independent_backtest_manifest.json
+    pattern_256_accumulation_candidate_independent_backtest/
+        independent_backtest_trades.csv
+        independent_backtest_summary.csv
+        independent_backtest_checks.csv
+        independent_backtest_result.json
+        independent_backtest_manifest.json
 
-Dependencies:
-    Python 3.11+
-    Standard library only
+RULES
+-----
+S00_ALL_SIGNALS
+S01_PATTERN_60
+S02_PATTERN_70
+S03_BOTH_PATTERN_60
+S04_BOTH_STRICT
+
+SAFETY
+------
+- Source files are read-only.
+- Existing reports are never overwritten.
+- Future outcome fields are never used for signal selection.
+- Original OOS boundaries are retained by timeframe.
+- A PASS does not mean predictive effectiveness.
+- Automatic trading is never enabled.
 """
 
 from __future__ import annotations
@@ -92,7 +61,6 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
-import io
 import json
 import math
 import os
@@ -110,22 +78,25 @@ PROGRAM = (
     "candidate_independent.py"
 )
 
-VERSION = "Clean V001"
+VERSION = "Clean V002"
 
-OUTPUT_RELATIVE = (
-    Path("data")
-    / "reports"
-    / "pattern_256_accumulation_candidate_independent_backtest"
+DETAIL_RELATIVE = Path(
+    "data/reports/"
+    "pattern_256_accumulation_30pct/"
+    "validation_detail.csv"
 )
 
-TIMEFRAME_ALIASES = {
-    "h1": "h1",
-    "1h": "h1",
-    "h4": "h4",
-    "4h": "h4",
-    "d1": "d1",
-    "1d": "d1",
-}
+OOS_RELATIVE = Path(
+    "data/reports/"
+    "pattern_256_accumulation_candidate_oos/"
+    "candidate_oos_result.json"
+)
+
+OUTPUT_RELATIVE = Path(
+    "data/reports/"
+    "pattern_256_accumulation_"
+    "candidate_independent_backtest"
+)
 
 TIMEFRAME_SECONDS = {
     "h1": 3600,
@@ -135,79 +106,102 @@ TIMEFRAME_SECONDS = {
 
 HORIZONS = (24, 72, 168)
 
-TARGET_RETURN = 0.30
+TARGET_PCT = 30.0
 
-TRADE_FIELDS = (
-    "candidate_id",
-    "market",
+TRADE_FIELDS = [
+    "rule_id",
     "timeframe",
-    "signal_time",
-    "entry_time",
+    "market",
+    "signal_timestamp",
+    "entry_timestamp",
     "entry_price",
     "horizon",
-    "target_price",
     "status",
     "hit_30pct",
-    "target_hit_bar",
-    "max_favorable_return",
-    "max_adverse_return",
+    "first_hit_bars",
+    "max_return_pct",
+    "max_drawdown_pct",
     "observed_bars",
     "required_bars",
-)
+    "source_status",
+    "source_hit_30pct",
+    "status_match",
+    "entry_price_match",
+]
 
-SUMMARY_FIELDS = (
-    "candidate_id",
+SUMMARY_FIELDS = [
+    "rule_id",
     "timeframe",
     "horizon",
-    "total_events",
+    "events",
     "complete_events",
-    "hit_events",
-    "miss_events",
-    "incomplete_events",
+    "hits",
+    "misses",
+    "incomplete",
     "hit_rate",
-    "average_max_favorable_return",
-    "average_max_adverse_return",
-    "status",
-)
+    "status_matches",
+    "status_mismatches",
+    "entry_price_mismatches",
+    "average_max_return_pct",
+    "average_max_drawdown_pct",
+    "assessment",
+]
 
-CHECK_FIELDS = (
-    "check_id",
+CHECK_FIELDS = [
+    "check",
     "status",
     "detail",
-)
+]
 
-OUTPUT_NAMES = (
-    "independent_backtest_trades.csv",
-    "independent_backtest_summary.csv",
-    "independent_backtest_checks.csv",
-    "independent_backtest_result.json",
-    "independent_backtest_manifest.json",
-)
-
-
-# ============================================================
-# BASIC UTILITIES
-# ============================================================
 
 def log(message: str) -> None:
-    now = datetime.now().strftime(
+    stamp = datetime.now().strftime(
         "%Y-%m-%d %H:%M:%S"
     )
+
     print(
-        f"{now} | {message}",
+        f"{stamp} | {message}",
         flush=True,
     )
 
 
-def utc_now() -> str:
-    return datetime.now(
+def parse_time(value: Any) -> datetime:
+    text = str(value).strip()
+
+    if not text:
+        raise ValueError(
+            "Empty timestamp"
+        )
+
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+
+    result = datetime.fromisoformat(
+        text
+    )
+
+    if result.tzinfo is None:
+        raise ValueError(
+            f"Timezone missing: {value}"
+        )
+
+    return result.astimezone(
         timezone.utc
-    ).isoformat(
-        timespec="seconds"
     )
 
 
-def sha256_file(path: Path) -> str:
+def number(value: Any) -> float:
+    result = float(value)
+
+    if not math.isfinite(result):
+        raise ValueError(
+            f"Non-finite number: {value}"
+        )
+
+    return result
+
+
+def sha256(path: Path) -> str:
     digest = hashlib.sha256()
 
     with path.open("rb") as stream:
@@ -224,176 +218,22 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def parse_timestamp(value: Any) -> datetime:
-    text = str(value).strip()
+def read_json(path: Path) -> dict:
+    with path.open(
+        "r",
+        encoding="utf-8-sig",
+    ) as stream:
+        result = json.load(stream)
 
-    if not text:
+    if not isinstance(result, dict):
         raise ValueError(
-            "Empty timestamp."
-        )
-
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-
-    try:
-        result = datetime.fromisoformat(
-            text
-        )
-    except ValueError as exc:
-        raise ValueError(
-            f"Invalid ISO timestamp: {value}"
-        ) from exc
-
-    if result.tzinfo is None:
-        raise ValueError(
-            "Timezone required for timestamp: "
-            f"{value}"
-        )
-
-    return result.astimezone(
-        timezone.utc
-    )
-
-
-def parse_float(value: Any) -> float:
-    try:
-        result = float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            f"Invalid numeric value: {value}"
-        ) from exc
-
-    if not math.isfinite(result):
-        raise ValueError(
-            f"Non-finite numeric value: {value}"
+            f"JSON object expected: {path}"
         )
 
     return result
 
 
-def canonical_timeframe(value: Any) -> str:
-    text = str(value).strip().lower()
-
-    if text not in TIMEFRAME_ALIASES:
-        raise ValueError(
-            f"Unsupported timeframe: {value}"
-        )
-
-    return TIMEFRAME_ALIASES[text]
-
-
-def add_check(
-    checks: list[dict[str, str]],
-    check_id: str,
-    status: str,
-    detail: str,
-) -> None:
-    checks.append({
-        "check_id": check_id,
-        "status": status,
-        "detail": detail,
-    })
-
-    log(
-        f"[{status}] {check_id}: {detail}"
-    )
-
-
-# ============================================================
-# CSV / JSON
-# ============================================================
-
-def read_csv(
-    path: Path,
-) -> tuple[list[str], list[dict[str, str]]]:
-    if not path.is_file():
-        raise FileNotFoundError(
-            f"CSV missing: {path}"
-        )
-
-    with path.open(
-        "r",
-        encoding="utf-8-sig",
-        newline="",
-    ) as stream:
-        reader = csv.DictReader(stream)
-
-        if not reader.fieldnames:
-            raise ValueError(
-                f"CSV header missing: {path}"
-            )
-
-        columns = list(
-            reader.fieldnames
-        )
-
-        if len(columns) != len(set(columns)):
-            raise ValueError(
-                f"Duplicate CSV columns: {path}"
-            )
-
-        rows = []
-
-        for line_number, row in enumerate(
-            reader,
-            start=2,
-        ):
-            if None in row:
-                raise ValueError(
-                    "Unexpected extra CSV columns: "
-                    f"{path}, line {line_number}"
-                )
-
-            if any(
-                value is None
-                for value in row.values()
-            ):
-                raise ValueError(
-                    "Missing CSV field: "
-                    f"{path}, line {line_number}"
-                )
-
-            rows.append(row)
-
-    return columns, rows
-
-
-def read_json(path: Path) -> Any:
-    if not path.is_file():
-        raise FileNotFoundError(
-            f"JSON missing: {path}"
-        )
-
-    with path.open(
-        "r",
-        encoding="utf-8-sig",
-    ) as stream:
-        return json.load(stream)
-
-
-def require_columns(
-    columns: list[str],
-    required: tuple[str, ...],
-    source: str,
-) -> None:
-    missing = [
-        name
-        for name in required
-        if name not in columns
-    ]
-
-    if missing:
-        raise ValueError(
-            f"Missing required columns in {source}: "
-            + ", ".join(missing)
-        )
-
-
-# ============================================================
-# ATOMIC OUTPUT
-# ============================================================
-
-def atomic_write_text(
+def atomic_text(
     path: Path,
     content: str,
 ) -> None:
@@ -409,9 +249,9 @@ def atomic_write_text(
             mode="w",
             encoding="utf-8",
             newline="",
+            dir=str(path.parent),
             prefix=f".{path.name}.",
             suffix=".tmp",
-            dir=str(path.parent),
             delete=False,
         ) as stream:
             temporary = Path(
@@ -437,410 +277,173 @@ def atomic_write_text(
             temporary.unlink()
 
 
-def write_csv(
+def atomic_json(
     path: Path,
-    fields: tuple[str, ...],
-    rows: list[dict[str, Any]],
+    payload: dict,
 ) -> None:
-    buffer = io.StringIO(
-        newline=""
-    )
-
-    writer = csv.DictWriter(
-        buffer,
-        fieldnames=fields,
-        extrasaction="ignore",
-        lineterminator="\n",
-    )
-
-    writer.writeheader()
-
-    for row in rows:
-        writer.writerow(row)
-
-    atomic_write_text(
-        path,
-        buffer.getvalue(),
-    )
-
-
-def write_json(
-    path: Path,
-    payload: dict[str, Any],
-) -> None:
-    atomic_write_text(
+    atomic_text(
         path,
         json.dumps(
             payload,
-            ensure_ascii=False,
             indent=2,
+            ensure_ascii=False,
             sort_keys=True,
             allow_nan=False,
         ) + "\n",
     )
 
 
-# ============================================================
-# FROZEN RULES
-# ============================================================
+def check_columns(
+    columns: list[str],
+    required: list[str],
+    source: str,
+) -> None:
+    missing = [
+        name
+        for name in required
+        if name not in columns
+    ]
 
-def load_rules(
+    if missing:
+        raise ValueError(
+            f"{source}: missing columns {missing}"
+        )
+
+
+def load_oos_config(
     path: Path,
-) -> list[dict[str, Any]]:
-    payload = read_json(path)
-
-    if not isinstance(payload, dict):
-        raise ValueError(
-            "Frozen rules must be a JSON object."
-        )
-
-    if payload.get(
-        "frozen_before_holdout"
-    ) is not True:
-        raise ValueError(
-            "Frozen rules declaration missing or false."
-        )
-
-    raw_rules = payload.get(
-        "rules"
+) -> tuple[
+    dict[str, datetime],
+    list[dict],
+]:
+    payload = read_json(
+        path
     )
 
-    if (
-        not isinstance(raw_rules, list)
-        or not raw_rules
-    ):
+    if payload.get("status") != "PASS":
         raise ValueError(
-            "Frozen rules list is empty."
+            "Source OOS execution is not PASS"
         )
 
-    rules = []
-    seen = set()
+    splits = payload.get(
+        "splits"
+    )
 
-    for item in raw_rules:
+    if not isinstance(splits, dict):
+        raise ValueError(
+            "OOS splits missing"
+        )
+
+    boundaries = {}
+
+    for timeframe in TIMEFRAME_SECONDS:
+        item = splits.get(
+            timeframe
+        )
+
         if not isinstance(item, dict):
             raise ValueError(
-                "Invalid candidate rule object."
+                f"OOS split missing: {timeframe}"
             )
 
-        required = (
-            "candidate_id",
-            "timeframe",
-            "pattern_256_min",
-            "accumulation_min",
+        boundaries[timeframe] = parse_time(
+            item["oos_boundary"]
         )
 
-        missing = [
-            name
-            for name in required
-            if name not in item
-        ]
-
-        if missing:
-            raise ValueError(
-                "Candidate rule fields missing: "
-                + ", ".join(missing)
-            )
-
-        candidate_id = str(
-            item["candidate_id"]
-        ).strip()
-
-        if not candidate_id:
-            raise ValueError(
-                "Empty candidate ID."
-            )
-
-        timeframe = canonical_timeframe(
-            item["timeframe"]
-        )
-
-        pattern_min = parse_float(
-            item["pattern_256_min"]
-        )
-
-        accumulation_min = parse_float(
-            item["accumulation_min"]
-        )
-
-        key = (
-            candidate_id,
-            timeframe,
-        )
-
-        if key in seen:
-            raise ValueError(
-                f"Duplicate frozen candidate: {key}"
-            )
-
-        seen.add(key)
-
-        rules.append({
-            "candidate_id": candidate_id,
-            "timeframe": timeframe,
-            "pattern_256_min": pattern_min,
-            "accumulation_min": accumulation_min,
-        })
-
-    return rules
-
-
-# ============================================================
-# SIGNAL FEATURE DATA
-# ============================================================
-
-def load_signals(
-    path: Path,
-    holdout_start: datetime,
-) -> tuple[
-    list[dict[str, Any]],
-    dict[str, int],
-]:
-    columns, rows = read_csv(
-        path
+    rules = payload.get(
+        "signal_rules"
     )
 
-    require_columns(
-        columns,
-        (
-            "market",
-            "timeframe",
-            "timestamp",
-            "pattern_256_score",
-            "accumulation_score",
-        ),
-        str(path),
-    )
-
-    signals = []
-    seen = set()
-
-    excluded_before_holdout = 0
-    duplicate_count = 0
-
-    for row in rows:
-        market = str(
-            row["market"]
-        ).strip().upper()
-
-        if not market.startswith(
-            "KRW-"
-        ):
-            raise ValueError(
-                f"Unexpected market: {market}"
-            )
-
-        timeframe = canonical_timeframe(
-            row["timeframe"]
+    if not isinstance(rules, list):
+        raise ValueError(
+            "OOS signal rules missing"
         )
 
-        timestamp = parse_timestamp(
-            row["timestamp"]
-        )
-
-        pattern_score = parse_float(
-            row["pattern_256_score"]
-        )
-
-        accumulation_score = parse_float(
-            row["accumulation_score"]
-        )
-
-        if timestamp < holdout_start:
-            excluded_before_holdout += 1
-            continue
-
-        key = (
-            market,
-            timeframe,
-            timestamp,
-        )
-
-        if key in seen:
-            duplicate_count += 1
-            continue
-
-        seen.add(key)
-
-        signals.append({
-            "market": market,
-            "timeframe": timeframe,
-            "timestamp": timestamp,
-            "pattern_256_score": pattern_score,
-            "accumulation_score": accumulation_score,
-        })
-
-    signals.sort(
-        key=lambda row: (
-            row["market"],
-            row["timeframe"],
-            row["timestamp"],
-        )
-    )
-
-    return signals, {
-        "source_rows": len(rows),
-        "holdout_rows": len(signals),
-        "excluded_before_holdout": (
-            excluded_before_holdout
-        ),
-        "duplicate_rows": duplicate_count,
+    expected_ids = {
+        "S00_ALL_SIGNALS",
+        "S01_PATTERN_60",
+        "S02_PATTERN_70",
+        "S03_BOTH_PATTERN_60",
+        "S04_BOTH_STRICT",
     }
 
+    found_ids = {
+        item.get("rule_id")
+        for item in rules
+    }
 
-# ============================================================
-# OHLCV LOADING
-# ============================================================
-
-def find_price_column(
-    columns: list[str],
-    aliases: tuple[str, ...],
-) -> str:
-    for name in aliases:
-        if name in columns:
-            return name
-
-    raise ValueError(
-        "OHLCV required column missing. "
-        f"Expected one of: {aliases}"
-    )
-
-
-def load_ohlcv(
-    path: Path,
-) -> list[dict[str, Any]]:
-    columns, rows = read_csv(
-        path
-    )
-
-    time_column = find_price_column(
-        columns,
-        (
-            "candle_date_time_utc",
-            "timestamp",
-        ),
-    )
-
-    open_column = find_price_column(
-        columns,
-        (
-            "opening_price",
-            "open",
-        ),
-    )
-
-    high_column = find_price_column(
-        columns,
-        (
-            "high_price",
-            "high",
-        ),
-    )
-
-    low_column = find_price_column(
-        columns,
-        (
-            "low_price",
-            "low",
-        ),
-    )
-
-    close_column = find_price_column(
-        columns,
-        (
-            "trade_price",
-            "close",
-        ),
-    )
-
-    candles = []
-
-    seen = set()
-
-    for row in rows:
-        timestamp = parse_timestamp(
-            row[time_column]
+    if found_ids != expected_ids:
+        raise ValueError(
+            "Unexpected candidate rule set"
         )
 
-        if timestamp in seen:
-            raise ValueError(
-                "Duplicate OHLCV timestamp: "
-                f"{path}, {timestamp}"
-            )
+    for rule in rules:
+        for field in (
+            "rule_id",
+            "min_pattern_256_score",
+            "min_accumulation_score",
+            "require_both",
+        ):
+            if field not in rule:
+                raise ValueError(
+                    f"Rule field missing: {field}"
+                )
 
-        seen.add(timestamp)
-
-        opening = parse_float(
-            row[open_column]
-        )
-
-        high = parse_float(
-            row[high_column]
-        )
-
-        low = parse_float(
-            row[low_column]
-        )
-
-        close = parse_float(
-            row[close_column]
-        )
-
-        if min(
-            opening,
-            high,
-            low,
-            close,
-        ) <= 0:
-            raise ValueError(
-                f"Non-positive OHLCV price: {path}"
-            )
-
-        if high < max(
-            opening,
-            close,
-            low,
+        if not isinstance(
+            rule["require_both"],
+            bool,
         ):
             raise ValueError(
-                f"Invalid OHLCV high: {path}"
+                "require_both must be boolean"
             )
 
-        if low > min(
-            opening,
-            close,
-            high,
-        ):
-            raise ValueError(
-                f"Invalid OHLCV low: {path}"
-            )
+    return boundaries, rules
 
-        candles.append({
-            "timestamp": timestamp,
-            "open": opening,
-            "high": high,
-            "low": low,
-            "close": close,
-        })
 
-    candles.sort(
-        key=lambda item: item["timestamp"]
+def rule_matches(
+    row: dict,
+    rule: dict,
+) -> bool:
+    pattern_score = number(
+        row["pattern_256_score"]
     )
 
-    return candles
+    accumulation_score = number(
+        row["accumulation_score"]
+    )
+
+    if pattern_score < number(
+        rule["min_pattern_256_score"]
+    ):
+        return False
+
+    if accumulation_score < number(
+        rule["min_accumulation_score"]
+    ):
+        return False
+
+    if rule["require_both"]:
+        if row["classification"] != "BOTH":
+            return False
+
+    return True
 
 
-def resolve_ohlcv_file(
-    ohlcv_root: Path,
+def find_ohlcv_file(
+    root: Path,
     timeframe: str,
     market: str,
 ) -> Path:
     directory = (
-        ohlcv_root / timeframe
+        root / timeframe
     )
 
-    candidates = (
+    candidates = [
         directory / f"{market}.csv",
-        directory / f"{market.replace('-', '_')}.csv",
-    )
+        directory / (
+            market.replace("-", "_") + ".csv"
+        ),
+    ]
 
     found = [
         path
@@ -850,149 +453,245 @@ def resolve_ohlcv_file(
 
     if len(found) != 1:
         raise FileNotFoundError(
-            "Unable to resolve exactly one OHLCV file "
-            f"for {market}/{timeframe}. "
-            f"Checked: {candidates}"
+            "Expected exactly one OHLCV file for "
+            f"{timeframe}/{market}: {candidates}"
         )
 
     return found[0]
 
 
-# ============================================================
-# SIGNAL SELECTION
-# ============================================================
+def find_column(
+    columns: list[str],
+    names: tuple[str, ...],
+) -> str:
+    for name in names:
+        if name in columns:
+            return name
 
-def select_candidate_signals(
-    signals: list[dict[str, Any]],
-    rules: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    selected = []
-
-    rules_by_timeframe = defaultdict(
-        list
+    raise ValueError(
+        f"Missing OHLCV column: {names}"
     )
 
-    for rule in rules:
-        rules_by_timeframe[
-            rule["timeframe"]
-        ].append(rule)
 
-    for signal in signals:
-        candidates = rules_by_timeframe.get(
-            signal["timeframe"],
-            [],
+def load_candles(
+    path: Path,
+) -> tuple[
+    list[dict],
+    dict[datetime, int],
+]:
+    candles = []
+    positions = {}
+
+    with path.open(
+        "r",
+        encoding="utf-8-sig",
+        newline="",
+    ) as stream:
+        reader = csv.DictReader(
+            stream
         )
 
-        for rule in candidates:
-            if (
-                signal["pattern_256_score"]
-                < rule["pattern_256_min"]
-            ):
-                continue
+        columns = (
+            reader.fieldnames or []
+        )
+
+        time_key = find_column(
+            columns,
+            (
+                "candle_date_time_utc",
+                "timestamp",
+            ),
+        )
+
+        open_key = find_column(
+            columns,
+            (
+                "opening_price",
+                "open",
+            ),
+        )
+
+        high_key = find_column(
+            columns,
+            (
+                "high_price",
+                "high",
+            ),
+        )
+
+        low_key = find_column(
+            columns,
+            (
+                "low_price",
+                "low",
+            ),
+        )
+
+        close_key = find_column(
+            columns,
+            (
+                "trade_price",
+                "close",
+            ),
+        )
+
+        previous = None
+
+        for row in reader:
+            timestamp = parse_time(
+                row[time_key]
+            )
+
+            opening = number(
+                row[open_key]
+            )
+
+            high = number(
+                row[high_key]
+            )
+
+            low = number(
+                row[low_key]
+            )
+
+            close = number(
+                row[close_key]
+            )
+
+            if min(
+                opening,
+                high,
+                low,
+                close,
+            ) <= 0:
+                raise ValueError(
+                    f"Invalid OHLCV price: {path}"
+                )
 
             if (
-                signal["accumulation_score"]
-                < rule["accumulation_min"]
+                high < max(
+                    opening,
+                    low,
+                    close,
+                )
+                or low > min(
+                    opening,
+                    high,
+                    close,
+                )
             ):
-                continue
+                raise ValueError(
+                    f"Invalid OHLCV candle: {path}"
+                )
 
-            selected.append({
-                **signal,
-                "candidate_id": (
-                    rule["candidate_id"]
-                ),
+            if (
+                previous is not None
+                and timestamp <= previous
+            ):
+                raise ValueError(
+                    "OHLCV timestamps are not "
+                    f"strictly increasing: {path}"
+                )
+
+            positions[timestamp] = len(
+                candles
+            )
+
+            candles.append({
+                "timestamp": timestamp,
+                "open": opening,
+                "high": high,
+                "low": low,
+                "close": close,
             })
 
-    selected.sort(
-        key=lambda row: (
-            row["candidate_id"],
-            row["market"],
-            row["timeframe"],
-            row["timestamp"],
-        )
-    )
+            previous = timestamp
 
-    return selected
-
-
-# ============================================================
-# BACKTEST
-# ============================================================
-
-def backtest_event(
-    signal: dict[str, Any],
-    candles: list[dict[str, Any]],
-    index_by_time: dict[datetime, int],
-    horizon: int,
-) -> dict[str, Any]:
-    signal_time = signal[
-        "timestamp"
-    ]
-
-    if signal_time not in index_by_time:
+    if not candles:
         raise ValueError(
-            "Signal timestamp not present in OHLCV: "
-            f"{signal['market']} "
-            f"{signal['timeframe']} "
-            f"{signal_time}"
+            f"Empty OHLCV: {path}"
         )
 
-    signal_index = index_by_time[
-        signal_time
+    return candles, positions
+
+
+def calculate_event(
+    row: dict,
+    candles: list[dict],
+    positions: dict[datetime, int],
+) -> dict:
+    timeframe = row[
+        "timeframe"
     ]
 
-    entry_index = (
-        signal_index + 1
+    signal_time = parse_time(
+        row["signal_timestamp"]
     )
 
-    if entry_index >= len(candles):
+    entry_time = parse_time(
+        row["entry_timestamp"]
+    )
+
+    horizon = int(
+        row["horizon"]
+    )
+
+    if horizon not in HORIZONS:
         raise ValueError(
-            "Signal has no next candle for entry."
+            f"Unexpected horizon: {horizon}"
         )
 
     seconds = TIMEFRAME_SECONDS[
-        signal["timeframe"]
+        timeframe
     ]
 
-    expected_entry_time = (
+    expected_entry = (
         signal_time.timestamp()
         + seconds
     )
 
-    entry_candle = candles[
-        entry_index
-    ]
-
-    if (
-        entry_candle["timestamp"].timestamp()
-        != expected_entry_time
-    ):
+    if entry_time.timestamp() != expected_entry:
         raise ValueError(
-            "Missing next candle after signal. "
-            "Entry cannot be assumed."
+            "Source entry is not the next "
+            f"expected candle: {timeframe}, "
+            f"{row['market']}, {signal_time}"
         )
 
-    entry_price = entry_candle[
-        "open"
+    if entry_time not in positions:
+        raise ValueError(
+            "Entry timestamp missing in OHLCV: "
+            f"{timeframe}/{row['market']}/{entry_time}"
+        )
+
+    entry_index = positions[
+        entry_time
     ]
+
+    entry_price = candles[
+        entry_index
+    ]["open"]
+
+    source_entry = number(
+        row["entry_price"]
+    )
+
+    entry_match = math.isclose(
+        entry_price,
+        source_entry,
+        rel_tol=1e-9,
+        abs_tol=1e-9,
+    )
 
     target_price = (
         entry_price
-        * (1.0 + TARGET_RETURN)
+        * (1.0 + TARGET_PCT / 100.0)
     )
 
-    observed = 0
     highest = entry_price
     lowest = entry_price
-    hit_bar = None
 
-    # Include entry candle as the first
-    # observable trading candle.
-    #
-    # The high and low are both known only
-    # after that candle closes.
-    #
-    # No exact intrabar order is inferred.
+    first_hit = None
+    observed = 0
 
     for offset in range(
         horizon
@@ -1006,16 +705,15 @@ def backtest_event(
 
         candle = candles[index]
 
-        expected_timestamp = (
-            entry_candle["timestamp"].timestamp()
+        expected = (
+            entry_time.timestamp()
             + offset * seconds
         )
 
         if (
             candle["timestamp"].timestamp()
-            != expected_timestamp
+            != expected
         ):
-            # Missing candles cause censoring.
             break
 
         observed += 1
@@ -1031,476 +729,158 @@ def backtest_event(
         )
 
         if (
-            hit_bar is None
+            first_hit is None
             and candle["high"] >= target_price
         ):
-            hit_bar = (
-                offset + 1
-            )
+            first_hit = offset + 1
 
-    complete = (
-        observed == horizon
+    if observed < horizon:
+        status = "INCOMPLETE"
+        hit_value = ""
+    elif first_hit is not None:
+        status = "HIT"
+        hit_value = 1
+    else:
+        status = "MISS"
+        hit_value = 0
+
+    max_return = (
+        (highest / entry_price - 1.0)
+        * 100.0
     )
 
-    if complete:
-        status = (
-            "HIT"
-            if hit_bar is not None
-            else "MISS"
-        )
+    max_drawdown = (
+        (lowest / entry_price - 1.0)
+        * 100.0
+    )
 
-        hit_30pct = (
-            1 if hit_bar is not None
-            else 0
-        )
-    else:
-        # Even if an early target hit was observed,
-        # keep the event censored to preserve the
-        # complete-horizon evaluation contract.
-        status = "INCOMPLETE"
-        hit_30pct = ""
+    source_status = str(
+        row["status"]
+    ).strip().upper()
 
-    favorable = (
-        highest / entry_price
-    ) - 1.0
+    status_match = (
+        status == source_status
+    )
 
-    adverse = (
-        lowest / entry_price
-    ) - 1.0
+    if status != "INCOMPLETE":
+        source_hit = str(
+            row["hit_30pct"]
+        ).strip()
+
+        if source_hit not in ("0", "1"):
+            raise ValueError(
+                "Invalid source HIT/MISS value"
+            )
+
+        if int(source_hit) != hit_value:
+            status_match = False
 
     return {
-        "candidate_id": (
-            signal["candidate_id"]
-        ),
-        "market": signal["market"],
-        "timeframe": (
-            signal["timeframe"]
-        ),
-        "signal_time": (
+        "timeframe": timeframe,
+        "market": row["market"],
+        "signal_timestamp": (
             signal_time.isoformat()
         ),
-        "entry_time": (
-            entry_candle["timestamp"].isoformat()
+        "entry_timestamp": (
+            entry_time.isoformat()
         ),
         "entry_price": entry_price,
         "horizon": horizon,
-        "target_price": target_price,
         "status": status,
-        "hit_30pct": hit_30pct,
-        "target_hit_bar": (
-            "" if hit_bar is None
-            else hit_bar
+        "hit_30pct": hit_value,
+        "first_hit_bars": (
+            first_hit
+            if first_hit is not None
+            else ""
         ),
-        "max_favorable_return": favorable,
-        "max_adverse_return": adverse,
+        "max_return_pct": max_return,
+        "max_drawdown_pct": max_drawdown,
         "observed_bars": observed,
         "required_bars": horizon,
+        "source_status": source_status,
+        "source_hit_30pct": (
+            row["hit_30pct"]
+        ),
+        "status_match": status_match,
+        "entry_price_match": entry_match,
     }
 
-
-def run_backtest(
-    selected_signals: list[dict[str, Any]],
-    ohlcv_root: Path,
-) -> tuple[
-    list[dict[str, Any]],
-    dict[str, str],
-    dict[str, int],
-]:
-    grouped = defaultdict(
-        list
-    )
-
-    for signal in selected_signals:
-        key = (
-            signal["market"],
-            signal["timeframe"],
-        )
-
-        grouped[key].append(
-            signal
-        )
-
-    trades = []
-    input_hashes = {}
-    suppressed = 0
-    no_entry = 0
-
-    for (
-        market,
-        timeframe,
-    ), signals in sorted(
-        grouped.items()
-    ):
-        path = resolve_ohlcv_file(
-            ohlcv_root,
-            timeframe,
-            market,
-        )
-
-        log(
-            f"[OHLCV] {market} / {timeframe}"
-        )
-
-        input_hashes[
-            str(path.resolve())
-        ] = sha256_file(
-            path
-        )
-
-        candles = load_ohlcv(
-            path
-        )
-
-        index_by_time = {
-            candle["timestamp"]: index
-            for index, candle in enumerate(
-                candles
-            )
-        }
-
-        # For each candidate/market/timeframe,
-        # keep at most one event within the
-        # maximum evaluation horizon.
-        #
-        # This reduces overlapping observations,
-        # but does not make cross-market or
-        # cross-timeframe events independent.
-
-        last_selected_index = {}
-
-        signals.sort(
-            key=lambda item: (
-                item["timestamp"],
-                item["candidate_id"],
-            )
-        )
-
-        for signal in signals:
-            candidate_id = (
-                signal["candidate_id"]
-            )
-
-            timestamp = signal[
-                "timestamp"
-            ]
-
-            if timestamp not in index_by_time:
-                raise ValueError(
-                    "Signal timestamp missing in OHLCV: "
-                    f"{market}/{timeframe}/{timestamp}"
-                )
-
-            signal_index = index_by_time[
-                timestamp
-            ]
-
-            previous = last_selected_index.get(
-                candidate_id
-            )
-
-            if (
-                previous is not None
-                and signal_index - previous
-                <= max(HORIZONS)
-            ):
-                suppressed += 1
-                continue
-
-            if signal_index + 1 >= len(candles):
-                no_entry += 1
-                continue
-
-            # The next candle must be contiguous.
-            expected_next = (
-                timestamp.timestamp()
-                + TIMEFRAME_SECONDS[timeframe]
-            )
-
-            actual_next = candles[
-                signal_index + 1
-            ]["timestamp"].timestamp()
-
-            if actual_next != expected_next:
-                no_entry += 1
-                continue
-
-            last_selected_index[
-                candidate_id
-            ] = signal_index
-
-            for horizon in HORIZONS:
-                result = backtest_event(
-                    signal,
-                    candles,
-                    index_by_time,
-                    horizon,
-                )
-
-                trades.append(
-                    result
-                )
-
-    trades.sort(
-        key=lambda row: (
-            row["candidate_id"],
-            row["timeframe"],
-            row["market"],
-            row["signal_time"],
-            row["horizon"],
-        )
-    )
-
-    return (
-        trades,
-        input_hashes,
-        {
-            "overlap_suppressed": suppressed,
-            "missing_entry_excluded": no_entry,
-        },
-    )
-
-
-# ============================================================
-# SUMMARY
-# ============================================================
-
-def average(
-    values: list[float],
-) -> float | None:
-    if not values:
-        return None
-
-    return sum(values) / len(values)
-
-
-def build_summary(
-    trades: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    grouped = defaultdict(
-        list
-    )
-
-    for row in trades:
-        key = (
-            row["candidate_id"],
-            row["timeframe"],
-            row["horizon"],
-        )
-
-        grouped[key].append(
-            row
-        )
-
-    summary = []
-
-    for key, rows in sorted(
-        grouped.items()
-    ):
-        candidate_id, timeframe, horizon = key
-
-        complete = [
-            row
-            for row in rows
-            if row["status"] in (
-                "HIT",
-                "MISS",
-            )
-        ]
-
-        hits = sum(
-            1
-            for row in complete
-            if row["status"] == "HIT"
-        )
-
-        misses = sum(
-            1
-            for row in complete
-            if row["status"] == "MISS"
-        )
-
-        incomplete = (
-            len(rows) - len(complete)
-        )
-
-        hit_rate = (
-            hits / len(complete)
-            if complete
-            else None
-        )
-
-        favorable = average([
-            row["max_favorable_return"]
-            for row in complete
-        ])
-
-        adverse = average([
-            row["max_adverse_return"]
-            for row in complete
-        ])
-
-        # Descriptive results only.
-        # No minimum sample-size or statistical
-        # significance claim is made here.
-
-        status = (
-            "DESCRIPTIVE_ONLY"
-            if complete
-            else "INSUFFICIENT_DATA"
-        )
-
-        summary.append({
-            "candidate_id": candidate_id,
-            "timeframe": timeframe,
-            "horizon": horizon,
-            "total_events": len(rows),
-            "complete_events": len(complete),
-            "hit_events": hits,
-            "miss_events": misses,
-            "incomplete_events": incomplete,
-            "hit_rate": (
-                "" if hit_rate is None
-                else hit_rate
-            ),
-            "average_max_favorable_return": (
-                "" if favorable is None
-                else favorable
-            ),
-            "average_max_adverse_return": (
-                "" if adverse is None
-                else adverse
-            ),
-            "status": status,
-        })
-
-    return summary
-
-
-# ============================================================
-# ARGUMENTS
-# ============================================================
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Frozen candidate OHLCV independent "
-            "holdout backtest."
+            "Pattern 256 candidate OHLCV "
+            "reproducibility backtest"
         )
     )
 
     parser.add_argument(
         "--root",
         required=True,
-        help="Production project root.",
     )
 
     parser.add_argument(
-        "--signals",
-        required=True,
-        help="Candidate feature CSV path.",
+        "--detail",
+        default=None,
     )
 
     parser.add_argument(
-        "--rules",
-        required=True,
-        help="Frozen candidate rules JSON path.",
-    )
-
-    parser.add_argument(
-        "--research-end",
-        required=True,
-        help=(
-            "Verified research end timestamp "
-            "with timezone."
-        ),
-    )
-
-    parser.add_argument(
-        "--holdout-start",
-        required=True,
-        help=(
-            "Holdout start timestamp "
-            "with timezone."
-        ),
+        "--oos-result",
+        default=None,
     )
 
     parser.add_argument(
         "--ohlcv-root",
         default=None,
-        help=(
-            "OHLCV root containing "
-            "h1/h4/d1 directories."
-        ),
     )
 
     parser.add_argument(
         "--output-dir",
         default=None,
-        help="Optional output directory.",
+    )
+
+    parser.add_argument(
+        "--max-events",
+        type=int,
+        default=0,
+        help=(
+            "Smoke test only. "
+            "Zero means no limit."
+        ),
     )
 
     return parser.parse_args()
 
 
-# ============================================================
-# INPUT / OUTPUT SAFETY
-# ============================================================
-
-def verify_hashes(
-    snapshots: dict[str, str],
-) -> None:
-    for name, expected in snapshots.items():
-        path = Path(
-            name
-        )
-
-        if not path.is_file():
-            raise FileNotFoundError(
-                f"Input disappeared: {path}"
-            )
-
-        actual = sha256_file(
-            path
-        )
-
-        if actual != expected:
-            raise RuntimeError(
-                f"Input SHA256 changed: {path}"
-            )
-
-
-def prepare_output(
+def safe_output_directory(
     output_dir: Path,
-    protected_paths: list[Path],
+    protected: list[Path],
 ) -> None:
     output_dir = output_dir.resolve()
 
-    for protected in protected_paths:
-        protected = protected.resolve()
+    for path in protected:
+        path = path.resolve()
 
         if (
-            output_dir == protected
-            or output_dir in protected.parents
-            or protected in output_dir.parents
+            output_dir == path
+            or output_dir in path.parents
+            or path in output_dir.parents
         ):
             raise ValueError(
-                "Output directory overlaps protected input: "
-                f"{protected}"
+                "Output overlaps protected input: "
+                f"{path}"
             )
 
     if output_dir.exists():
         if not output_dir.is_dir():
             raise ValueError(
-                "Output path is not a directory."
+                "Output path is not a directory"
             )
 
-        if any(
-            output_dir.iterdir()
-        ):
+        if any(output_dir.iterdir()):
             raise FileExistsError(
-                "Output directory is not empty. "
-                "Refusing overwrite: "
-                f"{output_dir}"
+                "Output already contains files. "
+                f"Refusing overwrite: {output_dir}"
             )
 
     else:
@@ -1510,17 +890,8 @@ def prepare_output(
         )
 
 
-# ============================================================
-# MAIN
-# ============================================================
-
 def main() -> int:
     args = parse_args()
-
-    log("=" * 70)
-    log(PROGRAM)
-    log(VERSION)
-    log("=" * 70)
 
     root = Path(
         args.root
@@ -1528,402 +899,745 @@ def main() -> int:
 
     if not root.is_dir():
         raise FileNotFoundError(
-            f"Project root missing: {root}"
+            f"Root missing: {root}"
         )
 
-    signals_path = Path(
-        args.signals
-    ).expanduser().resolve()
+    detail_path = (
+        Path(args.detail).expanduser().resolve()
+        if args.detail
+        else root / DETAIL_RELATIVE
+    )
 
-    rules_path = Path(
-        args.rules
-    ).expanduser().resolve()
+    oos_path = (
+        Path(args.oos_result).expanduser().resolve()
+        if args.oos_result
+        else root / OOS_RELATIVE
+    )
 
-    if args.ohlcv_root:
-        ohlcv_root = Path(
-            args.ohlcv_root
-        ).expanduser().resolve()
-    else:
-        ohlcv_root = (
-            root / "data" / "ohlcv"
-        ).resolve()
+    ohlcv_root = (
+        Path(args.ohlcv_root).expanduser().resolve()
+        if args.ohlcv_root
+        else root / "data" / "ohlcv"
+    )
+
+    output_dir = (
+        Path(args.output_dir).expanduser().resolve()
+        if args.output_dir
+        else root / OUTPUT_RELATIVE
+    )
+
+    for path in (
+        detail_path,
+        oos_path,
+    ):
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"Input missing: {path}"
+            )
 
     if not ohlcv_root.is_dir():
         raise FileNotFoundError(
-            f"OHLCV directory missing: {ohlcv_root}"
+            f"OHLCV root missing: {ohlcv_root}"
         )
 
-    if args.output_dir:
-        output_dir = Path(
-            args.output_dir
-        ).expanduser().resolve()
-    else:
-        output_dir = (
-            root / OUTPUT_RELATIVE
-        ).resolve()
-
-    research_end = parse_timestamp(
-        args.research_end
-    )
-
-    holdout_start = parse_timestamp(
-        args.holdout_start
-    )
-
-    if holdout_start <= research_end:
+    if args.max_events < 0:
         raise ValueError(
-            "Holdout start must be strictly "
-            "after research end."
+            "max-events cannot be negative"
         )
 
-    checks = []
+    log("=" * 70)
+    log(f"{PROGRAM} | {VERSION}")
+    log("=" * 70)
 
-    add_check(
-        checks,
-        "holdout_chronology",
-        "PASS",
-        (
-            f"research_end={research_end.isoformat()}, "
-            f"holdout_start={holdout_start.isoformat()}"
-        ),
+    log("[READ] OOS configuration")
+
+    boundaries, rules = load_oos_config(
+        oos_path
     )
 
-    # The chronological separation is checked,
-    # but whether the dates accurately describe
-    # prior research must be independently audited.
-
-    add_check(
-        checks,
-        "historical_research_boundary_proof",
-        "NOT_VERIFIED",
-        (
-            "User-supplied research boundary "
-            "has not been independently audited."
-        ),
-    )
-
-    log("[READ] Frozen candidate rules")
-
-    rules = load_rules(
-        rules_path
-    )
-
-    add_check(
-        checks,
-        "frozen_rules_schema",
-        "PASS",
-        f"rules={len(rules)}",
-    )
-
-    add_check(
-        checks,
-        "frozen_rules_provenance",
-        "NOT_VERIFIED",
-        (
-            "The JSON declaration alone does not "
-            "prove that thresholds were frozen "
-            "before the holdout period."
-        ),
-    )
-
-    log("[READ] Candidate feature signals")
-
-    signals, signal_stats = load_signals(
-        signals_path,
-        holdout_start,
-    )
-
-    if not signals:
-        raise ValueError(
-            "No candidate feature rows "
-            "in the requested holdout period."
+    for timeframe, boundary in boundaries.items():
+        log(
+            f"[OOS] {timeframe}: "
+            f"{boundary.isoformat()}"
         )
 
-    add_check(
-        checks,
-        "holdout_signal_rows",
-        "PASS",
-        json.dumps(
-            signal_stats,
-            sort_keys=True,
-        ),
-    )
+    log("[READ] Validation detail header")
 
-    selected = select_candidate_signals(
-        signals,
-        rules,
-    )
-
-    if not selected:
-        raise ValueError(
-            "No holdout signals satisfy "
-            "the frozen candidate rules."
+    with detail_path.open(
+        "r",
+        encoding="utf-8-sig",
+        newline="",
+    ) as stream:
+        reader = csv.DictReader(
+            stream
         )
 
-    add_check(
-        checks,
-        "selected_candidate_signals",
-        "PASS",
-        f"selected={len(selected)}",
+        columns = (
+            reader.fieldnames or []
+        )
+
+    check_columns(
+        columns,
+        [
+            "timeframe",
+            "market",
+            "signal_timestamp",
+            "classification",
+            "pattern_256_score",
+            "accumulation_score",
+            "entry_timestamp",
+            "entry_price",
+            "horizon",
+            "status",
+            "hit_30pct",
+        ],
+        str(detail_path),
     )
 
-    log("[RUN] Historical OHLCV backtest")
-
-    trades, ohlcv_hashes, backtest_stats = (
-        run_backtest(
-            selected,
+    safe_output_directory(
+        output_dir,
+        [
+            detail_path,
+            oos_path,
             ohlcv_root,
-        )
+        ],
     )
 
-    if not trades:
-        raise ValueError(
-            "No backtest events were generated."
-        )
-
-    summary = build_summary(
-        trades
+    trades_path = (
+        output_dir
+        / "independent_backtest_trades.csv"
     )
 
-    complete_count = sum(
-        1
-        for row in trades
-        if row["status"] in (
-            "HIT",
-            "MISS",
-        )
+    summary_path = (
+        output_dir
+        / "independent_backtest_summary.csv"
     )
 
-    incomplete_count = sum(
-        1
-        for row in trades
-        if row["status"] == "INCOMPLETE"
+    checks_path = (
+        output_dir
+        / "independent_backtest_checks.csv"
     )
 
-    add_check(
-        checks,
-        "backtest_events",
-        "PASS",
-        (
-            f"events={len(trades)}, "
-            f"complete={complete_count}, "
-            f"incomplete={incomplete_count}"
+    result_path = (
+        output_dir
+        / "independent_backtest_result.json"
+    )
+
+    manifest_path = (
+        output_dir
+        / "independent_backtest_manifest.json"
+    )
+
+    # SHA256 is captured before processing.
+    # All files actually read are checked again
+    # after processing.
+
+    input_hashes = {
+        str(detail_path.resolve()): sha256(
+            detail_path
         ),
-    )
-
-    add_check(
-        checks,
-        "overlap_handling",
-        "PASS",
-        json.dumps(
-            backtest_stats,
-            sort_keys=True,
-        ),
-    )
-
-    add_check(
-        checks,
-        "future_feature_leakage",
-        "NOT_VERIFIED",
-        (
-            "Feature generation source code and "
-            "as-of availability have not been "
-            "independently audited."
-        ),
-    )
-
-    add_check(
-        checks,
-        "statistical_independence",
-        "NOT_VERIFIED",
-        (
-            "Overlapping signals within each "
-            "candidate/market/timeframe are "
-            "suppressed, but cross-market and "
-            "cross-timeframe dependence remains."
-        ),
-    )
-
-    add_check(
-        checks,
-        "execution_realism",
-        "NOT_VERIFIED",
-        (
-            "Next-candle open entry is hypothetical. "
-            "Fees, slippage, liquidity, order execution "
-            "and intrabar ordering are not modeled."
-        ),
-    )
-
-    snapshots = {
-        str(signals_path): sha256_file(
-            signals_path
-        ),
-        str(rules_path): sha256_file(
-            rules_path
+        str(oos_path.resolve()): sha256(
+            oos_path
         ),
     }
 
-    snapshots.update(
-        ohlcv_hashes
+    summary_groups = defaultdict(
+        lambda: {
+            "events": 0,
+            "complete": 0,
+            "hits": 0,
+            "misses": 0,
+            "incomplete": 0,
+            "status_matches": 0,
+            "status_mismatches": 0,
+            "entry_mismatches": 0,
+            "sum_return": 0.0,
+            "sum_drawdown": 0.0,
+        }
     )
 
-    log("[CHECK] Input SHA256")
+    # Cache only the currently accessed
+    # market/timeframe pair. This avoids
+    # retaining the entire OHLCV market
+    # in memory.
 
-    verify_hashes(
-        snapshots
+    cached_key = None
+    cached_candles = None
+    cached_positions = None
+
+    source_rows = 0
+    oos_rows = 0
+    matched_rows = 0
+    written_rows = 0
+    missing_entry_rows = 0
+
+    # Every horizon row is treated as a
+    # separate evaluation record, not as
+    # a separate independent signal.
+
+    with (
+        detail_path.open(
+            "r",
+            encoding="utf-8-sig",
+            newline="",
+        ) as source,
+        trades_path.open(
+            "w",
+            encoding="utf-8",
+            newline="",
+        ) as destination,
+    ):
+        reader = csv.DictReader(
+            source
+        )
+
+        writer = csv.DictWriter(
+            destination,
+            fieldnames=TRADE_FIELDS,
+            lineterminator="\n",
+        )
+
+        writer.writeheader()
+
+        for row in reader:
+            source_rows += 1
+
+            timeframe = str(
+                row["timeframe"]
+            ).strip().lower()
+
+            if timeframe not in boundaries:
+                raise ValueError(
+                    "Unexpected timeframe: "
+                    f"{timeframe}"
+                )
+
+            row["timeframe"] = timeframe
+
+            signal_time = parse_time(
+                row["signal_timestamp"]
+            )
+
+            if signal_time < boundaries[timeframe]:
+                continue
+
+            oos_rows += 1
+
+            matched_rules = [
+                rule
+                for rule in rules
+                if rule_matches(
+                    row,
+                    rule,
+                )
+            ]
+
+            if not matched_rules:
+                continue
+
+            matched_rows += 1
+
+            if (
+                not str(
+                    row["entry_timestamp"]
+                ).strip()
+            ):
+                missing_entry_rows += 1
+                continue
+
+            market = str(
+                row["market"]
+            ).strip().upper()
+
+            if not market.startswith("KRW-"):
+                raise ValueError(
+                    f"Invalid market: {market}"
+                )
+
+            row["market"] = market
+
+            cache_key = (
+                timeframe,
+                market,
+            )
+
+            if cache_key != cached_key:
+                path = find_ohlcv_file(
+                    ohlcv_root,
+                    timeframe,
+                    market,
+                )
+
+                resolved = str(
+                    path.resolve()
+                )
+
+                current_hash = sha256(
+                    path
+                )
+
+                if resolved in input_hashes:
+                    if input_hashes[resolved] != current_hash:
+                        raise RuntimeError(
+                            "OHLCV changed during execution: "
+                            f"{path}"
+                        )
+                else:
+                    input_hashes[resolved] = current_hash
+
+                cached_candles, cached_positions = (
+                    load_candles(
+                        path
+                    )
+                )
+
+                cached_key = cache_key
+
+                log(
+                    "[OHLCV] "
+                    f"{timeframe}/{market} "
+                    f"candles={len(cached_candles)}"
+                )
+
+            event = calculate_event(
+                row,
+                cached_candles,
+                cached_positions,
+            )
+
+            for rule in matched_rules:
+                trade = {
+                    "rule_id": rule["rule_id"],
+                    **event,
+                }
+
+                writer.writerow(
+                    trade
+                )
+
+                written_rows += 1
+
+                key = (
+                    rule["rule_id"],
+                    timeframe,
+                    int(
+                        row["horizon"]
+                    ),
+                )
+
+                group = summary_groups[
+                    key
+                ]
+
+                group["events"] += 1
+
+                if event["status"] == "HIT":
+                    group["hits"] += 1
+                    group["complete"] += 1
+
+                elif event["status"] == "MISS":
+                    group["misses"] += 1
+                    group["complete"] += 1
+
+                else:
+                    group["incomplete"] += 1
+
+                if event["status_match"]:
+                    group["status_matches"] += 1
+                else:
+                    group["status_mismatches"] += 1
+
+                if not event["entry_price_match"]:
+                    group["entry_mismatches"] += 1
+
+                if event["status"] != "INCOMPLETE":
+                    group["sum_return"] += event[
+                        "max_return_pct"
+                    ]
+
+                    group["sum_drawdown"] += event[
+                        "max_drawdown_pct"
+                    ]
+
+            if (
+                source_rows % 100000 == 0
+            ):
+                log(
+                    "[PROGRESS] "
+                    f"source={source_rows:,} "
+                    f"oos={oos_rows:,} "
+                    f"output={written_rows:,}"
+                )
+
+            if (
+                args.max_events > 0
+                and matched_rows >= args.max_events
+            ):
+                log(
+                    "[SMOKE TEST] Event limit reached"
+                )
+                break
+
+    log("[WRITE] Summary")
+
+    summary_rows = []
+
+    total_status_mismatches = 0
+    total_entry_mismatches = 0
+
+    for key, group in sorted(
+        summary_groups.items()
+    ):
+        rule_id, timeframe, horizon = key
+
+        complete = group[
+            "complete"
+        ]
+
+        total_status_mismatches += group[
+            "status_mismatches"
+        ]
+
+        total_entry_mismatches += group[
+            "entry_mismatches"
+        ]
+
+        if complete:
+            hit_rate = (
+                group["hits"] / complete
+            )
+
+            avg_return = (
+                group["sum_return"] / complete
+            )
+
+            avg_drawdown = (
+                group["sum_drawdown"] / complete
+            )
+
+        else:
+            hit_rate = ""
+            avg_return = ""
+            avg_drawdown = ""
+
+        if (
+            group["status_mismatches"] > 0
+            or group["entry_mismatches"] > 0
+        ):
+            assessment = "MISMATCH"
+
+        elif complete == 0:
+            assessment = "INSUFFICIENT_DATA"
+
+        else:
+            assessment = "REPRODUCED_DESCRIPTIVE_ONLY"
+
+        summary_rows.append({
+            "rule_id": rule_id,
+            "timeframe": timeframe,
+            "horizon": horizon,
+            "events": group["events"],
+            "complete_events": complete,
+            "hits": group["hits"],
+            "misses": group["misses"],
+            "incomplete": group["incomplete"],
+            "hit_rate": hit_rate,
+            "status_matches": group[
+                "status_matches"
+            ],
+            "status_mismatches": group[
+                "status_mismatches"
+            ],
+            "entry_price_mismatches": group[
+                "entry_mismatches"
+            ],
+            "average_max_return_pct": avg_return,
+            "average_max_drawdown_pct": avg_drawdown,
+            "assessment": assessment,
+        })
+
+    with summary_path.open(
+        "w",
+        encoding="utf-8",
+        newline="",
+    ) as stream:
+        writer = csv.DictWriter(
+            stream,
+            fieldnames=SUMMARY_FIELDS,
+            lineterminator="\n",
+        )
+
+        writer.writeheader()
+        writer.writerows(
+            summary_rows
+        )
+
+    # This is an audit of existing outcomes.
+    # Reusing previously evaluated periods
+    # cannot prove a pristine holdout.
+
+    is_smoke = (
+        args.max_events > 0
     )
 
-    add_check(
-        checks,
-        "input_sha256",
-        "PASS",
-        (
-            f"{len(snapshots)} input files "
-            "verified unchanged."
-        ),
-    )
+    if (
+        total_status_mismatches > 0
+        or total_entry_mismatches > 0
+    ):
+        execution_status = "FAIL"
 
-    # This is a historical descriptive backtest.
-    # Genuine independent OOS status requires
-    # provenance evidence outside these files.
+    elif written_rows == 0:
+        execution_status = "FAIL"
+
+    elif is_smoke:
+        execution_status = "SMOKE_TEST_PASS"
+
+    else:
+        execution_status = "PASS"
+
+    checks = [
+        {
+            "check": "source_schema",
+            "status": "PASS",
+            "detail": (
+                "Required validation_detail columns found"
+            ),
+        },
+        {
+            "check": "oos_boundaries",
+            "status": "PASS",
+            "detail": (
+                "Original timeframe-specific "
+                "OOS boundaries used"
+            ),
+        },
+        {
+            "check": "candidate_rules",
+            "status": "PASS",
+            "detail": (
+                "Original S00-S04 rules used"
+            ),
+        },
+        {
+            "check": "future_outcomes_as_features",
+            "status": "PASS",
+            "detail": (
+                "Outcome fields excluded from "
+                "signal selection"
+            ),
+        },
+        {
+            "check": "status_reproduction",
+            "status": (
+                "PASS"
+                if total_status_mismatches == 0
+                else "FAIL"
+            ),
+            "detail": (
+                f"mismatches={total_status_mismatches}"
+            ),
+        },
+        {
+            "check": "entry_price_reproduction",
+            "status": (
+                "PASS"
+                if total_entry_mismatches == 0
+                else "FAIL"
+            ),
+            "detail": (
+                f"mismatches={total_entry_mismatches}"
+            ),
+        },
+        {
+            "check": "independent_oos_proven",
+            "status": "NOT_VERIFIED",
+            "detail": (
+                "Existing OOS data are reused. "
+                "New independent holdout not proven."
+            ),
+        },
+        {
+            "check": "feature_causality",
+            "status": "NOT_VERIFIED",
+            "detail": (
+                "Signal score generation and "
+                "as-of availability not audited"
+            ),
+        },
+        {
+            "check": "statistical_independence",
+            "status": "NOT_VERIFIED",
+            "detail": (
+                "Market and timeframe events "
+                "may be dependent"
+            ),
+        },
+        {
+            "check": "execution_realism",
+            "status": "NOT_VERIFIED",
+            "detail": (
+                "Fees, slippage, liquidity and "
+                "intrabar ordering not modeled"
+            ),
+        },
+    ]
+
+    with checks_path.open(
+        "w",
+        encoding="utf-8",
+        newline="",
+    ) as stream:
+        writer = csv.DictWriter(
+            stream,
+            fieldnames=CHECK_FIELDS,
+            lineterminator="\n",
+        )
+
+        writer.writeheader()
+        writer.writerows(
+            checks
+        )
+
+    log("[VERIFY] Input SHA256")
+
+    for path_text, expected in input_hashes.items():
+        path = Path(
+            path_text
+        )
+
+        if not path.is_file():
+            raise RuntimeError(
+                f"Input disappeared: {path}"
+            )
+
+        actual = sha256(
+            path
+        )
+
+        if actual != expected:
+            raise RuntimeError(
+                f"Input SHA256 changed: {path}"
+            )
 
     result = {
         "program": PROGRAM,
         "version": VERSION,
-        "created_at_utc": utc_now(),
-        "execution_status": "PASS",
-        "backtest_status": (
-            "DESCRIPTIVE_HOLDOUT_BACKTEST"
+        "created_at_utc": datetime.now(
+            timezone.utc
+        ).isoformat(),
+        "execution_status": execution_status,
+        "assessment": (
+            "EXISTING_OOS_REPRODUCIBILITY_ONLY"
         ),
         "independent_oos_proven": False,
         "approved_for_live_trading": False,
-        "research_end": (
-            research_end.isoformat()
-        ),
-        "holdout_start": (
-            holdout_start.isoformat()
-        ),
-        "target_return": TARGET_RETURN,
+        "automatic_trading_enabled": False,
+        "smoke_test": is_smoke,
+        "max_events": args.max_events,
+        "target_return_pct": TARGET_PCT,
         "horizons": list(HORIZONS),
-        "candidate_rules": len(rules),
-        "selected_signal_rows": len(selected),
-        "backtest_event_rows": len(trades),
-        "complete_event_rows": complete_count,
-        "incomplete_event_rows": incomplete_count,
-        "signal_statistics": signal_stats,
-        "backtest_statistics": backtest_stats,
-        "input_sha256": snapshots,
+        "source_rows_read": source_rows,
+        "oos_rows_read": oos_rows,
+        "matched_source_rows": matched_rows,
+        "missing_entry_rows_excluded": (
+            missing_entry_rows
+        ),
+        "output_rows": written_rows,
+        "summary_rows": len(summary_rows),
+        "status_mismatches": (
+            total_status_mismatches
+        ),
+        "entry_price_mismatches": (
+            total_entry_mismatches
+        ),
+        "oos_boundaries": {
+            key: value.isoformat()
+            for key, value in boundaries.items()
+        },
+        "rule_ids": [
+            rule["rule_id"]
+            for rule in rules
+        ],
+        "input_sha256": input_hashes,
         "limitations": [
-            "Frozen rule provenance not independently verified.",
-            "Research/holdout boundary provenance not independently verified.",
-            "Candidate feature leakage not independently audited.",
-            "No execution costs or slippage modeled.",
-            "No statistical confidence intervals calculated.",
-            "Signal observations are not necessarily independent.",
-            "No automatic trading approval.",
+            "This reuses previously evaluated OOS data.",
+            "No new independent holdout is proven.",
+            "Feature causality is not independently audited.",
+            "Signals are not necessarily independent.",
+            "Intrabar ordering is not modeled.",
+            "Fees and slippage are not modeled.",
+            "No live trading approval.",
         ],
     }
 
-    log("[CHECK] Output destination")
-
-    prepare_output(
-        output_dir,
-        [
-            signals_path,
-            rules_path,
-            ohlcv_root,
-        ],
-    )
-
-    log("[WRITE] Backtest reports")
-
-    write_csv(
-        output_dir
-        / "independent_backtest_trades.csv",
-        TRADE_FIELDS,
-        trades,
-    )
-
-    write_csv(
-        output_dir
-        / "independent_backtest_summary.csv",
-        SUMMARY_FIELDS,
-        summary,
-    )
-
-    write_csv(
-        output_dir
-        / "independent_backtest_checks.csv",
-        CHECK_FIELDS,
-        checks,
-    )
-
-    write_json(
-        output_dir
-        / "independent_backtest_result.json",
+    atomic_json(
+        result_path,
         result,
     )
 
-    manifest_hashes = {}
+    output_hashes = {}
 
-    for name in OUTPUT_NAMES:
-        if name == (
-            "independent_backtest_manifest.json"
-        ):
-            continue
-
-        manifest_hashes[name] = sha256_file(
-            output_dir / name
+    for path in (
+        trades_path,
+        summary_path,
+        checks_path,
+        result_path,
+    ):
+        output_hashes[
+            path.name
+        ] = sha256(
+            path
         )
 
     manifest = {
         "program": PROGRAM,
         "version": VERSION,
-        "created_at_utc": utc_now(),
-        "input_sha256": snapshots,
-        "output_sha256": manifest_hashes,
-        "manifest_self_hash": None,
+        "created_at_utc": datetime.now(
+            timezone.utc
+        ).isoformat(),
+        "input_sha256": input_hashes,
+        "output_sha256": output_hashes,
     }
 
-    write_json(
-        output_dir
-        / "independent_backtest_manifest.json",
+    atomic_json(
+        manifest_path,
         manifest,
     )
 
-    log("[CHECK] Final SHA256")
-
-    verify_hashes(
-        snapshots
-    )
-
-    for name, expected in manifest_hashes.items():
-        actual = sha256_file(
-            output_dir / name
-        )
-
-        if actual != expected:
-            raise RuntimeError(
-                f"Output SHA256 mismatch: {name}"
-            )
-
-    log("[PASS] Backtest program completed.")
-    log("[PASS] Five output files generated.")
-    log("[PASS] Input SHA256 unchanged.")
-    log("[PASS] Output SHA256 verified.")
-
-    log(
-        "[INFO] Independent OOS proven: FALSE"
-    )
-
-    log(
-        "[INFO] Approved for live trading: FALSE"
-    )
-
     log("=" * 70)
-    log("INDEPENDENT CANDIDATE BACKTEST COMPLETE")
+    log(
+        f"EXECUTION STATUS: {execution_status}"
+    )
+    log(
+        f"SOURCE ROWS: {source_rows:,}"
+    )
+    log(
+        f"OOS ROWS: {oos_rows:,}"
+    )
+    log(
+        f"MATCHED SOURCE ROWS: {matched_rows:,}"
+    )
+    log(
+        f"OUTPUT ROWS: {written_rows:,}"
+    )
+    log(
+        "STATUS MISMATCHES: "
+        f"{total_status_mismatches:,}"
+    )
+    log(
+        "ENTRY PRICE MISMATCHES: "
+        f"{total_entry_mismatches:,}"
+    )
+    log(
+        "INDEPENDENT OOS PROVEN: FALSE"
+    )
+    log(
+        "LIVE TRADING APPROVED: FALSE"
+    )
     log("=" * 70)
+
+    if execution_status == "FAIL":
+        return 1
 
     return 0
 
@@ -1939,4 +1653,5 @@ if __name__ == "__main__":
             "[FAIL] "
             f"{type(exc).__name__}: {exc}"
         )
+
         sys.exit(1)
