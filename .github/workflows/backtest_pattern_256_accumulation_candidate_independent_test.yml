@@ -187,26 +187,40 @@ jobs:
 
           $snapshotPath = Join-Path `
             $env:RUNNER_TEMP `
-            "independent_backtest_v002_$env:GITHUB_RUN_ID`_$env:GITHUB_RUN_ATTEMPT.json"
+            "independent_backtest_v003_$env:GITHUB_RUN_ID`_$env:GITHUB_RUN_ATTEMPT.json"
 
-          $snapshot = @()
-
-          foreach ($file in @(
+          $files = @(
             $env:DETAIL_PATH,
             $env:OOS_PATH
-          )) {
-            $snapshot += [PSCustomObject]@{
+          )
+
+          $entries = @()
+
+          foreach ($file in $files) {
+            $entries += [PSCustomObject]@{
               path = $file
               sha256 = (
-                Get-FileHash -LiteralPath $file -Algorithm SHA256
+                Get-FileHash `
+                  -LiteralPath $file `
+                  -Algorithm SHA256
               ).Hash
               length = (Get-Item -LiteralPath $file).Length
             }
           }
 
+          if ($entries.Count -ne 2) {
+            throw "Snapshot creation count mismatch."
+          }
+
+          $snapshot = [PSCustomObject]@{
+            version = "Clean V003"
+            file_count = 2
+            files = $entries
+          }
+
           $json = ConvertTo-Json `
             -InputObject $snapshot `
-            -Depth 5
+            -Depth 10
 
           [System.IO.File]::WriteAllText(
             $snapshotPath,
@@ -218,6 +232,7 @@ jobs:
             Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
           Write-Host "[PASS] Production input SHA256 captured."
+          Write-Host "Snapshot entries: $($entries.Count)"
 
       # ============================================================
       # 06. Prepare isolated test output
@@ -229,7 +244,7 @@ jobs:
 
           $testRoot = Join-Path `
             $env:RUNNER_TEMP `
-            "independent_backtest_v002_test_$env:GITHUB_RUN_ID`_$env:GITHUB_RUN_ATTEMPT"
+            "independent_backtest_v003_test_$env:GITHUB_RUN_ID`_$env:GITHUB_RUN_ATTEMPT"
 
           if (Test-Path -LiteralPath $testRoot) {
             throw "Test workspace already exists: $testRoot"
@@ -498,15 +513,25 @@ jobs:
             throw "Input snapshot file missing."
           }
 
-          $snapshot = @(
-            Get-Content `
-              -LiteralPath $env:INPUT_SNAPSHOT `
-              -Raw |
-              ConvertFrom-Json
+          $snapshot = Get-Content `
+            -LiteralPath $env:INPUT_SNAPSHOT `
+            -Raw |
+            ConvertFrom-Json
+
+          if ($snapshot.version -ne "Clean V003") {
+            throw "Unexpected snapshot version."
+          }
+
+          if ([int]$snapshot.file_count -ne 2) {
+            throw "Unexpected declared snapshot count."
+          }
+
+          $entries = @(
+            $snapshot.files
           )
 
-          if ($snapshot.Count -ne 2) {
-            throw "Unexpected production snapshot count."
+          if ($entries.Count -ne 2) {
+            throw "Unexpected actual snapshot count."
           }
 
           $expectedPaths = @(
@@ -516,7 +541,7 @@ jobs:
 
           $seen = @{}
 
-          foreach ($entry in $snapshot) {
+          foreach ($entry in $entries) {
             $path = [string]$entry.path
 
             if ($expectedPaths -notcontains $path) {
@@ -571,7 +596,7 @@ jobs:
           Write-Host ""
           Write-Host "=================================================="
           Write-Host "INDEPENDENT CANDIDATE BACKTEST TEST"
-          Write-Host "CLEAN V002"
+          Write-Host "CLEAN V003 WORKFLOW"
           Write-Host "=================================================="
           Write-Host "[PASS] Python syntax"
           Write-Host "[PASS] Production input validation"
@@ -594,7 +619,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pattern-256-accumulation-independent-backtest-v002-test
+          name: pattern-256-accumulation-independent-backtest-v003-test
           path: ${{ env.TEST_OUTPUT }}/
           if-no-files-found: warn
           retention-days: 14
