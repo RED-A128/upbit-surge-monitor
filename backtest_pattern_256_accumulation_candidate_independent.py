@@ -5,18 +5,22 @@
 """
 UPBIT SURGE MONITOR
 Candidate Independent Backtest
-Clean V003
+Clean V004
 
 Existing OOS reproducibility audit.
 
-IMPORTANT:
+IMPORTANT
+---------
 - This is NOT a new independent OOS test.
 - No automatic trading.
-- No existing production input is modified.
+- Production inputs are read-only.
 - SQLite checkpoints support safe resume.
-- Previously completed rows are skipped only after
-  checkpoint integrity and provenance checks.
-- A calculation mismatch must not be hidden.
+- Checkpoints require integrity and provenance verification.
+- Calculation mismatches are never silently accepted.
+- Invalid entry timestamps are recorded instead of crashing
+  the entire processing loop.
+- Invalid events cause the final audit to FAIL.
+- A Clean V003 checkpoint cannot be resumed as Clean V004.
 """
 
 from __future__ import annotations
@@ -32,7 +36,7 @@ import sys
 import tempfile
 
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 
@@ -41,7 +45,7 @@ PROGRAM = (
     "candidate_independent.py"
 )
 
-VERSION = "Clean V003"
+VERSION = "Clean V004"
 
 DETAIL_RELATIVE = Path(
     "data/reports/pattern_256_accumulation_30pct/"
@@ -55,7 +59,7 @@ OOS_RELATIVE = Path(
 
 OUTPUT_RELATIVE = Path(
     "data/reports/"
-    "pattern_256_accumulation_candidate_independent_backtest"
+    "pattern_256_accumulation_candidate_independent_backtest_v004"
 )
 
 TIMEFRAME_SECONDS = {
@@ -67,7 +71,6 @@ TIMEFRAME_SECONDS = {
 HORIZONS = (24, 72, 168)
 
 TARGET_PCT = 30.0
-
 CHECKPOINT_INTERVAL = 1000
 
 TRADE_FIELDS = [
@@ -94,6 +97,8 @@ TRADE_FIELDS = [
     "max_return_match",
     "max_drawdown_match",
     "all_checks_match",
+    "entry_time_check",
+    "entry_time_detail",
 ]
 
 SUMMARY_FIELDS = [
@@ -104,6 +109,7 @@ SUMMARY_FIELDS = [
     "hits",
     "misses",
     "censored",
+    "invalid",
     "hit_rate_observed",
     "status_mismatches",
     "entry_price_mismatches",
@@ -111,6 +117,7 @@ SUMMARY_FIELDS = [
     "observed_bars_mismatches",
     "max_return_mismatches",
     "max_drawdown_mismatches",
+    "entry_time_mismatches",
     "assessment",
 ]
 
@@ -122,38 +129,25 @@ CHECK_FIELDS = [
 
 
 def log(message):
-    now = datetime.now().strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
-    print(
-        f"{now} | {message}",
-        flush=True,
-    )
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"{now} | {message}", flush=True)
 
 
 def utc_now():
-    return datetime.now(
-        timezone.utc
-    ).isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 def parse_time(value):
     text = str(value).strip()
 
     if not text:
-        raise ValueError(
-            "Empty timestamp"
-        )
+        raise ValueError("Empty timestamp")
 
     if text.endswith("Z"):
         text = text[:-1] + "+00:00"
 
-    # Existing research timestamps are ISO8601.
-    # Numeric timestamps are deliberately rejected.
     try:
-        result = datetime.fromisoformat(
-            text
-        )
+        result = datetime.fromisoformat(text)
     except ValueError as exc:
         raise ValueError(
             f"Invalid ISO8601 timestamp: {value}"
@@ -164,45 +158,32 @@ def parse_time(value):
             f"Timestamp timezone missing: {value}"
         )
 
-    return result.astimezone(
-        timezone.utc
-    )
+    return result.astimezone(timezone.utc)
 
 
 def finite_float(value):
     result = float(value)
 
     if not math.isfinite(result):
-        raise ValueError(
-            f"Non-finite value: {value}"
-        )
+        raise ValueError(f"Non-finite value: {value}")
 
     return result
 
 
 def optional_float(value):
-    if value is None:
+    if value is None or str(value).strip() == "":
         return None
-
-    if str(value).strip() == "":
-        return None
-
     return finite_float(value)
 
 
 def optional_int(value):
-    if value is None:
-        return None
-
-    if str(value).strip() == "":
+    if value is None or str(value).strip() == "":
         return None
 
     number = finite_float(value)
 
     if not number.is_integer():
-        raise ValueError(
-            f"Expected integer: {value}"
-        )
+        raise ValueError(f"Expected integer: {value}")
 
     return int(number)
 
@@ -224,24 +205,16 @@ def sha256(path):
 
     with path.open("rb") as stream:
         while True:
-            chunk = stream.read(
-                1024 * 1024
-            )
-
+            chunk = stream.read(1024 * 1024)
             if not chunk:
                 break
-
             digest.update(chunk)
 
     return digest.hexdigest()
 
 
 def atomic_json(path, payload):
-    path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
+    path.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
 
     try:
@@ -254,9 +227,7 @@ def atomic_json(path, payload):
             suffix=".tmp",
             delete=False,
         ) as stream:
-            temporary = Path(
-                stream.name
-            )
+            temporary = Path(stream.name)
 
             json.dump(
                 payload,
@@ -269,34 +240,21 @@ def atomic_json(path, payload):
 
             stream.write("\n")
             stream.flush()
-            os.fsync(
-                stream.fileno()
-            )
+            os.fsync(stream.fileno())
 
-        os.replace(
-            temporary,
-            path,
-        )
+        os.replace(temporary, path)
 
     finally:
-        if (
-            temporary is not None
-            and temporary.exists()
-        ):
+        if temporary is not None and temporary.exists():
             temporary.unlink()
 
 
 def read_json(path):
-    with path.open(
-        "r",
-        encoding="utf-8-sig",
-    ) as stream:
+    with path.open("r", encoding="utf-8-sig") as stream:
         result = json.load(stream)
 
     if not isinstance(result, dict):
-        raise ValueError(
-            f"JSON object required: {path}"
-        )
+        raise ValueError(f"JSON object required: {path}")
 
     return result
 
@@ -305,16 +263,12 @@ def load_oos(path):
     payload = read_json(path)
 
     if payload.get("status") != "PASS":
-        raise ValueError(
-            "OOS source status is not PASS"
-        )
+        raise ValueError("OOS source status is not PASS")
 
     splits = payload.get("splits")
 
     if not isinstance(splits, dict):
-        raise ValueError(
-            "OOS splits missing"
-        )
+        raise ValueError("OOS splits missing")
 
     boundaries = {}
 
@@ -333,9 +287,7 @@ def load_oos(path):
     rules = payload.get("signal_rules")
 
     if not isinstance(rules, list):
-        raise ValueError(
-            "Signal rules missing"
-        )
+        raise ValueError("Signal rules missing")
 
     expected = {
         "S00_ALL_SIGNALS",
@@ -345,18 +297,10 @@ def load_oos(path):
         "S04_BOTH_STRICT",
     }
 
-    actual = [
-        rule.get("rule_id")
-        for rule in rules
-    ]
+    actual = [rule.get("rule_id") for rule in rules]
 
-    if (
-        len(actual) != len(expected)
-        or set(actual) != expected
-    ):
-        raise ValueError(
-            "Unexpected candidate rules"
-        )
+    if len(actual) != len(expected) or set(actual) != expected:
+        raise ValueError("Unexpected candidate rules")
 
     for rule in rules:
         for field in (
@@ -370,10 +314,7 @@ def load_oos(path):
                     f"Missing rule field: {field}"
                 )
 
-        if not isinstance(
-            rule["require_both"],
-            bool,
-        ):
+        if not isinstance(rule["require_both"], bool):
             raise ValueError(
                 "require_both must be boolean"
             )
@@ -382,13 +323,8 @@ def load_oos(path):
 
 
 def rule_matches(row, rule):
-    pattern = finite_float(
-        row["pattern_256_score"]
-    )
-
-    accumulation = finite_float(
-        row["accumulation_score"]
-    )
+    pattern = finite_float(row["pattern_256_score"])
+    accumulation = finite_float(row["accumulation_score"])
 
     if pattern < finite_float(
         rule["min_pattern_256_score"]
@@ -429,11 +365,7 @@ def find_ohlcv(root, timeframe, market):
         ),
     ]
 
-    found = [
-        path
-        for path in candidates
-        if path.is_file()
-    ]
+    found = [path for path in candidates if path.is_file()]
 
     if len(found) != 1:
         raise FileNotFoundError(
@@ -454,78 +386,39 @@ def load_candles(path):
         newline="",
     ) as stream:
         reader = csv.DictReader(stream)
-
         columns = reader.fieldnames or []
 
         time_key = find_column(
             columns,
-            (
-                "candle_date_time_utc",
-                "timestamp",
-            ),
+            ("candle_date_time_utc", "timestamp"),
         )
-
         open_key = find_column(
             columns,
-            (
-                "opening_price",
-                "open",
-            ),
+            ("opening_price", "open"),
         )
-
         high_key = find_column(
             columns,
-            (
-                "high_price",
-                "high",
-            ),
+            ("high_price", "high"),
         )
-
         low_key = find_column(
             columns,
-            (
-                "low_price",
-                "low",
-            ),
+            ("low_price", "low"),
         )
-
         close_key = find_column(
             columns,
-            (
-                "trade_price",
-                "close",
-            ),
+            ("trade_price", "close"),
         )
 
         previous = None
 
         for row in reader:
-            timestamp = parse_time(
-                row[time_key]
-            )
+            timestamp = parse_time(row[time_key])
+            opening = finite_float(row[open_key])
+            high = finite_float(row[high_key])
+            low = finite_float(row[low_key])
+            close = finite_float(row[close_key])
 
-            opening = finite_float(
-                row[open_key]
-            )
-
-            high = finite_float(
-                row[high_key]
-            )
-
-            low = finite_float(
-                row[low_key]
-            )
-
-            close = finite_float(
-                row[close_key]
-            )
-
-            if min(
-                opening,
-                high,
-                low,
-                close,
-            ) <= 0:
+            if min(opening, high, low, close) <= 0:
                 raise ValueError(
                     f"Non-positive OHLCV: {path}"
                 )
@@ -538,10 +431,7 @@ def load_candles(path):
                     f"Invalid OHLCV range: {path}"
                 )
 
-            if (
-                previous is not None
-                and timestamp <= previous
-            ):
+            if previous is not None and timestamp <= previous:
                 raise ValueError(
                     f"OHLCV not strictly sorted: {path}"
                 )
@@ -564,67 +454,119 @@ def load_candles(path):
             previous = timestamp
 
     if not candles:
-        raise ValueError(
-            f"Empty OHLCV file: {path}"
-        )
+        raise ValueError(f"Empty OHLCV file: {path}")
 
     return candles, positions
 
 
+def invalid_event(row, reason, detail):
+    """
+    Preserve evidence of an invalid entry timestamp.
+
+    Invalid events are not counted as HIT, MISS or
+    CENSORED. Every comparison is marked False.
+    """
+
+    return {
+        "timeframe": row["timeframe"],
+        "market": row["market"],
+        "signal_timestamp": row["signal_timestamp"],
+        "entry_timestamp": row["entry_timestamp"],
+        "entry_price": row["entry_price"],
+        "horizon": optional_int(row["horizon"]),
+        "status": "INVALID_ENTRY_TIME",
+        "hit_30pct": "",
+        "first_hit_bars": "",
+        "max_return_pct": "",
+        "max_drawdown_pct": "",
+        "observed_bars": "",
+        "required_bars": optional_int(row["horizon"]),
+        "source_status": row["status"],
+        "source_hit_30pct": row["hit_30pct"],
+        "status_match": False,
+        "entry_price_match": False,
+        "first_hit_match": False,
+        "observed_bars_match": False,
+        "max_return_match": False,
+        "max_drawdown_match": False,
+        "all_checks_match": False,
+        "entry_time_check": reason,
+        "entry_time_detail": detail,
+    }
+
+
 def calculate_event(row, candles, positions):
     timeframe = row["timeframe"]
+    market = row["market"]
 
-    signal_time = parse_time(
-        row["signal_timestamp"]
-    )
+    signal_time = parse_time(row["signal_timestamp"])
+    entry_time = parse_time(row["entry_timestamp"])
 
-    entry_time = parse_time(
-        row["entry_timestamp"]
-    )
-
-    horizon = optional_int(
-        row["horizon"]
-    )
+    horizon = optional_int(row["horizon"])
 
     if horizon not in HORIZONS:
         raise ValueError(
             f"Unexpected horizon: {horizon}"
         )
 
-    seconds = TIMEFRAME_SECONDS[
-        timeframe
-    ]
+    seconds = TIMEFRAME_SECONDS[timeframe]
 
-    expected_entry = (
-        signal_time.timestamp()
-        + seconds
+    expected_entry = signal_time + timedelta(
+        seconds=seconds
     )
 
-    if entry_time.timestamp() != expected_entry:
-        raise ValueError(
-            "Entry timestamp is not the next "
-            f"expected candle: "
-            f"{timeframe}/{row['market']}"
+    # Clean V004:
+    # Do not assume the source entry timestamp is valid.
+    # Record discrepancies instead of aborting the run.
+
+    if entry_time != expected_entry:
+        signal_index = positions.get(signal_time)
+        entry_index = positions.get(entry_time)
+
+        if signal_index is None:
+            reason = "SIGNAL_CANDLE_MISSING"
+        elif entry_index is None:
+            reason = "ENTRY_CANDLE_MISSING"
+        elif entry_index <= signal_index:
+            reason = "ENTRY_NOT_AFTER_SIGNAL"
+        elif entry_index == signal_index + 1:
+            reason = "NEXT_AVAILABLE_CANDLE_TIME_GAP"
+        else:
+            reason = "ENTRY_NOT_NEXT_CANDLE"
+
+        detail = (
+            f"expected={expected_entry.isoformat()}; "
+            f"actual={entry_time.isoformat()}; "
+            f"signal_index={signal_index}; "
+            f"entry_index={entry_index}"
         )
+
+        return invalid_event(row, reason, detail)
 
     if entry_time not in positions:
-        raise ValueError(
-            "Entry candle missing: "
-            f"{timeframe}/{row['market']}/"
-            f"{entry_time.isoformat()}"
+        return invalid_event(
+            row,
+            "ENTRY_CANDLE_MISSING",
+            f"entry={entry_time.isoformat()}",
         )
 
-    entry_index = positions[
-        entry_time
-    ]
+    entry_index = positions[entry_time]
 
-    entry_price = candles[
-        entry_index
-    ]["open"]
+    if signal_time in positions:
+        signal_index = positions[signal_time]
 
-    source_entry = finite_float(
-        row["entry_price"]
-    )
+        if entry_index != signal_index + 1:
+            return invalid_event(
+                row,
+                "ENTRY_INDEX_MISMATCH",
+                (
+                    f"signal_index={signal_index}; "
+                    f"entry_index={entry_index}"
+                ),
+            )
+
+    entry_price = candles[entry_index]["open"]
+    source_entry = finite_float(row["entry_price"])
 
     entry_match = nearly_equal(
         entry_price,
@@ -637,7 +579,6 @@ def calculate_event(row, candles, positions):
 
     highest = entry_price
     lowest = entry_price
-
     first_hit = None
     observed = 0
 
@@ -649,46 +590,22 @@ def calculate_event(row, candles, positions):
 
         candle = candles[index]
 
-        expected_timestamp = (
-            entry_time.timestamp()
-            + offset * seconds
+        expected_timestamp = entry_time + timedelta(
+            seconds=offset * seconds
         )
 
-        if (
-            candle["timestamp"].timestamp()
-            != expected_timestamp
-        ):
+        if candle["timestamp"] != expected_timestamp:
             break
 
         observed += 1
-
-        highest = max(
-            highest,
-            candle["high"],
-        )
-
-        lowest = min(
-            lowest,
-            candle["low"],
-        )
+        highest = max(highest, candle["high"])
+        lowest = min(lowest, candle["low"])
 
         if (
             first_hit is None
             and candle["high"] >= target_price
         ):
             first_hit = offset + 1
-
-    # Critical Clean V003 correction:
-    #
-    # A target reached within the observed
-    # candles is HIT even when the complete
-    # horizon is not available.
-    #
-    # CENSORED means the target was not
-    # observed and the full horizon is
-    # unavailable.
-    #
-    # MISS requires the full horizon.
 
     if first_hit is not None:
         status = "HIT"
@@ -703,13 +620,11 @@ def calculate_event(row, candles, positions):
         hit_value = 0
 
     max_return = (
-        (highest / entry_price - 1.0)
-        * 100.0
+        (highest / entry_price - 1.0) * 100.0
     )
 
     max_drawdown = (
-        (lowest / entry_price - 1.0)
-        * 100.0
+        (lowest / entry_price - 1.0) * 100.0
     )
 
     source_status = str(
@@ -722,41 +637,26 @@ def calculate_event(row, candles, positions):
         "CENSORED",
     ):
         raise ValueError(
-            f"Unexpected source status: "
-            f"{source_status}"
+            f"Unexpected source status: {source_status}"
         )
 
-    source_hit = optional_int(
-        row["hit_30pct"]
-    )
+    source_hit = optional_int(row["hit_30pct"])
 
-    if source_hit not in (
-        None,
-        0,
-        1,
-    ):
+    if source_hit not in (None, 0, 1):
         raise ValueError(
             "Invalid source hit_30pct"
         )
 
-    status_match = (
-        status == source_status
-    )
-
-    # Source CENSORED records may encode
-    # hit_30pct as 0 or blank.
-    # Neither is treated as a confirmed MISS.
+    status_match = status == source_status
 
     if status == "HIT":
         status_match = (
-            status_match
-            and source_hit == 1
+            status_match and source_hit == 1
         )
 
     elif status == "MISS":
         status_match = (
-            status_match
-            and source_hit == 0
+            status_match and source_hit == 0
         )
 
     first_hit_source = optional_int(
@@ -804,30 +704,22 @@ def calculate_event(row, candles, positions):
 
     return {
         "timeframe": timeframe,
-        "market": row["market"],
-        "signal_timestamp": (
-            signal_time.isoformat()
-        ),
-        "entry_timestamp": (
-            entry_time.isoformat()
-        ),
+        "market": market,
+        "signal_timestamp": signal_time.isoformat(),
+        "entry_timestamp": entry_time.isoformat(),
         "entry_price": entry_price,
         "horizon": horizon,
         "status": status,
         "hit_30pct": hit_value,
         "first_hit_bars": (
-            first_hit
-            if first_hit is not None
-            else ""
+            first_hit if first_hit is not None else ""
         ),
         "max_return_pct": max_return,
         "max_drawdown_pct": max_drawdown,
         "observed_bars": observed,
         "required_bars": horizon,
         "source_status": source_status,
-        "source_hit_30pct": (
-            row["hit_30pct"]
-        ),
+        "source_hit_30pct": row["hit_30pct"],
         "status_match": status_match,
         "entry_price_match": entry_match,
         "first_hit_match": first_hit_match,
@@ -835,6 +727,8 @@ def calculate_event(row, candles, positions):
         "max_return_match": return_match,
         "max_drawdown_match": drawdown_match,
         "all_checks_match": all(checks),
+        "entry_time_check": "PASS",
+        "entry_time_detail": "",
     }
 
 
@@ -851,8 +745,7 @@ def create_checkpoint(connection):
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS progress (
-            id INTEGER PRIMARY KEY
-                CHECK (id = 1),
+            id INTEGER PRIMARY KEY CHECK (id = 1),
             source_rows INTEGER NOT NULL,
             oos_rows INTEGER NOT NULL,
             matched_rows INTEGER NOT NULL,
@@ -967,26 +860,7 @@ def checkpoint_integrity(connection):
             "Checkpoint database integrity failed"
         )
 
-    duplicate = connection.execute(
-        """
-        SELECT COUNT(*)
-        FROM (
-            SELECT source_row, rule_id
-            FROM trades
-            GROUP BY source_row, rule_id
-            HAVING COUNT(*) > 1
-        )
-        """
-    ).fetchone()[0]
-
-    if duplicate:
-        raise RuntimeError(
-            "Duplicate checkpoint trade records"
-        )
-
-    progress = progress_get(
-        connection
-    )
+    progress = progress_get(connection)
 
     invalid = connection.execute(
         """
@@ -1003,6 +877,22 @@ def checkpoint_integrity(connection):
             "Checkpoint progress inconsistent"
         )
 
+    # Validate that all committed trade payloads
+    # remain parseable and contain required fields.
+
+    cursor = connection.execute(
+        "SELECT payload FROM trades"
+    )
+
+    for (payload,) in cursor:
+        trade = json.loads(payload)
+
+        for field in TRADE_FIELDS:
+            if field not in trade:
+                raise RuntimeError(
+                    f"Checkpoint trade field missing: {field}"
+                )
+
     return progress
 
 
@@ -1014,33 +904,16 @@ def parse_args():
         )
     )
 
-    parser.add_argument(
-        "--root",
-        required=True,
-    )
-
-    parser.add_argument(
-        "--detail",
-    )
-
-    parser.add_argument(
-        "--oos-result",
-    )
-
-    parser.add_argument(
-        "--ohlcv-root",
-    )
-
-    parser.add_argument(
-        "--output-dir",
-    )
-
+    parser.add_argument("--root", required=True)
+    parser.add_argument("--detail")
+    parser.add_argument("--oos-result")
+    parser.add_argument("--ohlcv-root")
+    parser.add_argument("--output-dir")
     parser.add_argument(
         "--max-events",
         type=int,
         default=0,
     )
-
     parser.add_argument(
         "--resume",
         action="store_true",
@@ -1077,14 +950,9 @@ def write_csv(path, fields, rows):
                 writer.writerow(row)
 
             stream.flush()
-            os.fsync(
-                stream.fileno()
-            )
+            os.fsync(stream.fileno())
 
-        os.replace(
-            temporary,
-            path,
-        )
+        os.replace(temporary, path)
 
     finally:
         if temporary.exists():
@@ -1138,15 +1006,9 @@ def main():
             f"Missing OHLCV root: {ohlcv_root}"
         )
 
-    # Never allow output to overlap source data.
-
     output = output.resolve()
 
-    for protected in (
-        detail,
-        oos,
-        ohlcv_root,
-    ):
+    for protected in (detail, oos, ohlcv_root):
         protected = protected.resolve()
 
         if (
@@ -1162,9 +1024,7 @@ def main():
     log(f"{PROGRAM} | {VERSION}")
     log("=" * 70)
 
-    boundaries, rules = load_oos(
-        oos
-    )
+    boundaries, rules = load_oos(oos)
 
     for timeframe, boundary in boundaries.items():
         log(
@@ -1209,9 +1069,7 @@ def main():
             f"Missing detail columns: {missing}"
         )
 
-    checkpoint_path = (
-        output / "checkpoint.sqlite3"
-    )
+    checkpoint_path = output / "checkpoint.sqlite3"
 
     if args.resume:
         if not checkpoint_path.is_file():
@@ -1219,9 +1077,7 @@ def main():
                 "Resume requested but checkpoint missing"
             )
     else:
-        if output.exists() and any(
-            output.iterdir()
-        ):
+        if output.exists() and any(output.iterdir()):
             raise FileExistsError(
                 "Output directory is not empty. "
                 "Use a new output path or --resume."
@@ -1242,19 +1098,12 @@ def main():
     )
 
     try:
-        create_checkpoint(
-            connection
-        )
+        create_checkpoint(connection)
 
         input_hashes = {
             str(detail): sha256(detail),
             str(oos): sha256(oos),
         }
-
-        # Include exact source script and
-        # processing parameters in checkpoint
-        # provenance. A modified script cannot
-        # silently resume the old checkpoint.
 
         script_hash = sha256(
             Path(__file__).resolve()
@@ -1292,7 +1141,6 @@ def main():
                 "provenance",
                 provenance_text,
             )
-
             connection.commit()
 
         elif existing != provenance_text:
@@ -1305,19 +1153,13 @@ def main():
             connection
         )
 
-        resume_rows = progress[
-            "source_rows"
-        ]
+        resume_rows = progress["source_rows"]
 
         if args.resume:
             log(
                 f"[RESUME] Verified rows: "
                 f"{resume_rows:,}"
             )
-
-        # OHLCV input hashes are stored in
-        # checkpoint metadata and verified
-        # before reusing each cached result.
 
         def verified_ohlcv(path):
             key = (
@@ -1360,13 +1202,7 @@ def main():
             encoding="utf-8-sig",
             newline="",
         ) as stream:
-            reader = csv.DictReader(
-                stream
-            )
-
-            # Resuming skips previously committed
-            # source rows. No previous result is
-            # accepted without checkpoint checks.
+            reader = csv.DictReader(stream)
 
             for index, row in enumerate(
                 reader,
@@ -1398,10 +1234,7 @@ def main():
                     matched_rules = [
                         rule
                         for rule in rules
-                        if rule_matches(
-                            row,
-                            rule,
-                        )
+                        if rule_matches(row, rule)
                     ]
 
                     if matched_rules:
@@ -1426,10 +1259,7 @@ def main():
 
                             row["market"] = market
 
-                            key = (
-                                timeframe,
-                                market,
-                            )
+                            key = (timeframe, market)
 
                             if key != cache_key:
                                 path = find_ohlcv(
@@ -1438,16 +1268,12 @@ def main():
                                     market,
                                 )
 
-                                verified_ohlcv(
-                                    path
-                                )
+                                verified_ohlcv(path)
 
                                 (
                                     cache_candles,
                                     cache_positions,
-                                ) = load_candles(
-                                    path
-                                )
+                                ) = load_candles(path)
 
                                 cache_key = key
 
@@ -1462,6 +1288,17 @@ def main():
                                 cache_candles,
                                 cache_positions,
                             )
+
+                            if (
+                                event["entry_time_check"]
+                                != "PASS"
+                            ):
+                                log(
+                                    "[ENTRY TIME MISMATCH] "
+                                    f"{timeframe}/{market} "
+                                    f"{event['entry_time_check']} "
+                                    f"{event['entry_time_detail']}"
+                                )
 
                             for rule in matched_rules:
                                 trade = {
@@ -1495,9 +1332,7 @@ def main():
                                     ),
                                 )
 
-                if (
-                    index % CHECKPOINT_INTERVAL == 0
-                ):
+                if index % CHECKPOINT_INTERVAL == 0:
                     progress_save(
                         connection,
                         progress,
@@ -1523,20 +1358,10 @@ def main():
                     )
                     break
 
-        progress_save(
-            connection,
-            progress,
-        )
-
+        progress_save(connection, progress)
         connection.commit()
 
-        checkpoint_integrity(
-            connection
-        )
-
-        # Recheck every OHLCV used in this
-        # checkpoint, including files processed
-        # before the current resume session.
+        checkpoint_integrity(connection)
 
         metadata_rows = connection.execute(
             """
@@ -1556,60 +1381,39 @@ def main():
                     f"OHLCV disappeared: {path}"
                 )
 
-            actual_hash = sha256(
-                path
-            )
+            actual_hash = sha256(path)
 
             if actual_hash != expected_hash:
                 raise RuntimeError(
                     f"OHLCV SHA256 changed: {path}"
                 )
 
-            input_hashes[
-                str(path)
-            ] = actual_hash
+            input_hashes[str(path)] = actual_hash
 
         for path_text, expected_hash in list(
             input_hashes.items()
         ):
-            actual_hash = sha256(
-                Path(path_text)
-            )
-
-            if actual_hash != expected_hash:
+            if sha256(Path(path_text)) != expected_hash:
                 raise RuntimeError(
                     "Source SHA256 changed: "
                     f"{path_text}"
                 )
 
-        log("[WRITE] Trade CSV")
-
         trades_path = (
-            output
-            / "independent_backtest_trades.csv"
+            output / "independent_backtest_trades.csv"
         )
-
         summary_path = (
-            output
-            / "independent_backtest_summary.csv"
+            output / "independent_backtest_summary.csv"
         )
-
         checks_path = (
-            output
-            / "independent_backtest_checks.csv"
+            output / "independent_backtest_checks.csv"
         )
-
         result_path = (
-            output
-            / "independent_backtest_result.json"
+            output / "independent_backtest_result.json"
         )
-
         manifest_path = (
-            output
-            / "independent_backtest_manifest.json"
+            output / "independent_backtest_manifest.json"
         )
-
-        # Export rows from verified checkpoint.
 
         def trade_rows():
             cursor = connection.execute(
@@ -1621,9 +1425,9 @@ def main():
             )
 
             for (payload,) in cursor:
-                yield json.loads(
-                    payload
-                )
+                yield json.loads(payload)
+
+        log("[WRITE] Trade CSV")
 
         write_csv(
             trades_path,
@@ -1637,32 +1441,24 @@ def main():
                 "hits": 0,
                 "misses": 0,
                 "censored": 0,
+                "invalid": 0,
                 "status_mismatches": 0,
                 "entry_price_mismatches": 0,
                 "first_hit_mismatches": 0,
                 "observed_bars_mismatches": 0,
                 "max_return_mismatches": 0,
                 "max_drawdown_mismatches": 0,
+                "entry_time_mismatches": 0,
             }
         )
 
         mismatch_fields = {
             "status_match": "status_mismatches",
-            "entry_price_match": (
-                "entry_price_mismatches"
-            ),
-            "first_hit_match": (
-                "first_hit_mismatches"
-            ),
-            "observed_bars_match": (
-                "observed_bars_mismatches"
-            ),
-            "max_return_match": (
-                "max_return_mismatches"
-            ),
-            "max_drawdown_match": (
-                "max_drawdown_mismatches"
-            ),
+            "entry_price_match": "entry_price_mismatches",
+            "first_hit_match": "first_hit_mismatches",
+            "observed_bars_match": "observed_bars_mismatches",
+            "max_return_match": "max_return_mismatches",
+            "max_drawdown_match": "max_drawdown_mismatches",
         }
 
         output_rows = 0
@@ -1676,17 +1472,10 @@ def main():
                 trade["horizon"],
             )
 
-            group = summary_groups[
-                key
-            ]
+            group = summary_groups[key]
+            group["evaluation_rows"] += 1
 
-            group[
-                "evaluation_rows"
-            ] += 1
-
-            status = trade[
-                "status"
-            ]
+            status = trade["status"]
 
             if status == "HIT":
                 group["hits"] += 1
@@ -1696,6 +1485,9 @@ def main():
 
             elif status == "CENSORED":
                 group["censored"] += 1
+
+            elif status == "INVALID_ENTRY_TIME":
+                group["invalid"] += 1
 
             else:
                 raise ValueError(
@@ -1708,6 +1500,9 @@ def main():
                 if not trade[check_field]:
                     group[count_field] += 1
 
+            if trade["entry_time_check"] != "PASS":
+                group["entry_time_mismatches"] += 1
+
         summary_rows = []
 
         mismatch_totals = {
@@ -1715,19 +1510,18 @@ def main():
             for value in mismatch_fields.values()
         }
 
+        mismatch_totals["entry_time_mismatches"] = 0
+
         for key, group in sorted(
             summary_groups.items()
         ):
             rule_id, timeframe, horizon = key
 
             for name in mismatch_totals:
-                mismatch_totals[name] += group[
-                    name
-                ]
+                mismatch_totals[name] += group[name]
 
             observed_outcomes = (
-                group["hits"]
-                + group["misses"]
+                group["hits"] + group["misses"]
             )
 
             hit_rate = (
@@ -1773,20 +1567,13 @@ def main():
             mismatch_totals.values()
         )
 
-        is_smoke = (
-            args.max_events > 0
-        )
+        is_smoke = args.max_events > 0
 
-        if (
-            total_mismatches > 0
-            or output_rows == 0
-        ):
+        if total_mismatches > 0 or output_rows == 0:
             execution_status = "FAIL"
 
         elif is_smoke:
-            execution_status = (
-                "SMOKE_TEST_PASS"
-            )
+            execution_status = "SMOKE_TEST_PASS"
 
         else:
             execution_status = "PASS"
@@ -1795,45 +1582,27 @@ def main():
             {
                 "check": "source_schema",
                 "status": "PASS",
-                "detail": (
-                    "Required source columns present"
-                ),
+                "detail": "Required source columns present",
             },
             {
                 "check": "oos_boundaries",
                 "status": "PASS",
-                "detail": (
-                    "Original timeframe boundaries used"
-                ),
+                "detail": "Original timeframe boundaries used",
             },
             {
                 "check": "candidate_rules",
                 "status": "PASS",
-                "detail": (
-                    "Frozen S00-S04 rules used"
-                ),
-            },
-            {
-                "check": "future_outcome_leakage",
-                "status": "PASS",
-                "detail": (
-                    "Future outcomes not used "
-                    "for signal selection"
-                ),
+                "detail": "Frozen S00-S04 rules used",
             },
             {
                 "check": "checkpoint_integrity",
                 "status": "PASS",
-                "detail": (
-                    "SQLite integrity and progress checked"
-                ),
+                "detail": "SQLite integrity verified",
             },
             {
                 "check": "source_sha256",
                 "status": "PASS",
-                "detail": (
-                    "All registered input hashes verified"
-                ),
+                "detail": "Registered input hashes verified",
             },
         ]
 
@@ -1841,22 +1610,16 @@ def main():
             checks.append({
                 "check": name,
                 "status": (
-                    "PASS"
-                    if count == 0
-                    else "FAIL"
+                    "PASS" if count == 0 else "FAIL"
                 ),
-                "detail": (
-                    f"mismatches={count}"
-                ),
+                "detail": f"mismatches={count}",
             })
 
         checks.extend([
             {
                 "check": "independent_oos_proven",
                 "status": "NOT_VERIFIED",
-                "detail": (
-                    "Existing evaluated OOS data reused"
-                ),
+                "detail": "Existing OOS data reused",
             },
             {
                 "check": "feature_causality",
@@ -1897,51 +1660,16 @@ def main():
             "max_events": args.max_events,
             "target_return_pct": TARGET_PCT,
             "horizons": list(HORIZONS),
-            "source_rows_read": progress[
-                "source_rows"
-            ],
-            "oos_rows_read": progress[
-                "oos_rows"
-            ],
-            "matched_source_rows": progress[
-                "matched_rows"
-            ],
+            "source_rows_read": progress["source_rows"],
+            "oos_rows_read": progress["oos_rows"],
+            "matched_source_rows": progress["matched_rows"],
             "missing_entry_rows_excluded": (
                 progress["missing_entry_rows"]
             ),
             "output_rows": output_rows,
             "summary_rows": len(summary_rows),
-            "status_mismatches": mismatch_totals[
-                "status_mismatches"
-            ],
-            "entry_price_mismatches": (
-                mismatch_totals[
-                    "entry_price_mismatches"
-                ]
-            ),
-            "first_hit_mismatches": (
-                mismatch_totals[
-                    "first_hit_mismatches"
-                ]
-            ),
-            "observed_bars_mismatches": (
-                mismatch_totals[
-                    "observed_bars_mismatches"
-                ]
-            ),
-            "max_return_mismatches": (
-                mismatch_totals[
-                    "max_return_mismatches"
-                ]
-            ),
-            "max_drawdown_mismatches": (
-                mismatch_totals[
-                    "max_drawdown_mismatches"
-                ]
-            ),
-            "total_field_mismatches": (
-                total_mismatches
-            ),
+            "mismatch_counts": mismatch_totals,
+            "total_field_mismatches": total_mismatches,
             "oos_boundaries": {
                 key: value.isoformat()
                 for key, value in boundaries.items()
@@ -1954,9 +1682,9 @@ def main():
             "checkpoint": {
                 "file": checkpoint_path.name,
                 "resume_supported": True,
-                "source_rows_committed": progress[
-                    "source_rows"
-                ],
+                "source_rows_committed": (
+                    progress["source_rows"]
+                ),
             },
             "limitations": [
                 "Existing OOS data reused.",
@@ -1964,17 +1692,16 @@ def main():
                 "Signal construction causality "
                 "not independently audited.",
                 "Events may be statistically dependent.",
-                "Censored events are excluded "
-                "from observed-outcome hit rate.",
+                "Censored events excluded from "
+                "observed-outcome hit rate.",
+                "Invalid entry events excluded from "
+                "observed-outcome hit rate.",
                 "Fees and slippage not modeled.",
                 "No live trading approval.",
             ],
         }
 
-        atomic_json(
-            result_path,
-            result,
-        )
+        atomic_json(result_path, result)
 
         output_hashes = {}
 
@@ -1984,9 +1711,7 @@ def main():
             checks_path,
             result_path,
         ):
-            output_hashes[
-                path.name
-            ] = sha256(path)
+            output_hashes[path.name] = sha256(path)
 
         manifest = {
             "program": PROGRAM,
@@ -1999,15 +1724,10 @@ def main():
             ),
         }
 
-        atomic_json(
-            manifest_path,
-            manifest,
-        )
+        atomic_json(manifest_path, manifest)
 
         log("=" * 70)
-        log(
-            f"EXECUTION STATUS: {execution_status}"
-        )
+        log(f"EXECUTION STATUS: {execution_status}")
         log(
             f"SOURCE ROWS: "
             f"{progress['source_rows']:,}"
@@ -2020,28 +1740,16 @@ def main():
             f"MATCHED SOURCE ROWS: "
             f"{progress['matched_rows']:,}"
         )
-        log(
-            f"OUTPUT ROWS: {output_rows:,}"
-        )
+        log(f"OUTPUT ROWS: {output_rows:,}")
 
         for name, count in mismatch_totals.items():
-            log(
-                f"{name.upper()}: {count:,}"
-            )
+            log(f"{name.upper()}: {count:,}")
 
-        log(
-            "INDEPENDENT OOS PROVEN: FALSE"
-        )
-        log(
-            "LIVE TRADING APPROVED: FALSE"
-        )
+        log("INDEPENDENT OOS PROVEN: FALSE")
+        log("LIVE TRADING APPROVED: FALSE")
         log("=" * 70)
 
-        return (
-            0
-            if execution_status != "FAIL"
-            else 1
-        )
+        return 0 if execution_status != "FAIL" else 1
 
     finally:
         connection.close()
@@ -2049,14 +1757,11 @@ def main():
 
 if __name__ == "__main__":
     try:
-        sys.exit(
-            main()
-        )
+        sys.exit(main())
 
     except Exception as exc:
         log(
             "[FAIL] "
             f"{type(exc).__name__}: {exc}"
         )
-
         sys.exit(1)
