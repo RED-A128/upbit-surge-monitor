@@ -24,7 +24,7 @@ jobs:
     env:
       PRODUCTION_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
       PROGRAM_NAME: backtest_pattern_256_accumulation_candidate_independent.py
-      EXPECTED_VERSION: Clean V003
+      EXPECTED_VERSION: Clean V004
 
     steps:
       # ==========================================================
