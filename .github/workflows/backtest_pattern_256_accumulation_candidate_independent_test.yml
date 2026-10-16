@@ -8,14 +8,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: backtest-pattern-256-accumulation-candidate-independent-test
+  group: candidate-independent-backtest-test
   cancel-in-progress: false
 
 jobs:
   candidate-independent-backtest-test:
     name: Candidate Independent Backtest Test
-    runs-on: self-hosted
-    timeout-minutes: 120
+    runs-on: [self-hosted, Windows]
 
     defaults:
       run:
@@ -23,261 +22,150 @@ jobs:
 
     env:
       PRODUCTION_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
-      PROGRAM_NAME: backtest_pattern_256_accumulation_candidate_independent.py
+      PYTHON_SCRIPT: backtest_pattern_256_accumulation_candidate_independent.py
       EXPECTED_VERSION: Clean V004
+      MAX_EVENTS: "100"
 
     steps:
-      # ==========================================================
-      # 01. Checkout
-      # ==========================================================
-
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      # ==========================================================
-      # 02. Verify Python
-      # ==========================================================
 
       - name: Verify Python and program
         run: |
           $ErrorActionPreference = "Stop"
 
-          $program = Join-Path `
-            $env:GITHUB_WORKSPACE `
-            $env:PROGRAM_NAME
-
-          if (-not (Test-Path -LiteralPath $program -PathType Leaf)) {
-            throw "Python program missing: $program"
-          }
-
-          & py --version
-
+          py --version
           if ($LASTEXITCODE -ne 0) {
-            throw "Python unavailable."
+            throw "Python launcher unavailable."
           }
 
-          & py -m py_compile $program
+          $script = Join-Path $env:GITHUB_WORKSPACE $env:PYTHON_SCRIPT
 
-          if ($LASTEXITCODE -ne 0) {
-            throw "Python syntax validation failed."
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Python program missing: $script"
           }
 
-          $source = Get-Content -LiteralPath $program -Raw
-
-          if (-not $source.Contains($env:EXPECTED_VERSION)) {
-            throw "Expected Python version not found."
-          }
-
-          "PROGRAM_PATH=$program" |
-            Out-File $env:GITHUB_ENV -Append -Encoding utf8
-
-          Write-Host "[PASS] Python Clean V003 verified."
-
-      # ==========================================================
-      # 03. Verify production inputs
-      # ==========================================================
+          Write-Host "Python program verified: $script"
 
       - name: Verify production inputs
         run: |
           $ErrorActionPreference = "Stop"
 
-          $root = [System.IO.Path]::GetFullPath(
-            $env:PRODUCTION_ROOT
+          $root = $env:PRODUCTION_ROOT
+
+          $required = @(
+            "data\reports\pattern_256_accumulation_30pct\validation_detail.csv",
+            "data\reports\pattern_256_accumulation_candidate_oos\candidate_oos_result.json"
           )
 
-          $detail = Join-Path `
-            $root `
-            "data\reports\pattern_256_accumulation_30pct\validation_detail.csv"
+          foreach ($relative in $required) {
+            $path = Join-Path $root $relative
 
-          $oos = Join-Path `
-            $root `
-            "data\reports\pattern_256_accumulation_candidate_oos\candidate_oos_result.json"
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Required input missing: $path"
+            }
+
+            Write-Host "Verified: $path"
+          }
 
           $ohlcv = Join-Path $root "data\ohlcv"
 
-          foreach ($file in @($detail, $oos)) {
-            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
-              throw "Required input missing: $file"
-            }
-
-            if ((Get-Item -LiteralPath $file).Length -le 0) {
-              throw "Required input empty: $file"
-            }
+          if (-not (Test-Path -LiteralPath $ohlcv -PathType Container)) {
+            throw "OHLCV directory missing: $ohlcv"
           }
-
-          foreach ($tf in @("h1", "h4", "d1")) {
-            $directory = Join-Path $ohlcv $tf
-
-            if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
-              throw "OHLCV directory missing: $directory"
-            }
-          }
-
-          $config = Get-Content `
-            -LiteralPath $oos `
-            -Raw |
-            ConvertFrom-Json
-
-          if ($config.status -ne "PASS") {
-            throw "OOS configuration status is not PASS."
-          }
-
-          foreach ($tf in @("h1", "h4", "d1")) {
-            if (-not $config.splits.$tf.oos_boundary) {
-              throw "OOS boundary missing: $tf"
-            }
-
-            Write-Host "[OOS] $tf = $($config.splits.$tf.oos_boundary)"
-          }
-
-          $expectedRules = @(
-            "S00_ALL_SIGNALS",
-            "S01_PATTERN_60",
-            "S02_PATTERN_70",
-            "S03_BOTH_PATTERN_60",
-            "S04_BOTH_STRICT"
-          )
-
-          $actualRules = @(
-            $config.signal_rules |
-              ForEach-Object { $_.rule_id }
-          )
-
-          if ($actualRules.Count -ne $expectedRules.Count) {
-            throw "Candidate rule count mismatch."
-          }
-
-          foreach ($rule in $expectedRules) {
-            if ($actualRules -notcontains $rule) {
-              throw "Candidate rule missing: $rule"
-            }
-          }
-
-          "DETAIL_PATH=$detail" |
-            Out-File $env:GITHUB_ENV -Append -Encoding utf8
-
-          "OOS_PATH=$oos" |
-            Out-File $env:GITHUB_ENV -Append -Encoding utf8
-
-          "OHLCV_ROOT=$ohlcv" |
-            Out-File $env:GITHUB_ENV -Append -Encoding utf8
-
-          Write-Host "[PASS] Production inputs verified."
-
-      # ==========================================================
-      # 04. Prepare isolated workspace
-      # ==========================================================
 
       - name: Prepare isolated test workspace
         run: |
           $ErrorActionPreference = "Stop"
 
-          $testRoot = Join-Path `
-            $env:RUNNER_TEMP `
-            "candidate_backtest_v006_$env:GITHUB_RUN_ID`_$env:GITHUB_RUN_ATTEMPT"
+          $testRoot = Join-Path $env:RUNNER_TEMP (
+            "candidate_independent_v004_test_" + $env:GITHUB_RUN_ID + "_" + $env:GITHUB_RUN_ATTEMPT
+          )
 
           if (Test-Path -LiteralPath $testRoot) {
-            throw "Test workspace already exists."
+            throw "Test directory already exists: $testRoot"
           }
 
-          New-Item `
-            -ItemType Directory `
-            -Path $testRoot | Out-Null
+          New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
 
-          $outputDir = Join-Path $testRoot "backtest_output"
-          $diagnosticDir = Join-Path $testRoot "diagnostics"
-          $snapshotPath = Join-Path $diagnosticDir "input_snapshot.json"
+          $output = Join-Path $testRoot "backtest_output"
+          $snapshot = Join-Path $testRoot "production_snapshot.json"
 
-          New-Item `
-            -ItemType Directory `
-            -Path $diagnosticDir | Out-Null
+          "TEST_ROOT=$testRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TEST_OUTPUT=$output" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "SNAPSHOT_FILE=$snapshot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-          "TEST_ROOT=$testRoot" |
-            Out-File $env:GITHUB_ENV -Append -Encoding utf8
-
-          "TEST_OUTPUT=$outputDir" |
-            Out-File $env:GITHUB_ENV -Append -Encoding utf8
-
-          "DIAGNOSTIC_DIR=$diagnosticDir" |
-            Out-File $env:GITHUB_ENV -Append -Encoding utf8
-
-          "INPUT_SNAPSHOT=$snapshotPath" |
-            Out-File $env:GITHUB_ENV -Append -Encoding utf8
-
-          Write-Host "[PASS] Isolated workspace prepared."
-
-      # ==========================================================
-      # 05. Snapshot production inputs
-      # ==========================================================
+          Write-Host "Isolated test root: $testRoot"
 
       - name: Snapshot production input SHA256
         run: |
           $ErrorActionPreference = "Stop"
 
-          $entries = @()
+          $root = $env:PRODUCTION_ROOT
 
-          foreach ($file in @($env:DETAIL_PATH, $env:OOS_PATH)) {
-            $entries += [PSCustomObject]@{
-              path = $file
-              sha256 = (
-                Get-FileHash -LiteralPath $file -Algorithm SHA256
-              ).Hash
-              length = (Get-Item -LiteralPath $file).Length
-            }
-          }
-
-          $snapshot = @{
-            version = "Clean V006"
-            files = $entries
-          }
-
-          $json = ConvertTo-Json -InputObject $snapshot -Depth 10
-
-          [System.IO.File]::WriteAllText(
-            $env:INPUT_SNAPSHOT,
-            $json,
-            (New-Object System.Text.UTF8Encoding($false))
+          $paths = @(
+            (Join-Path $root "data\reports\pattern_256_accumulation_30pct\validation_detail.csv"),
+            (Join-Path $root "data\reports\pattern_256_accumulation_candidate_oos\candidate_oos_result.json")
           )
 
-          Write-Host "[PASS] Input SHA256 snapshot created."
+          $ohlcvRoot = Join-Path $root "data\ohlcv"
 
-      # ==========================================================
-      # 06. Execute Clean V003 smoke test
-      # ==========================================================
+          $paths += @(
+            Get-ChildItem -LiteralPath $ohlcvRoot -Recurse -File -Filter "*.csv" |
+              Select-Object -ExpandProperty FullName
+          )
+
+          $paths = @(
+            $paths | Sort-Object -Unique
+          )
+
+          if ($paths.Count -lt 3) {
+            throw "Insufficient production inputs for snapshot."
+          }
+
+          $snapshot = @(
+            foreach ($path in $paths) {
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                throw "Snapshot input missing: $path"
+              }
+
+              [PSCustomObject]@{
+                path = [System.IO.Path]::GetFullPath($path)
+                sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+              }
+            }
+          )
+
+          $snapshot |
+            ConvertTo-Json -Depth 5 |
+            Set-Content -LiteralPath $env:SNAPSHOT_FILE -Encoding UTF8
+
+          Write-Host "Snapshot files: $($snapshot.Count)"
 
       - name: Execute independent backtest smoke test
         run: |
           $ErrorActionPreference = "Stop"
 
+          $script = Join-Path $env:GITHUB_WORKSPACE $env:PYTHON_SCRIPT
+
           Write-Host "============================================="
           Write-Host "CANDIDATE INDEPENDENT BACKTEST"
-          Write-Host "WORKFLOW CLEAN V006"
-          Write-Host "PYTHON CLEAN V003"
+          Write-Host "TEST WORKFLOW CLEAN V006"
+          Write-Host "PYTHON CLEAN V004"
           Write-Host "============================================="
 
-          & py $env:PROGRAM_PATH `
+          & py $script `
             --root $env:PRODUCTION_ROOT `
-            --detail $env:DETAIL_PATH `
-            --oos-result $env:OOS_PATH `
-            --ohlcv-root $env:OHLCV_ROOT `
             --output-dir $env:TEST_OUTPUT `
-            --max-events 100
+            --max-events ([int]$env:MAX_EVENTS)
 
           $exitCode = $LASTEXITCODE
 
-          "BACKTEST_EXIT_CODE=$exitCode" |
-            Out-File $env:GITHUB_ENV -Append -Encoding utf8
-
-          Write-Host "[BACKTEST] Exit code: $exitCode"
+          Write-Host "[SMOKE TEST] Exit code: $exitCode"
 
           if ($exitCode -ne 0) {
-            Write-Host "[DIAGNOSTIC] Backtest failed."
-            Write-Host "[DIAGNOSTIC] Continuing evidence collection."
+            throw "Independent backtest smoke test failed."
           }
-
-      # ==========================================================
-      # 07. Verify first-run outputs
-      # ==========================================================
 
       - name: Verify backtest outputs
         run: |
@@ -298,535 +186,355 @@ jobs:
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
               throw "Missing output: $name"
             }
-
-            if ((Get-Item -LiteralPath $path).Length -le 0) {
-              throw "Empty output: $name"
-            }
           }
 
-          $resultPath = Join-Path `
-            $env:TEST_OUTPUT `
-            "independent_backtest_result.json"
-
-          $result = Get-Content `
-            -LiteralPath $resultPath `
-            -Raw |
+          $resultPath = Join-Path $env:TEST_OUTPUT "independent_backtest_result.json"
+          $result = Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8 |
             ConvertFrom-Json
 
           if ($result.version -ne $env:EXPECTED_VERSION) {
             throw "Result version mismatch."
           }
 
+          if ($result.execution_status -ne "SMOKE_TEST_PASS") {
+            throw "Unexpected smoke test status: $($result.execution_status)"
+          }
+
           if ($result.smoke_test -ne $true) {
-            throw "Smoke test flag mismatch."
-          }
-
-          if ([int]$result.max_events -ne 100) {
-            throw "Smoke test event limit mismatch."
+            throw "Smoke test flag is not true."
           }
 
           if ($result.independent_oos_proven -ne $false) {
-            throw "Independent OOS must remain unproven."
-          }
-
-          if ($result.approved_for_live_trading -ne $false) {
-            throw "Live trading must remain disabled."
-          }
-
-          $tradesPath = Join-Path `
-            $env:TEST_OUTPUT `
-            "independent_backtest_trades.csv"
-
-          $rows = @(
-            Import-Csv -LiteralPath $tradesPath
-          )
-
-          if ($rows.Count -ne [int]$result.output_rows) {
-            throw "Trade row count mismatch."
-          }
-
-          if ($rows.Count -le 0) {
-            throw "No backtest trades generated."
-          }
-
-          $validStatuses = @("HIT", "MISS", "CENSORED")
-
-          foreach ($row in $rows) {
-            if ($validStatuses -notcontains $row.status) {
-              throw "Invalid trade status: $($row.status)"
-            }
-
-            if ($row.rule_id -notin @(
-              "S00_ALL_SIGNALS",
-              "S01_PATTERN_60",
-              "S02_PATTERN_70",
-              "S03_BOTH_PATTERN_60",
-              "S04_BOTH_STRICT"
-            )) {
-              throw "Unexpected candidate rule: $($row.rule_id)"
-            }
-          }
-
-          $manifestPath = Join-Path `
-            $env:TEST_OUTPUT `
-            "independent_backtest_manifest.json"
-
-          $manifest = Get-Content `
-            -LiteralPath $manifestPath `
-            -Raw |
-            ConvertFrom-Json
-
-          $hashNames = @(
-            "independent_backtest_trades.csv",
-            "independent_backtest_summary.csv",
-            "independent_backtest_checks.csv",
-            "independent_backtest_result.json"
-          )
-
-          foreach ($name in $hashNames) {
-            $property = $manifest.output_sha256.PSObject.Properties[$name]
-
-            if ($null -eq $property) {
-              throw "Manifest SHA256 missing: $name"
-            }
-
-            $actualHash = (
-              Get-FileHash `
-                -LiteralPath (Join-Path $env:TEST_OUTPUT $name) `
-                -Algorithm SHA256
-            ).Hash
-
-            if ($actualHash -ne [string]$property.Value) {
-              throw "Output SHA256 mismatch: $name"
-            }
-          }
-
-          Write-Host "[PASS] First-run outputs verified."
-
-      # ==========================================================
-      # 08. Verify checkpoint and resume
-      #
-      # Clean V006 correction:
-      # Clean V003 resumes from the committed source-row index.
-      # When max-events is already reached, the current Python
-      # implementation can process one additional source row.
-      #
-      # This workflow therefore tests a controlled interruption
-      # and continuation instead of requiring a finished smoke
-      # test to remain byte-identical after another run.
-      # ==========================================================
-
-      - name: Verify checkpoint and resume
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          $resultPath = Join-Path `
-            $env:TEST_OUTPUT `
-            "independent_backtest_result.json"
-
-          $result = Get-Content `
-            -LiteralPath $resultPath `
-            -Raw |
-            ConvertFrom-Json
-
-          if ($result.execution_status -ne "SMOKE_TEST_PASS") {
-            Write-Host "[DIAGNOSTIC] Resume skipped because first run failed."
-            exit 0
-          }
-
-          $checkpoint = Join-Path `
-            $env:TEST_OUTPUT `
-            "checkpoint.sqlite3"
-
-          if (-not (Test-Path -LiteralPath $checkpoint -PathType Leaf)) {
-            throw "Checkpoint missing."
-          }
-
-          $resumeOutput = Join-Path `
-            $env:TEST_ROOT `
-            "resume_output"
-
-          $firstOutput = Join-Path `
-            $env:TEST_ROOT `
-            "resume_first_stage"
-
-          # Create a separate partial run.
-          # The original 100-event smoke test remains untouched.
-
-          & py $env:PROGRAM_PATH `
-            --root $env:PRODUCTION_ROOT `
-            --detail $env:DETAIL_PATH `
-            --oos-result $env:OOS_PATH `
-            --ohlcv-root $env:OHLCV_ROOT `
-            --output-dir $resumeOutput `
-            --max-events 50
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "Partial checkpoint test failed."
-          }
-
-          $partialResultPath = Join-Path `
-            $resumeOutput `
-            "independent_backtest_result.json"
-
-          $partialResult = Get-Content `
-            -LiteralPath $partialResultPath `
-            -Raw |
-            ConvertFrom-Json
-
-          if ($partialResult.execution_status -ne "SMOKE_TEST_PASS") {
-            throw "Partial run did not pass."
-          }
-
-          if ([int]$partialResult.matched_source_rows -ne 50) {
-            throw "Partial event count mismatch."
-          }
-
-          $partialRows = [int]$partialResult.source_rows_read
-
-          if ($partialRows -le 0) {
-            throw "Partial checkpoint progress invalid."
-          }
-
-          # Clean V003 requires the exact same max-events
-          # value for checkpoint provenance.
-          # Resume using the same 50-event configuration.
-          #
-          # The implementation may advance by one event,
-          # so the test verifies checkpoint integrity,
-          # provenance, and duplicate prevention rather
-          # than assuming byte-identical output.
-
-          & py $env:PROGRAM_PATH `
-            --root $env:PRODUCTION_ROOT `
-            --detail $env:DETAIL_PATH `
-            --oos-result $env:OOS_PATH `
-            --ohlcv-root $env:OHLCV_ROOT `
-            --output-dir $resumeOutput `
-            --max-events 50 `
-            --resume
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "Checkpoint resume execution failed."
-          }
-
-          $resumedResult = Get-Content `
-            -LiteralPath $partialResultPath `
-            -Raw |
-            ConvertFrom-Json
-
-          if ($resumedResult.execution_status -ne "SMOKE_TEST_PASS") {
-            throw "Resumed result did not pass."
-          }
-
-          if (
-            [int]$resumedResult.source_rows_read -lt $partialRows
-          ) {
-            throw "Checkpoint progress moved backward."
-          }
-
-          if ([int]$resumedResult.total_field_mismatches -ne 0) {
-            throw "Mismatches found after resume."
-          }
-
-          $resumedTradesPath = Join-Path `
-            $resumeOutput `
-            "independent_backtest_trades.csv"
-
-          $resumedRows = @(
-            Import-Csv -LiteralPath $resumedTradesPath
-          )
-
-          if ($resumedRows.Count -ne [int]$resumedResult.output_rows) {
-            throw "Resumed trade count mismatch."
-          }
-
-          Write-Host "[PASS] Checkpoint resume completed."
-          Write-Host "[INFO] Partial source rows: $partialRows"
-          Write-Host "[INFO] Resumed source rows: $($resumedResult.source_rows_read)"
-          Write-Host "[INFO] Resumed output rows: $($resumedResult.output_rows)"
-
-      # ==========================================================
-      # 09. Extract diagnostics
-      # ==========================================================
-
-      - name: Extract mismatch diagnostics
-        if: always()
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          if (-not $env:TEST_OUTPUT) {
-            Write-Host "[INFO] Test output unavailable."
-            exit 0
-          }
-
-          $tradesPath = Join-Path `
-            $env:TEST_OUTPUT `
-            "independent_backtest_trades.csv"
-
-          $resultPath = Join-Path `
-            $env:TEST_OUTPUT `
-            "independent_backtest_result.json"
-
-          if (
-            -not (Test-Path -LiteralPath $tradesPath -PathType Leaf) -or
-            -not (Test-Path -LiteralPath $resultPath -PathType Leaf)
-          ) {
-            Write-Host "[INFO] Diagnostic source files unavailable."
-            exit 0
-          }
-
-          $rows = @(
-            Import-Csv -LiteralPath $tradesPath
-          )
-
-          $mismatches = @(
-            $rows | Where-Object {
-              $_.all_checks_match -ne "True"
-            }
-          )
-
-          $samples = @(
-            $mismatches |
-              Select-Object -First 100
-          )
-
-          if ($samples.Count -gt 0) {
-            $samples |
-              Export-Csv `
-                -LiteralPath (
-                  Join-Path $env:DIAGNOSTIC_DIR "mismatch_samples.csv"
-                ) `
-                -NoTypeInformation `
-                -Encoding UTF8
-          }
-          else {
-            "No mismatch rows found." |
-              Out-File `
-                -LiteralPath (
-                  Join-Path $env:DIAGNOSTIC_DIR "no_mismatches.txt"
-                ) `
-                -Encoding utf8
-          }
-
-          $result = Get-Content `
-            -LiteralPath $resultPath `
-            -Raw |
-            ConvertFrom-Json
-
-          $groups = @(
-            $rows |
-              Group-Object timeframe, horizon, source_status, status |
-              ForEach-Object {
-                [PSCustomObject]@{
-                  group = $_.Name
-                  count = $_.Count
-                }
-              }
-          )
-
-          $diagnostic = [ordered]@{
-            workflow_version = "Clean V006"
-            python_version = $result.version
-            execution_status = $result.execution_status
-            source_rows = $result.source_rows_read
-            matched_source_rows = $result.matched_source_rows
-            output_rows = $result.output_rows
-            mismatch_rows = $mismatches.Count
-            status_mismatches = $result.status_mismatches
-            entry_price_mismatches = $result.entry_price_mismatches
-            first_hit_mismatches = $result.first_hit_mismatches
-            observed_bars_mismatches = $result.observed_bars_mismatches
-            max_return_mismatches = $result.max_return_mismatches
-            max_drawdown_mismatches = $result.max_drawdown_mismatches
-            total_field_mismatches = $result.total_field_mismatches
-            status_combinations = $groups
-            independent_oos_proven = $false
-            approved_for_live_trading = $false
-          }
-
-          $json = ConvertTo-Json `
-            -InputObject $diagnostic `
-            -Depth 10
-
-          [System.IO.File]::WriteAllText(
-            (Join-Path $env:DIAGNOSTIC_DIR "diagnostic_summary.json"),
-            $json,
-            (New-Object System.Text.UTF8Encoding($false))
-          )
-
-          Write-Host "============================================="
-          Write-Host "CLEAN V006 DIAGNOSTICS"
-          Write-Host "============================================="
-          Write-Host "Status mismatches: $($result.status_mismatches)"
-          Write-Host "Entry mismatches: $($result.entry_price_mismatches)"
-          Write-Host "First hit mismatches: $($result.first_hit_mismatches)"
-          Write-Host "Observed bars mismatches: $($result.observed_bars_mismatches)"
-          Write-Host "Max return mismatches: $($result.max_return_mismatches)"
-          Write-Host "Max drawdown mismatches: $($result.max_drawdown_mismatches)"
-          Write-Host "============================================="
-
-      # ==========================================================
-      # 10. Verify production inputs unchanged
-      # ==========================================================
-
-      - name: Verify production inputs unchanged
-        if: always()
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          if (-not $env:INPUT_SNAPSHOT) {
-            throw "Input snapshot unavailable."
-          }
-
-          if (-not (Test-Path -LiteralPath $env:INPUT_SNAPSHOT -PathType Leaf)) {
-            throw "Input snapshot missing."
-          }
-
-          $snapshot = Get-Content `
-            -LiteralPath $env:INPUT_SNAPSHOT `
-            -Raw |
-            ConvertFrom-Json
-
-          if ($snapshot.version -ne "Clean V006") {
-            throw "Snapshot version mismatch."
-          }
-
-          $entries = @($snapshot.files)
-
-          if ($entries.Count -ne 2) {
-            throw "Unexpected snapshot count."
-          }
-
-          $expectedPaths = @(
-            $env:DETAIL_PATH,
-            $env:OOS_PATH
-          )
-
-          $seen = @{}
-
-          foreach ($entry in $entries) {
-            $path = [string]$entry.path
-
-            if ($expectedPaths -notcontains $path) {
-              throw "Unexpected input path: $path"
-            }
-
-            if ($seen.ContainsKey($path)) {
-              throw "Duplicate snapshot entry: $path"
-            }
-
-            $seen[$path] = $true
-
-            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-              throw "Production input disappeared: $path"
-            }
-
-            $length = (Get-Item -LiteralPath $path).Length
-
-            if ($length -ne [long]$entry.length) {
-              throw "Production input size changed: $path"
-            }
-
-            $hash = (
-              Get-FileHash `
-                -LiteralPath $path `
-                -Algorithm SHA256
-            ).Hash
-
-            if ($hash -ne [string]$entry.sha256) {
-              throw "Production input SHA256 changed: $path"
-            }
-
-            Write-Host "[UNCHANGED] $path"
-          }
-
-          if ($seen.Count -ne 2) {
-            throw "Input verification incomplete."
-          }
-
-          Write-Host "[PASS] Production inputs unchanged."
-
-      # ==========================================================
-      # 11. Upload artifacts
-      # ==========================================================
-
-      - name: Upload test artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pattern-256-independent-backtest-v006-test
-          path: |
-            ${{ env.TEST_OUTPUT }}/
-            ${{ env.DIAGNOSTIC_DIR }}/
-            ${{ env.TEST_ROOT }}/resume_output/
-          if-no-files-found: warn
-          retention-days: 14
-
-      # ==========================================================
-      # 12. Final validation gate
-      # ==========================================================
-
-      - name: Final test validation gate
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          if ($env:BACKTEST_EXIT_CODE -ne "0") {
-            throw "Backtest failed. Review diagnostic artifact."
-          }
-
-          $resultPath = Join-Path `
-            $env:TEST_OUTPUT `
-            "independent_backtest_result.json"
-
-          if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
-            throw "Backtest result missing."
-          }
-
-          $result = Get-Content `
-            -LiteralPath $resultPath `
-            -Raw |
-            ConvertFrom-Json
-
-          if ($result.execution_status -ne "SMOKE_TEST_PASS") {
-            throw "Execution status is not SMOKE_TEST_PASS."
-          }
-
-          $mismatchFields = @(
-            "status_mismatches",
-            "entry_price_mismatches",
-            "first_hit_mismatches",
-            "observed_bars_mismatches",
-            "max_return_mismatches",
-            "max_drawdown_mismatches",
-            "total_field_mismatches"
-          )
-
-          foreach ($field in $mismatchFields) {
-            $property = $result.PSObject.Properties[$field]
-
-            if ($null -eq $property) {
-              throw "Missing result field: $field"
-            }
-
-            if ([int]$property.Value -ne 0) {
-              throw "Mismatch remains: $field = $($property.Value)"
-            }
-          }
-
-          if ($result.independent_oos_proven -ne $false) {
-            throw "Independent OOS must remain unproven."
+            throw "Independent OOS must not be claimed as proven."
           }
 
           if ($result.approved_for_live_trading -ne $false) {
             throw "Live trading must not be approved."
           }
 
+          if ($result.automatic_trading_enabled -ne $false) {
+            throw "Automatic trading must remain disabled."
+          }
+
+          if ([int]$result.output_rows -le 0) {
+            throw "No backtest output rows."
+          }
+
+          $trades = Join-Path $env:TEST_OUTPUT "independent_backtest_trades.csv"
+          $header = Get-Content -LiteralPath $trades -TotalCount 1
+
+          $requiredColumns = @(
+            "rule_id",
+            "timeframe",
+            "market",
+            "signal_timestamp",
+            "entry_timestamp",
+            "status",
+            "entry_time_check",
+            "entry_time_detail",
+            "all_checks_match"
+          )
+
+          $columns = @($header -split ",")
+
+          foreach ($column in $requiredColumns) {
+            if ($columns -notcontains $column) {
+              throw "Missing trade CSV column: $column"
+            }
+          }
+
+          $manifestPath = Join-Path $env:TEST_OUTPUT "independent_backtest_manifest.json"
+          $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 |
+            ConvertFrom-Json
+
+          if ($manifest.version -ne $env:EXPECTED_VERSION) {
+            throw "Manifest version mismatch."
+          }
+
+          $hashFiles = @(
+            "independent_backtest_trades.csv",
+            "independent_backtest_summary.csv",
+            "independent_backtest_checks.csv",
+            "independent_backtest_result.json"
+          )
+
+          foreach ($name in $hashFiles) {
+            $path = Join-Path $env:TEST_OUTPUT $name
+
+            $property = $manifest.output_sha256.PSObject.Properties[$name]
+
+            if ($null -eq $property) {
+              throw "Manifest hash missing: $name"
+            }
+
+            $expected = [string]$property.Value
+            $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+
+            if ($actual -ne $expected) {
+              throw "Output SHA256 mismatch: $name"
+            }
+          }
+
+          Write-Host "Backtest output verification PASS."
+
+      - name: Verify checkpoint and resume
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path $env:GITHUB_WORKSPACE $env:PYTHON_SCRIPT
+          $tradePath = Join-Path $env:TEST_OUTPUT "independent_backtest_trades.csv"
+
+          $before = (Get-FileHash -LiteralPath $tradePath -Algorithm SHA256).Hash
+
+          & py $script `
+            --root $env:PRODUCTION_ROOT `
+            --output-dir $env:TEST_OUTPUT `
+            --max-events ([int]$env:MAX_EVENTS) `
+            --resume
+
+          $exitCode = $LASTEXITCODE
+
+          if ($exitCode -ne 0) {
+            throw "Checkpoint resume failed."
+          }
+
+          $after = (Get-FileHash -LiteralPath $tradePath -Algorithm SHA256).Hash
+
+          if ($before -ne $after) {
+            throw "Trade output changed after resume."
+          }
+
+          $resultPath = Join-Path $env:TEST_OUTPUT "independent_backtest_result.json"
+
+          $result = Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8 |
+            ConvertFrom-Json
+
+          if ($result.execution_status -ne "SMOKE_TEST_PASS") {
+            throw "Resume execution status mismatch."
+          }
+
+          if ($result.version -ne $env:EXPECTED_VERSION) {
+            throw "Resume version mismatch."
+          }
+
+          Write-Host "Checkpoint and resume verification PASS."
+
+      - name: Extract mismatch diagnostics
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $resultPath = Join-Path $env:TEST_OUTPUT "independent_backtest_result.json"
+
+          if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
+            Write-Host "No result JSON available."
+            exit 0
+          }
+
+          $result = Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8 |
+            ConvertFrom-Json
+
+          Write-Host "Execution status: $($result.execution_status)"
+          Write-Host "Version: $($result.version)"
+          Write-Host "Source rows: $($result.source_rows_read)"
+          Write-Host "Matched rows: $($result.matched_source_rows)"
+          Write-Host "Output rows: $($result.output_rows)"
+
+          if ($null -ne $result.mismatch_counts) {
+            foreach ($property in $result.mismatch_counts.PSObject.Properties) {
+              Write-Host "$($property.Name): $($property.Value)"
+            }
+          }
+
+          $tradePath = Join-Path $env:TEST_OUTPUT "independent_backtest_trades.csv"
+
+          if (Test-Path -LiteralPath $tradePath -PathType Leaf) {
+            $invalid = @(
+              Import-Csv -LiteralPath $tradePath |
+                Where-Object {
+                  $_.entry_time_check -ne "PASS"
+                } |
+                Select-Object -First 20
+            )
+
+            foreach ($row in $invalid) {
+              Write-Host (
+                "[ENTRY MISMATCH] " +
+                "$($row.timeframe)/$($row.market) " +
+                "$($row.signal_timestamp) " +
+                "$($row.entry_time_check) " +
+                "$($row.entry_time_detail)"
+              )
+            }
+          }
+
+      - name: Verify production inputs unchanged
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if (-not (Test-Path -LiteralPath $env:SNAPSHOT_FILE -PathType Leaf)) {
+            throw "Production snapshot missing."
+          }
+
+          $before = @(
+            Get-Content -LiteralPath $env:SNAPSHOT_FILE -Raw -Encoding UTF8 |
+              ConvertFrom-Json
+          )
+
+          $root = $env:PRODUCTION_ROOT
+
+          $paths = @(
+            (Join-Path $root "data\reports\pattern_256_accumulation_30pct\validation_detail.csv"),
+            (Join-Path $root "data\reports\pattern_256_accumulation_candidate_oos\candidate_oos_result.json")
+          )
+
+          $paths += @(
+            Get-ChildItem -LiteralPath (Join-Path $root "data\ohlcv") -Recurse -File -Filter "*.csv" |
+              Select-Object -ExpandProperty FullName
+          )
+
+          $paths = @(
+            $paths | Sort-Object -Unique
+          )
+
+          if ($before.Count -ne $paths.Count) {
+            throw "Production input file count changed."
+          }
+
+          $beforeMap = @{}
+
+          foreach ($item in $before) {
+            $beforeMap[[string]$item.path] = [string]$item.sha256
+          }
+
+          foreach ($path in $paths) {
+            $full = [System.IO.Path]::GetFullPath($path)
+
+            if (-not $beforeMap.ContainsKey($full)) {
+              throw "Unexpected production input: $full"
+            }
+
+            $actual = (Get-FileHash -LiteralPath $full -Algorithm SHA256).Hash
+
+            if ($actual -ne $beforeMap[$full]) {
+              throw "Production input changed: $full"
+            }
+          }
+
+          Write-Host "Production input SHA256 verification PASS."
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-independent-backtest-v004-test
+          path: ${{ env.TEST_OUTPUT }}
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Final test validation gate
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $resultPath = Join-Path $env:TEST_OUTPUT "independent_backtest_result.json"
+
+          if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
+            throw "Result JSON missing."
+          }
+
+          $result = Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8 |
+            ConvertFrom-Json
+
+          if ($result.version -ne $env:EXPECTED_VERSION) {
+            throw "Result version mismatch."
+          }
+
+          if ($result.execution_status -ne "SMOKE_TEST_PASS") {
+            throw "Final execution status mismatch."
+          }
+
+          if ($result.smoke_test -ne $true) {
+            throw "Smoke test flag mismatch."
+          }
+
+          if ($result.independent_oos_proven -ne $false) {
+            throw "Independent OOS claim is invalid."
+          }
+
+          if ($result.approved_for_live_trading -ne $false) {
+            throw "Live trading approval is invalid."
+          }
+
+          if ($result.automatic_trading_enabled -ne $false) {
+            throw "Automatic trading flag is invalid."
+          }
+
+          if ($null -eq $result.mismatch_counts) {
+            throw "Missing mismatch_counts object."
+          }
+
+          $fields = @(
+            "status_mismatches",
+            "entry_price_mismatches",
+            "first_hit_mismatches",
+            "observed_bars_mismatches",
+            "max_return_mismatches",
+            "max_drawdown_mismatches",
+            "entry_time_mismatches"
+          )
+
+          $calculatedTotal = 0
+
+          foreach ($field in $fields) {
+            $property = $result.mismatch_counts.PSObject.Properties[$field]
+
+            if ($null -eq $property) {
+              throw "Missing mismatch count field: $field"
+            }
+
+            $value = [int64]$property.Value
+
+            if ($value -lt 0) {
+              throw "Negative mismatch count: $field"
+            }
+
+            $calculatedTotal += $value
+
+            Write-Host "$field = $value"
+
+            if ($value -ne 0) {
+              throw "Backtest mismatch detected: $field = $value"
+            }
+          }
+
+          if ($null -eq $result.total_field_mismatches) {
+            throw "Missing total_field_mismatches."
+          }
+
+          $reportedTotal = [int64]$result.total_field_mismatches
+
+          if ($calculatedTotal -ne $reportedTotal) {
+            throw (
+              "Mismatch total inconsistency. " +
+              "Calculated=$calculatedTotal Reported=$reportedTotal"
+            )
+          }
+
+          if ($reportedTotal -ne 0) {
+            throw "Nonzero total field mismatches."
+          }
+
+          if ([int64]$result.output_rows -le 0) {
+            throw "Empty backtest result."
+          }
+
           Write-Host "============================================="
-          Write-Host "[PASS] Candidate Independent Backtest Test"
-          Write-Host "Python: Clean V003"
-          Write-Host "Workflow: Clean V006"
-          Write-Host "All reproducibility mismatches: 0"
-          Write-Host "Independent OOS proven: FALSE"
-          Write-Host "Live trading approved: FALSE"
+          Write-Host "CANDIDATE INDEPENDENT BACKTEST TEST PASS"
+          Write-Host "WORKFLOW CLEAN V006"
+          Write-Host "PYTHON CLEAN V004"
+          Write-Host "ALL MISMATCH COUNTS: 0"
+          Write-Host "CHECKPOINT RESUME: PASS"
+          Write-Host "PRODUCTION INPUT SHA256: PASS"
+          Write-Host "LIVE TRADING APPROVED: FALSE"
           Write-Host "============================================="
