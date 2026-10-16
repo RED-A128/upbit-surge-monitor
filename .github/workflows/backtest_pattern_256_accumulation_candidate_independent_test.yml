@@ -12,7 +12,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  independent-backtest-test:
+  candidate-independent-backtest-test:
     name: Candidate Independent Backtest Test
     runs-on: self-hosted
     timeout-minutes: 120
@@ -24,6 +24,7 @@ jobs:
     env:
       PRODUCTION_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
       PROGRAM_NAME: backtest_pattern_256_accumulation_candidate_independent.py
+      EXPECTED_VERSION: Clean V003
 
     steps:
 
@@ -38,7 +39,7 @@ jobs:
       # 02. Verify Python
       # ==========================================================
 
-      - name: Verify Python and source
+      - name: Verify Python and program
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -62,13 +63,21 @@ jobs:
             throw "Python syntax validation failed."
           }
 
+          $source = Get-Content `
+            -LiteralPath $program `
+            -Raw
+
+          if (-not $source.Contains($env:EXPECTED_VERSION)) {
+            throw "Expected Python version not found."
+          }
+
           "PROGRAM_PATH=$program" |
             Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
-          Write-Host "[PASS] Python source verified."
+          Write-Host "[PASS] Python Clean V003 verified."
 
       # ==========================================================
-      # 03. Verify input files
+      # 03. Verify production inputs
       # ==========================================================
 
       - name: Verify production inputs
@@ -101,10 +110,6 @@ jobs:
             }
           }
 
-          if (-not (Test-Path -LiteralPath $ohlcv -PathType Container)) {
-            throw "OHLCV root missing: $ohlcv"
-          }
-
           foreach ($tf in @("h1", "h4", "d1")) {
             $directory = Join-Path $ohlcv $tf
 
@@ -130,6 +135,29 @@ jobs:
             Write-Host "[OOS] $tf = $($config.splits.$tf.oos_boundary)"
           }
 
+          $expectedRules = @(
+            "S00_ALL_SIGNALS",
+            "S01_PATTERN_60",
+            "S02_PATTERN_70",
+            "S03_BOTH_PATTERN_60",
+            "S04_BOTH_STRICT"
+          )
+
+          $actualRules = @(
+            $config.signal_rules |
+              ForEach-Object { $_.rule_id }
+          )
+
+          if ($actualRules.Count -ne $expectedRules.Count) {
+            throw "Candidate rule count mismatch."
+          }
+
+          foreach ($rule in $expectedRules) {
+            if ($actualRules -notcontains $rule) {
+              throw "Candidate rule missing: $rule"
+            }
+          }
+
           "DETAIL_PATH=$detail" |
             Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
@@ -139,59 +167,10 @@ jobs:
           "OHLCV_ROOT=$ohlcv" |
             Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
-          Write-Host "[PASS] Input files verified."
+          Write-Host "[PASS] Production inputs verified."
 
       # ==========================================================
-      # 04. Snapshot input hashes
-      # ==========================================================
-
-      - name: Snapshot production input SHA256
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          $snapshotPath = Join-Path `
-            $env:RUNNER_TEMP `
-            "candidate_backtest_v004_$env:GITHUB_RUN_ID`_$env:GITHUB_RUN_ATTEMPT.json"
-
-          $entries = @()
-
-          foreach ($file in @(
-            $env:DETAIL_PATH,
-            $env:OOS_PATH
-          )) {
-            $entries += [PSCustomObject]@{
-              path = $file
-              sha256 = (
-                Get-FileHash `
-                  -LiteralPath $file `
-                  -Algorithm SHA256
-              ).Hash
-              length = (Get-Item -LiteralPath $file).Length
-            }
-          }
-
-          $snapshot = @{
-            version = "Clean V004"
-            files = $entries
-          }
-
-          $json = ConvertTo-Json `
-            -InputObject $snapshot `
-            -Depth 10
-
-          [System.IO.File]::WriteAllText(
-            $snapshotPath,
-            $json,
-            (New-Object System.Text.UTF8Encoding($false))
-          )
-
-          "INPUT_SNAPSHOT=$snapshotPath" |
-            Out-File $env:GITHUB_ENV -Append -Encoding utf8
-
-          Write-Host "[PASS] Input snapshot created."
-
-      # ==========================================================
-      # 05. Prepare isolated workspace
+      # 04. Prepare isolated workspace
       # ==========================================================
 
       - name: Prepare isolated test workspace
@@ -200,7 +179,7 @@ jobs:
 
           $testRoot = Join-Path `
             $env:RUNNER_TEMP `
-            "candidate_backtest_v004_$env:GITHUB_RUN_ID`_$env:GITHUB_RUN_ATTEMPT"
+            "candidate_backtest_v005_$env:GITHUB_RUN_ID`_$env:GITHUB_RUN_ATTEMPT"
 
           if (Test-Path -LiteralPath $testRoot) {
             throw "Test workspace already exists."
@@ -222,6 +201,10 @@ jobs:
             -ItemType Directory `
             -Path $diagnosticDir | Out-Null
 
+          $snapshotPath = Join-Path `
+            $diagnosticDir `
+            "input_snapshot.json"
+
           "TEST_ROOT=$testRoot" |
             Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
@@ -231,12 +214,59 @@ jobs:
           "DIAGNOSTIC_DIR=$diagnosticDir" |
             Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
-          Write-Host "[PASS] Test workspace prepared."
+          "INPUT_SNAPSHOT=$snapshotPath" |
+            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+          Write-Host "[PASS] Isolated workspace prepared."
 
       # ==========================================================
-      # 06. Run backtest
-      # Do not stop here on mismatch.
-      # The diagnostic steps must still execute.
+      # 05. Snapshot production inputs
+      # ==========================================================
+
+      - name: Snapshot production input SHA256
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $files = @(
+            $env:DETAIL_PATH,
+            $env:OOS_PATH
+          )
+
+          $entries = @()
+
+          foreach ($file in $files) {
+            $entries += [PSCustomObject]@{
+              path = $file
+              sha256 = (
+                Get-FileHash `
+                  -LiteralPath $file `
+                  -Algorithm SHA256
+              ).Hash
+              length = (
+                Get-Item -LiteralPath $file
+              ).Length
+            }
+          }
+
+          $snapshot = @{
+            version = "Clean V005"
+            files = $entries
+          }
+
+          $json = ConvertTo-Json `
+            -InputObject $snapshot `
+            -Depth 10
+
+          [System.IO.File]::WriteAllText(
+            $env:INPUT_SNAPSHOT,
+            $json,
+            (New-Object System.Text.UTF8Encoding($false))
+          )
+
+          Write-Host "[PASS] Input SHA256 snapshot created."
+
+      # ==========================================================
+      # 06. Execute Clean V003 smoke test
       # ==========================================================
 
       - name: Execute independent backtest smoke test
@@ -244,9 +274,9 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           Write-Host "============================================="
-          Write-Host "CANDIDATE BACKTEST DIAGNOSTIC TEST"
-          Write-Host "WORKFLOW CLEAN V004"
-          Write-Host "PYTHON CLEAN V002"
+          Write-Host "CANDIDATE INDEPENDENT BACKTEST"
+          Write-Host "WORKFLOW CLEAN V005"
+          Write-Host "PYTHON CLEAN V003"
           Write-Host "============================================="
 
           & py $env:PROGRAM_PATH `
@@ -262,158 +292,18 @@ jobs:
           "BACKTEST_EXIT_CODE=$exitCode" |
             Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
+          Write-Host "[BACKTEST] Exit code: $exitCode"
+
           if ($exitCode -ne 0) {
-            Write-Host "[DIAGNOSTIC] Backtest returned exit code $exitCode"
-            Write-Host "[DIAGNOSTIC] Continuing to collect mismatch evidence."
-          }
-          else {
-            Write-Host "[PASS] Backtest returned exit code 0."
+            Write-Host "[DIAGNOSTIC] Backtest failed."
+            Write-Host "[DIAGNOSTIC] Continuing evidence collection."
           }
 
       # ==========================================================
-      # 07. Extract mismatch samples
+      # 07. Verify output structure and integrity
       # ==========================================================
 
-      - name: Extract mismatch diagnostics
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          $tradesPath = Join-Path `
-            $env:TEST_OUTPUT `
-            "independent_backtest_trades.csv"
-
-          $resultPath = Join-Path `
-            $env:TEST_OUTPUT `
-            "independent_backtest_result.json"
-
-          $diagnosticCsv = Join-Path `
-            $env:DIAGNOSTIC_DIR `
-            "mismatch_samples.csv"
-
-          $diagnosticJson = Join-Path `
-            $env:DIAGNOSTIC_DIR `
-            "diagnostic_summary.json"
-
-          if (-not (Test-Path -LiteralPath $tradesPath -PathType Leaf)) {
-            throw "Trade output missing; cannot diagnose."
-          }
-
-          if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
-            throw "Result JSON missing; cannot diagnose."
-          }
-
-          $result = Get-Content `
-            -LiteralPath $resultPath `
-            -Raw |
-            ConvertFrom-Json
-
-          $rows = @(
-            Import-Csv -LiteralPath $tradesPath
-          )
-
-          if ($rows.Count -ne [int]$result.output_rows) {
-            throw "Trade row count differs from result JSON."
-          }
-
-          $mismatches = @(
-            $rows | Where-Object {
-              $_.status_match -ne "True" -or
-              $_.entry_price_match -ne "True"
-            }
-          )
-
-          $statusMismatches = @(
-            $rows | Where-Object {
-              $_.status_match -ne "True"
-            }
-          )
-
-          $entryMismatches = @(
-            $rows | Where-Object {
-              $_.entry_price_match -ne "True"
-            }
-          )
-
-          $sample = @(
-            $mismatches |
-              Select-Object -First 100
-          )
-
-          if ($sample.Count -gt 0) {
-            $sample |
-              Export-Csv `
-                -LiteralPath $diagnosticCsv `
-                -NoTypeInformation `
-                -Encoding UTF8
-          }
-          else {
-            "No mismatch rows found." |
-              Out-File `
-                -LiteralPath (
-                  Join-Path $env:DIAGNOSTIC_DIR "no_mismatches.txt"
-                ) `
-                -Encoding utf8
-          }
-
-          $byStatus = @(
-            $rows |
-              Group-Object `
-                timeframe, horizon, source_status, status |
-              ForEach-Object {
-                [PSCustomObject]@{
-                  group = $_.Name
-                  count = $_.Count
-                }
-              }
-          )
-
-          $diagnostic = [ordered]@{
-            workflow_version = "Clean V004"
-            python_version = $result.version
-            backtest_exit_code = $env:BACKTEST_EXIT_CODE
-            execution_status = $result.execution_status
-            source_rows = $result.source_rows_read
-            oos_rows = $result.oos_rows_read
-            matched_rows = $result.matched_source_rows
-            output_rows = $result.output_rows
-            mismatch_rows = $mismatches.Count
-            status_mismatch_rows = $statusMismatches.Count
-            entry_price_mismatch_rows = $entryMismatches.Count
-            mismatch_sample_rows = $sample.Count
-            status_combinations = $byStatus
-            independent_oos_proven = $false
-            approved_for_live_trading = $false
-          }
-
-          $json = ConvertTo-Json `
-            -InputObject $diagnostic `
-            -Depth 10
-
-          [System.IO.File]::WriteAllText(
-            $diagnosticJson,
-            $json,
-            (New-Object System.Text.UTF8Encoding($false))
-          )
-
-          Write-Host "============================================="
-          Write-Host "MISMATCH DIAGNOSTICS"
-          Write-Host "============================================="
-          Write-Host "Output rows: $($rows.Count)"
-          Write-Host "Status mismatches: $($statusMismatches.Count)"
-          Write-Host "Entry mismatches: $($entryMismatches.Count)"
-          Write-Host "Sample rows: $($sample.Count)"
-
-          foreach ($group in $byStatus) {
-            Write-Host "[GROUP] $($group.group): $($group.count)"
-          }
-
-          Write-Host "============================================="
-
-      # ==========================================================
-      # 08. Verify result and output manifest
-      # ==========================================================
-
-      - name: Verify output integrity
+      - name: Verify backtest outputs
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -437,6 +327,73 @@ jobs:
             }
           }
 
+          $resultPath = Join-Path `
+            $env:TEST_OUTPUT `
+            "independent_backtest_result.json"
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw |
+            ConvertFrom-Json
+
+          if ($result.version -ne $env:EXPECTED_VERSION) {
+            throw "Result version mismatch."
+          }
+
+          if ($result.smoke_test -ne $true) {
+            throw "Smoke test flag mismatch."
+          }
+
+          if ([int]$result.max_events -ne 100) {
+            throw "Smoke test event limit mismatch."
+          }
+
+          if ($result.independent_oos_proven -ne $false) {
+            throw "Independent OOS must remain unproven."
+          }
+
+          if ($result.approved_for_live_trading -ne $false) {
+            throw "Live trading must remain disabled."
+          }
+
+          $tradesPath = Join-Path `
+            $env:TEST_OUTPUT `
+            "independent_backtest_trades.csv"
+
+          $rows = @(
+            Import-Csv -LiteralPath $tradesPath
+          )
+
+          if ($rows.Count -ne [int]$result.output_rows) {
+            throw "Trade row count mismatch."
+          }
+
+          if ($rows.Count -le 0) {
+            throw "No backtest trades generated."
+          }
+
+          $validStatuses = @(
+            "HIT",
+            "MISS",
+            "CENSORED"
+          )
+
+          foreach ($row in $rows) {
+            if ($validStatuses -notcontains $row.status) {
+              throw "Invalid trade status: $($row.status)"
+            }
+
+            if ($row.rule_id -notin @(
+              "S00_ALL_SIGNALS",
+              "S01_PATTERN_60",
+              "S02_PATTERN_70",
+              "S03_BOTH_PATTERN_60",
+              "S04_BOTH_STRICT"
+            )) {
+              throw "Unexpected candidate rule: $($row.rule_id)"
+            }
+          }
+
           $manifestPath = Join-Path `
             $env:TEST_OUTPUT `
             "independent_backtest_manifest.json"
@@ -457,7 +414,7 @@ jobs:
             $property = $manifest.output_sha256.PSObject.Properties[$name]
 
             if ($null -eq $property) {
-              throw "Manifest entry missing: $name"
+              throw "Manifest SHA256 missing: $name"
             }
 
             $expectedHash = [string]$property.Value
@@ -473,10 +430,225 @@ jobs:
             }
           }
 
-          Write-Host "[PASS] Output integrity verified."
+          Write-Host "[PASS] Output structure and hashes verified."
 
       # ==========================================================
-      # 09. Verify original inputs unchanged
+      # 08. Verify checkpoint and resume
+      # ==========================================================
+
+      - name: Verify checkpoint and resume
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $checkpoint = Join-Path `
+            $env:TEST_OUTPUT `
+            "checkpoint.sqlite3"
+
+          if (-not (Test-Path -LiteralPath $checkpoint -PathType Leaf)) {
+            throw "SQLite checkpoint missing."
+          }
+
+          if ((Get-Item -LiteralPath $checkpoint).Length -le 0) {
+            throw "SQLite checkpoint empty."
+          }
+
+          $beforeResult = Join-Path `
+            $env:TEST_OUTPUT `
+            "independent_backtest_result.json"
+
+          $before = Get-Content `
+            -LiteralPath $beforeResult `
+            -Raw |
+            ConvertFrom-Json
+
+          if ($before.execution_status -ne "SMOKE_TEST_PASS") {
+            Write-Host "[DIAGNOSTIC] Resume skipped because first run did not pass."
+            exit 0
+          }
+
+          $tradesPath = Join-Path `
+            $env:TEST_OUTPUT `
+            "independent_backtest_trades.csv"
+
+          $beforeHash = (
+            Get-FileHash `
+              -LiteralPath $tradesPath `
+              -Algorithm SHA256
+          ).Hash
+
+          & py $env:PROGRAM_PATH `
+            --root $env:PRODUCTION_ROOT `
+            --detail $env:DETAIL_PATH `
+            --oos-result $env:OOS_PATH `
+            --ohlcv-root $env:OHLCV_ROOT `
+            --output-dir $env:TEST_OUTPUT `
+            --max-events 100 `
+            --resume
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Checkpoint resume execution failed."
+          }
+
+          $afterHash = (
+            Get-FileHash `
+              -LiteralPath $tradesPath `
+              -Algorithm SHA256
+          ).Hash
+
+          if ($beforeHash -ne $afterHash) {
+            throw "Trade output changed after resume."
+          }
+
+          $after = Get-Content `
+            -LiteralPath $beforeResult `
+            -Raw |
+            ConvertFrom-Json
+
+          if ($after.execution_status -ne "SMOKE_TEST_PASS") {
+            throw "Resume result is not SMOKE_TEST_PASS."
+          }
+
+          if ($after.output_rows -ne $before.output_rows) {
+            throw "Resume output row count changed."
+          }
+
+          Write-Host "[PASS] Checkpoint resume verified."
+
+      # ==========================================================
+      # 09. Extract diagnostic evidence
+      # ==========================================================
+
+      - name: Extract mismatch diagnostics
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if (-not $env:TEST_OUTPUT) {
+            Write-Host "[INFO] Test output path unavailable."
+            exit 0
+          }
+
+          $tradesPath = Join-Path `
+            $env:TEST_OUTPUT `
+            "independent_backtest_trades.csv"
+
+          $resultPath = Join-Path `
+            $env:TEST_OUTPUT `
+            "independent_backtest_result.json"
+
+          if (-not (Test-Path -LiteralPath $tradesPath -PathType Leaf)) {
+            Write-Host "[INFO] Trade CSV unavailable."
+            exit 0
+          }
+
+          if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
+            Write-Host "[INFO] Result JSON unavailable."
+            exit 0
+          }
+
+          $rows = @(
+            Import-Csv -LiteralPath $tradesPath
+          )
+
+          $mismatches = @(
+            $rows | Where-Object {
+              $_.all_checks_match -ne "True"
+            }
+          )
+
+          $samples = @(
+            $mismatches |
+              Select-Object -First 100
+          )
+
+          $samplePath = Join-Path `
+            $env:DIAGNOSTIC_DIR `
+            "mismatch_samples.csv"
+
+          if ($samples.Count -gt 0) {
+            $samples |
+              Export-Csv `
+                -LiteralPath $samplePath `
+                -NoTypeInformation `
+                -Encoding UTF8
+          }
+          else {
+            "No mismatch rows found." |
+              Out-File `
+                -LiteralPath (
+                  Join-Path $env:DIAGNOSTIC_DIR "no_mismatches.txt"
+                ) `
+                -Encoding utf8
+          }
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw |
+            ConvertFrom-Json
+
+          $groups = @(
+            $rows |
+              Group-Object timeframe, horizon, source_status, status |
+              ForEach-Object {
+                [PSCustomObject]@{
+                  group = $_.Name
+                  count = $_.Count
+                }
+              }
+          )
+
+          $diagnostic = [ordered]@{
+            workflow_version = "Clean V005"
+            python_version = $result.version
+            execution_status = $result.execution_status
+            output_rows = $result.output_rows
+            mismatch_rows = $mismatches.Count
+            status_mismatches = $result.status_mismatches
+            entry_price_mismatches = $result.entry_price_mismatches
+            first_hit_mismatches = $result.first_hit_mismatches
+            observed_bars_mismatches = $result.observed_bars_mismatches
+            max_return_mismatches = $result.max_return_mismatches
+            max_drawdown_mismatches = $result.max_drawdown_mismatches
+            total_field_mismatches = $result.total_field_mismatches
+            status_combinations = $groups
+            independent_oos_proven = $false
+            approved_for_live_trading = $false
+          }
+
+          $json = ConvertTo-Json `
+            -InputObject $diagnostic `
+            -Depth 10
+
+          $diagnosticPath = Join-Path `
+            $env:DIAGNOSTIC_DIR `
+            "diagnostic_summary.json"
+
+          [System.IO.File]::WriteAllText(
+            $diagnosticPath,
+            $json,
+            (New-Object System.Text.UTF8Encoding($false))
+          )
+
+          Write-Host "============================================="
+          Write-Host "CLEAN V005 DIAGNOSTICS"
+          Write-Host "============================================="
+          Write-Host "Output rows: $($rows.Count)"
+          Write-Host "Mismatch rows: $($mismatches.Count)"
+          Write-Host "Status mismatches: $($result.status_mismatches)"
+          Write-Host "Entry mismatches: $($result.entry_price_mismatches)"
+          Write-Host "First hit mismatches: $($result.first_hit_mismatches)"
+          Write-Host "Observed bars mismatches: $($result.observed_bars_mismatches)"
+          Write-Host "Max return mismatches: $($result.max_return_mismatches)"
+          Write-Host "Max drawdown mismatches: $($result.max_drawdown_mismatches)"
+
+          foreach ($group in $groups) {
+            Write-Host "[GROUP] $($group.group): $($group.count)"
+          }
+
+          Write-Host "============================================="
+
+      # ==========================================================
+      # 10. Verify original production inputs unchanged
       # ==========================================================
 
       - name: Verify production inputs unchanged
@@ -485,7 +657,11 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           if (-not $env:INPUT_SNAPSHOT) {
-            throw "Input snapshot not available."
+            throw "Input snapshot unavailable."
+          }
+
+          if (-not (Test-Path -LiteralPath $env:INPUT_SNAPSHOT)) {
+            throw "Input snapshot missing."
           }
 
           $snapshot = Get-Content `
@@ -493,7 +669,7 @@ jobs:
             -Raw |
             ConvertFrom-Json
 
-          if ($snapshot.version -ne "Clean V004") {
+          if ($snapshot.version -ne "Clean V005") {
             throw "Snapshot version mismatch."
           }
 
@@ -502,7 +678,7 @@ jobs:
           )
 
           if ($entries.Count -ne 2) {
-            throw "Unexpected input snapshot count."
+            throw "Unexpected snapshot file count."
           }
 
           $expectedPaths = @(
@@ -516,17 +692,17 @@ jobs:
             $path = [string]$entry.path
 
             if ($expectedPaths -notcontains $path) {
-              throw "Unexpected input path: $path"
+              throw "Unexpected snapshot path: $path"
             }
 
             if ($seen.ContainsKey($path)) {
-              throw "Duplicate snapshot entry: $path"
+              throw "Duplicate snapshot path: $path"
             }
 
             $seen[$path] = $true
 
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-              throw "Production input disappeared: $path"
+              throw "Production input missing: $path"
             }
 
             $length = (
@@ -544,27 +720,27 @@ jobs:
             ).Hash
 
             if ($hash -ne [string]$entry.sha256) {
-              throw "Production input hash changed: $path"
+              throw "Production input SHA256 changed: $path"
             }
 
             Write-Host "[UNCHANGED] $path"
           }
 
           if ($seen.Count -ne 2) {
-            throw "Not all expected input files verified."
+            throw "Not all production inputs verified."
           }
 
           Write-Host "[PASS] Production inputs unchanged."
 
       # ==========================================================
-      # 10. Upload diagnostic artifacts
+      # 11. Upload diagnostics
       # ==========================================================
 
-      - name: Upload backtest diagnostics
+      - name: Upload test artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pattern-256-independent-backtest-v004-diagnostics
+          name: pattern-256-independent-backtest-v005-test
           path: |
             ${{ env.TEST_OUTPUT }}/
             ${{ env.DIAGNOSTIC_DIR }}/
@@ -572,12 +748,16 @@ jobs:
           retention-days: 14
 
       # ==========================================================
-      # 11. Final gate
+      # 12. Final validation gate
       # ==========================================================
 
-      - name: Final validation gate
+      - name: Final test validation gate
         run: |
           $ErrorActionPreference = "Stop"
+
+          if ($env:BACKTEST_EXIT_CODE -ne "0") {
+            throw "Backtest failed. Review diagnostic artifact."
+          }
 
           $resultPath = Join-Path `
             $env:TEST_OUTPUT `
@@ -592,20 +772,30 @@ jobs:
             -Raw |
             ConvertFrom-Json
 
-          if ($env:BACKTEST_EXIT_CODE -ne "0") {
-            throw "Backtest calculation failed. Review diagnostic artifact."
-          }
-
           if ($result.execution_status -ne "SMOKE_TEST_PASS") {
-            throw "Backtest result is not SMOKE_TEST_PASS."
+            throw "Execution status is not SMOKE_TEST_PASS."
           }
 
-          if ([int]$result.status_mismatches -ne 0) {
-            throw "Status reproduction mismatches remain."
-          }
+          $mismatchFields = @(
+            "status_mismatches",
+            "entry_price_mismatches",
+            "first_hit_mismatches",
+            "observed_bars_mismatches",
+            "max_return_mismatches",
+            "max_drawdown_mismatches",
+            "total_field_mismatches"
+          )
 
-          if ([int]$result.entry_price_mismatches -ne 0) {
-            throw "Entry price reproduction mismatches remain."
+          foreach ($field in $mismatchFields) {
+            $property = $result.PSObject.Properties[$field]
+
+            if ($null -eq $property) {
+              throw "Missing result field: $field"
+            }
+
+            if ([int]$property.Value -ne 0) {
+              throw "Mismatch remains: $field = $($property.Value)"
+            }
           }
 
           if ($result.independent_oos_proven -ne $false) {
@@ -616,6 +806,11 @@ jobs:
             throw "Live trading must not be approved."
           }
 
-          Write-Host "[PASS] Candidate backtest smoke test."
-          Write-Host "[INFO] Existing OOS reproducibility only."
-          Write-Host "[INFO] Live trading not approved."
+          Write-Host "============================================="
+          Write-Host "[PASS] Candidate Independent Backtest Test"
+          Write-Host "Python: Clean V003"
+          Write-Host "Workflow: Clean V005"
+          Write-Host "All reproducibility mismatches: 0"
+          Write-Host "Independent OOS proven: FALSE"
+          Write-Host "Live trading approved: FALSE"
+          Write-Host "============================================="
