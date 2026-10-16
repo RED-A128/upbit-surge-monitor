@@ -1,0 +1,755 @@
+
+name: backtest_pattern_256_accumulation_candidate_independent.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern-256-accumulation-independent-backtest-production
+  cancel-in-progress: false
+
+jobs:
+  independent-backtest-production:
+    name: Candidate Independent Backtest Production
+    runs-on: self-hosted
+    timeout-minutes: 1440
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PRODUCTION_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+      PROGRAM_NAME: backtest_pattern_256_accumulation_candidate_independent.py
+      EXPECTED_VERSION: Clean V003
+      OUTPUT_RELATIVE: data\reports\pattern_256_accumulation_candidate_independent_backtest
+
+    steps:
+
+      # ==========================================================
+      # 01. Checkout
+      # ==========================================================
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ==========================================================
+      # 02. Verify Python
+      # ==========================================================
+
+      - name: Verify Python and program
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $program = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:PROGRAM_NAME
+
+          if (-not (Test-Path -LiteralPath $program -PathType Leaf)) {
+            throw "Python program missing: $program"
+          }
+
+          & py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable."
+          }
+
+          & py -m py_compile $program
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax validation failed."
+          }
+
+          $source = Get-Content -LiteralPath $program -Raw
+
+          if (-not $source.Contains($env:EXPECTED_VERSION)) {
+            throw "Expected Python version not found."
+          }
+
+          "PROGRAM_PATH=$program" |
+            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+          Write-Host "[PASS] Python Clean V003 verified."
+
+      # ==========================================================
+      # 03. Resolve and verify production inputs
+      # ==========================================================
+
+      - name: Verify production inputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = [System.IO.Path]::GetFullPath(
+            $env:PRODUCTION_ROOT
+          )
+
+          if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+            throw "Production root missing: $root"
+          }
+
+          $detail = Join-Path `
+            $root `
+            "data\reports\pattern_256_accumulation_30pct\validation_detail.csv"
+
+          $oos = Join-Path `
+            $root `
+            "data\reports\pattern_256_accumulation_candidate_oos\candidate_oos_result.json"
+
+          $ohlcv = Join-Path $root "data\ohlcv"
+
+          $output = Join-Path $root $env:OUTPUT_RELATIVE
+
+          foreach ($file in @($detail, $oos)) {
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+              throw "Required production input missing: $file"
+            }
+
+            if ((Get-Item -LiteralPath $file).Length -le 0) {
+              throw "Required production input empty: $file"
+            }
+          }
+
+          foreach ($tf in @("h1", "h4", "d1")) {
+            $directory = Join-Path $ohlcv $tf
+
+            if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+              throw "OHLCV directory missing: $directory"
+            }
+          }
+
+          $config = Get-Content `
+            -LiteralPath $oos `
+            -Raw |
+            ConvertFrom-Json
+
+          if ($config.status -ne "PASS") {
+            throw "OOS configuration status is not PASS."
+          }
+
+          foreach ($tf in @("h1", "h4", "d1")) {
+            $boundary = $config.splits.$tf.oos_boundary
+
+            if (-not $boundary) {
+              throw "OOS boundary missing: $tf"
+            }
+
+            Write-Host "[OOS] $tf = $boundary"
+          }
+
+          $expectedRules = @(
+            "S00_ALL_SIGNALS",
+            "S01_PATTERN_60",
+            "S02_PATTERN_70",
+            "S03_BOTH_PATTERN_60",
+            "S04_BOTH_STRICT"
+          )
+
+          $actualRules = @(
+            $config.signal_rules |
+              ForEach-Object { $_.rule_id }
+          )
+
+          if ($actualRules.Count -ne $expectedRules.Count) {
+            throw "Candidate rule count mismatch."
+          }
+
+          foreach ($rule in $expectedRules) {
+            if ($actualRules -notcontains $rule) {
+              throw "Candidate rule missing: $rule"
+            }
+          }
+
+          "DETAIL_PATH=$detail" |
+            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+          "OOS_PATH=$oos" |
+            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+          "OHLCV_ROOT=$ohlcv" |
+            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+          "OUTPUT_DIR=$output" |
+            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+          Write-Host "[PASS] Production inputs verified."
+          Write-Host "[OUTPUT] $output"
+
+      # ==========================================================
+      # 04. Prepare diagnostic workspace
+      # ==========================================================
+
+      - name: Prepare diagnostic workspace
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $diagnosticRoot = Join-Path `
+            $env:RUNNER_TEMP `
+            "independent_backtest_production_$env:GITHUB_RUN_ID`_$env:GITHUB_RUN_ATTEMPT"
+
+          if (Test-Path -LiteralPath $diagnosticRoot) {
+            throw "Diagnostic workspace already exists."
+          }
+
+          New-Item `
+            -ItemType Directory `
+            -Path $diagnosticRoot | Out-Null
+
+          $snapshotPath = Join-Path `
+            $diagnosticRoot `
+            "input_snapshot.json"
+
+          "DIAGNOSTIC_ROOT=$diagnosticRoot" |
+            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+          "INPUT_SNAPSHOT=$snapshotPath" |
+            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+          Write-Host "[PASS] Diagnostic workspace prepared."
+
+      # ==========================================================
+      # 05. Snapshot production input SHA256
+      # ==========================================================
+
+      - name: Snapshot production input SHA256
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $entries = @()
+
+          foreach ($file in @($env:DETAIL_PATH, $env:OOS_PATH)) {
+            $entries += [PSCustomObject]@{
+              path = $file
+              sha256 = (
+                Get-FileHash `
+                  -LiteralPath $file `
+                  -Algorithm SHA256
+              ).Hash
+              length = (
+                Get-Item -LiteralPath $file
+              ).Length
+            }
+          }
+
+          $snapshot = @{
+            workflow_version = "Clean V001"
+            python_version = "Clean V003"
+            files = $entries
+          }
+
+          $json = ConvertTo-Json `
+            -InputObject $snapshot `
+            -Depth 10
+
+          [System.IO.File]::WriteAllText(
+            $env:INPUT_SNAPSHOT,
+            $json,
+            (New-Object System.Text.UTF8Encoding($false))
+          )
+
+          Write-Host "[PASS] Production input snapshot created."
+
+      # ==========================================================
+      # 06. Determine new run or resume
+      # ==========================================================
+
+      - name: Determine checkpoint mode
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $output = $env:OUTPUT_DIR
+
+          $checkpoint = Join-Path `
+            $output `
+            "checkpoint.sqlite3"
+
+          $resultPath = Join-Path `
+            $output `
+            "independent_backtest_result.json"
+
+          if (-not (Test-Path -LiteralPath $output)) {
+            New-Item `
+              -ItemType Directory `
+              -Path $output | Out-Null
+
+            "BACKTEST_MODE=NEW" |
+              Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+            Write-Host "[MODE] NEW"
+            exit 0
+          }
+
+          if (Test-Path -LiteralPath $checkpoint -PathType Leaf) {
+            if ((Get-Item -LiteralPath $checkpoint).Length -le 0) {
+              throw "Checkpoint exists but is empty."
+            }
+
+            if (Test-Path -LiteralPath $resultPath -PathType Leaf) {
+              $existing = Get-Content `
+                -LiteralPath $resultPath `
+                -Raw |
+                ConvertFrom-Json
+
+              if ($existing.execution_status -eq "PASS") {
+                throw "Completed production output already exists. Refusing overwrite."
+              }
+
+              if ($existing.execution_status -eq "SMOKE_TEST_PASS") {
+                throw "Smoke-test output found in production directory."
+              }
+            }
+
+            "BACKTEST_MODE=RESUME" |
+              Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+            Write-Host "[MODE] RESUME"
+            exit 0
+          }
+
+          $existingFiles = @(
+            Get-ChildItem `
+              -LiteralPath $output `
+              -Force `
+              -File
+          )
+
+          if ($existingFiles.Count -gt 0) {
+            throw "Output directory contains files but no valid checkpoint."
+          }
+
+          "BACKTEST_MODE=NEW" |
+            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+          Write-Host "[MODE] NEW"
+
+      # ==========================================================
+      # 07. Execute full production backtest
+      # ==========================================================
+
+      - name: Execute independent production backtest
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================="
+          Write-Host "CANDIDATE INDEPENDENT BACKTEST PRODUCTION"
+          Write-Host "WORKFLOW CLEAN V001"
+          Write-Host "PYTHON CLEAN V003"
+          Write-Host "============================================="
+          Write-Host "[MODE] $env:BACKTEST_MODE"
+          Write-Host "[OUTPUT] $env:OUTPUT_DIR"
+
+          $arguments = @(
+            $env:PROGRAM_PATH,
+            "--root", $env:PRODUCTION_ROOT,
+            "--detail", $env:DETAIL_PATH,
+            "--oos-result", $env:OOS_PATH,
+            "--ohlcv-root", $env:OHLCV_ROOT,
+            "--output-dir", $env:OUTPUT_DIR
+          )
+
+          if ($env:BACKTEST_MODE -eq "RESUME") {
+            $arguments += "--resume"
+          }
+
+          # No --max-events:
+          # This is a full production backtest.
+
+          & py @arguments
+
+          $exitCode = $LASTEXITCODE
+
+          "BACKTEST_EXIT_CODE=$exitCode" |
+            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+          Write-Host "[BACKTEST] Exit code: $exitCode"
+
+          if ($exitCode -ne 0) {
+            throw "Production backtest failed with exit code $exitCode."
+          }
+
+      # ==========================================================
+      # 08. Verify production output files
+      # ==========================================================
+
+      - name: Verify production outputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $required = @(
+            "independent_backtest_trades.csv",
+            "independent_backtest_summary.csv",
+            "independent_backtest_checks.csv",
+            "independent_backtest_result.json",
+            "independent_backtest_manifest.json",
+            "checkpoint.sqlite3"
+          )
+
+          foreach ($name in $required) {
+            $path = Join-Path $env:OUTPUT_DIR $name
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Required output missing: $name"
+            }
+
+            if ((Get-Item -LiteralPath $path).Length -le 0) {
+              throw "Required output empty: $name"
+            }
+
+            Write-Host "[FILE] $name"
+          }
+
+          $resultPath = Join-Path `
+            $env:OUTPUT_DIR `
+            "independent_backtest_result.json"
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw |
+            ConvertFrom-Json
+
+          if ($result.version -ne $env:EXPECTED_VERSION) {
+            throw "Python result version mismatch."
+          }
+
+          if ($result.execution_status -ne "PASS") {
+            throw "Production execution status is not PASS."
+          }
+
+          if ($result.smoke_test -ne $false) {
+            throw "Production result incorrectly marked as smoke test."
+          }
+
+          if ($result.independent_oos_proven -ne $false) {
+            throw "Independent OOS must remain unproven."
+          }
+
+          if ($result.approved_for_live_trading -ne $false) {
+            throw "Live trading approval must remain false."
+          }
+
+          $mismatchFields = @(
+            "status_mismatches",
+            "entry_price_mismatches",
+            "first_hit_mismatches",
+            "observed_bars_mismatches",
+            "max_return_mismatches",
+            "max_drawdown_mismatches",
+            "total_field_mismatches"
+          )
+
+          foreach ($field in $mismatchFields) {
+            $property = $result.PSObject.Properties[$field]
+
+            if ($null -eq $property) {
+              throw "Required result field missing: $field"
+            }
+
+            if ([int]$property.Value -ne 0) {
+              throw "Production mismatch: $field = $($property.Value)"
+            }
+          }
+
+          $tradesPath = Join-Path `
+            $env:OUTPUT_DIR `
+            "independent_backtest_trades.csv"
+
+          $tradeCount = 0
+
+          Import-Csv -LiteralPath $tradesPath |
+            ForEach-Object {
+              $tradeCount++
+
+              if ($_.status -notin @("HIT", "MISS", "CENSORED")) {
+                throw "Invalid trade status: $($_.status)"
+              }
+
+              if ($_.rule_id -notin @(
+                "S00_ALL_SIGNALS",
+                "S01_PATTERN_60",
+                "S02_PATTERN_70",
+                "S03_BOTH_PATTERN_60",
+                "S04_BOTH_STRICT"
+              )) {
+                throw "Invalid candidate rule: $($_.rule_id)"
+              }
+            }
+
+          if ($tradeCount -le 0) {
+            throw "No backtest trades generated."
+          }
+
+          if ($tradeCount -ne [int]$result.output_rows) {
+            throw "Production trade count mismatch."
+          }
+
+          Write-Host "[PASS] Production output verified."
+          Write-Host "[ROWS] $tradeCount"
+
+      # ==========================================================
+      # 09. Verify output SHA256 manifest
+      # ==========================================================
+
+      - name: Verify output SHA256 manifest
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $manifestPath = Join-Path `
+            $env:OUTPUT_DIR `
+            "independent_backtest_manifest.json"
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw |
+            ConvertFrom-Json
+
+          $hashNames = @(
+            "independent_backtest_trades.csv",
+            "independent_backtest_summary.csv",
+            "independent_backtest_checks.csv",
+            "independent_backtest_result.json"
+          )
+
+          foreach ($name in $hashNames) {
+            $property = $manifest.output_sha256.PSObject.Properties[$name]
+
+            if ($null -eq $property) {
+              throw "Missing manifest SHA256: $name"
+            }
+
+            $expectedHash = [string]$property.Value
+
+            $actualHash = (
+              Get-FileHash `
+                -LiteralPath (Join-Path $env:OUTPUT_DIR $name) `
+                -Algorithm SHA256
+            ).Hash
+
+            if ($actualHash -ne $expectedHash) {
+              throw "Output SHA256 mismatch: $name"
+            }
+
+            Write-Host "[SHA256 PASS] $name"
+          }
+
+          Write-Host "[PASS] Output manifest verified."
+
+      # ==========================================================
+      # 10. Verify production inputs unchanged
+      # ==========================================================
+
+      - name: Verify production inputs unchanged
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if (-not $env:INPUT_SNAPSHOT) {
+            throw "Input snapshot unavailable."
+          }
+
+          if (-not (Test-Path -LiteralPath $env:INPUT_SNAPSHOT -PathType Leaf)) {
+            throw "Input snapshot missing."
+          }
+
+          $snapshot = Get-Content `
+            -LiteralPath $env:INPUT_SNAPSHOT `
+            -Raw |
+            ConvertFrom-Json
+
+          if ($snapshot.workflow_version -ne "Clean V001") {
+            throw "Snapshot workflow version mismatch."
+          }
+
+          $entries = @($snapshot.files)
+
+          if ($entries.Count -ne 2) {
+            throw "Unexpected input snapshot count."
+          }
+
+          $expectedPaths = @(
+            $env:DETAIL_PATH,
+            $env:OOS_PATH
+          )
+
+          $seen = @{}
+
+          foreach ($entry in $entries) {
+            $path = [string]$entry.path
+
+            if ($expectedPaths -notcontains $path) {
+              throw "Unexpected snapshot path: $path"
+            }
+
+            if ($seen.ContainsKey($path)) {
+              throw "Duplicate snapshot entry: $path"
+            }
+
+            $seen[$path] = $true
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Production input missing: $path"
+            }
+
+            $length = (Get-Item -LiteralPath $path).Length
+
+            if ($length -ne [long]$entry.length) {
+              throw "Production input size changed: $path"
+            }
+
+            $hash = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash
+
+            if ($hash -ne [string]$entry.sha256) {
+              throw "Production input SHA256 changed: $path"
+            }
+
+            Write-Host "[UNCHANGED] $path"
+          }
+
+          if ($seen.Count -ne 2) {
+            throw "Production input verification incomplete."
+          }
+
+          Write-Host "[PASS] Production inputs unchanged."
+
+      # ==========================================================
+      # 11. Create production diagnostic report
+      # ==========================================================
+
+      - name: Create production diagnostic report
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if (-not $env:DIAGNOSTIC_ROOT) {
+            Write-Host "[INFO] Diagnostic directory unavailable."
+            exit 0
+          }
+
+          $resultPath = Join-Path `
+            $env:OUTPUT_DIR `
+            "independent_backtest_result.json"
+
+          if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
+            Write-Host "[INFO] Production result unavailable."
+            exit 0
+          }
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw |
+            ConvertFrom-Json
+
+          $diagnostic = [ordered]@{
+            workflow_version = "Clean V001"
+            python_version = $result.version
+            execution_status = $result.execution_status
+            smoke_test = $result.smoke_test
+            source_rows_read = $result.source_rows_read
+            matched_source_rows = $result.matched_source_rows
+            output_rows = $result.output_rows
+            status_mismatches = $result.status_mismatches
+            entry_price_mismatches = $result.entry_price_mismatches
+            first_hit_mismatches = $result.first_hit_mismatches
+            observed_bars_mismatches = $result.observed_bars_mismatches
+            max_return_mismatches = $result.max_return_mismatches
+            max_drawdown_mismatches = $result.max_drawdown_mismatches
+            total_field_mismatches = $result.total_field_mismatches
+            independent_oos_proven = $result.independent_oos_proven
+            approved_for_live_trading = $result.approved_for_live_trading
+          }
+
+          $json = ConvertTo-Json `
+            -InputObject $diagnostic `
+            -Depth 10
+
+          $path = Join-Path `
+            $env:DIAGNOSTIC_ROOT `
+            "production_diagnostic.json"
+
+          [System.IO.File]::WriteAllText(
+            $path,
+            $json,
+            (New-Object System.Text.UTF8Encoding($false))
+          )
+
+          Write-Host "[PASS] Production diagnostic report created."
+
+      # ==========================================================
+      # 12. Upload production reports
+      # ==========================================================
+
+      - name: Upload production reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-independent-backtest-production
+          path: |
+            ${{ env.OUTPUT_DIR }}/independent_backtest_trades.csv
+            ${{ env.OUTPUT_DIR }}/independent_backtest_summary.csv
+            ${{ env.OUTPUT_DIR }}/independent_backtest_checks.csv
+            ${{ env.OUTPUT_DIR }}/independent_backtest_result.json
+            ${{ env.OUTPUT_DIR }}/independent_backtest_manifest.json
+            ${{ env.DIAGNOSTIC_ROOT }}/
+          if-no-files-found: warn
+          retention-days: 14
+
+      # ==========================================================
+      # 13. Final production gate
+      # ==========================================================
+
+      - name: Final production validation gate
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ($env:BACKTEST_EXIT_CODE -ne "0") {
+            throw "Production backtest execution failed."
+          }
+
+          $resultPath = Join-Path `
+            $env:OUTPUT_DIR `
+            "independent_backtest_result.json"
+
+          if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
+            throw "Production result missing."
+          }
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw |
+            ConvertFrom-Json
+
+          if ($result.execution_status -ne "PASS") {
+            throw "Production execution status is not PASS."
+          }
+
+          if ([int]$result.total_field_mismatches -ne 0) {
+            throw "Production backtest contains mismatches."
+          }
+
+          if ($result.smoke_test -ne $false) {
+            throw "Production result incorrectly marked as smoke test."
+          }
+
+          if ($result.independent_oos_proven -ne $false) {
+            throw "Independent OOS must remain unproven."
+          }
+
+          if ($result.approved_for_live_trading -ne $false) {
+            throw "Live trading approval must remain false."
+          }
+
+          Write-Host "============================================="
+          Write-Host "[PASS] INDEPENDENT BACKTEST PRODUCTION"
+          Write-Host "Workflow: Clean V001"
+          Write-Host "Python: Clean V003"
+          Write-Host "Full dataset backtest: COMPLETE"
+          Write-Host "Total field mismatches: 0"
+          Write-Host "Independent OOS proven: FALSE"
+          Write-Host "Live trading approved: FALSE"
+          Write-Host "============================================="
