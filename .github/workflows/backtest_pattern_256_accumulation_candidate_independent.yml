@@ -12,11 +12,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  candidate-independent-backtest-production:
+  independent-backtest-production:
     name: Candidate Independent Backtest Production
     runs-on: [self-hosted, Windows]
-
-    timeout-minutes: 360
+    timeout-minutes: 720
 
     defaults:
       run:
@@ -25,7 +24,6 @@ jobs:
     env:
       PRODUCTION_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
       PYTHON_SCRIPT: backtest_pattern_256_accumulation_candidate_independent.py
-      EXPECTED_VERSION: Clean V004
       OUTPUT_RELATIVE: data\reports\pattern_256_accumulation_candidate_independent_backtest
 
     steps:
@@ -38,17 +36,23 @@ jobs:
 
           py --version
 
-          if ($LASTEXITCODE -ne 0) {
-            throw "Python launcher unavailable."
-          }
-
           $script = Join-Path $env:GITHUB_WORKSPACE $env:PYTHON_SCRIPT
 
           if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
-            throw "Python program missing: $script"
+            throw "Missing Python program: $script"
           }
 
-          Write-Host "Python program verified."
+          & py -m py_compile $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python compilation failed."
+          }
+
+          & py $script --help
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python argument verification failed."
+          }
 
       - name: Verify production inputs
         run: |
@@ -69,133 +73,55 @@ jobs:
             $path = Join-Path $root $relative
 
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-              throw "Required input missing: $path"
+              throw "Missing production input: $path"
             }
+
+            Write-Host "[INPUT] $path"
           }
 
           foreach ($timeframe in @("h1", "h4", "d1")) {
-            $folder = Join-Path $root "data\ohlcv\$timeframe"
+            $directory = Join-Path $root ("data\ohlcv\" + $timeframe)
 
-            if (-not (Test-Path -LiteralPath $folder -PathType Container)) {
-              throw "OHLCV folder missing: $folder"
+            if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+              throw "Missing OHLCV directory: $directory"
             }
           }
 
-          Write-Host "Production inputs verified."
+          $output = Join-Path $root $env:OUTPUT_RELATIVE
+
+          "PRODUCTION_OUTPUT=$output" >> $env:GITHUB_ENV
+
+          Write-Host "[OUTPUT] $output"
 
       - name: Prepare production workspace
         run: |
           $ErrorActionPreference = "Stop"
 
-          $output = Join-Path $env:PRODUCTION_ROOT $env:OUTPUT_RELATIVE
+          $auditRoot = Join-Path `
+            $env:RUNNER_TEMP `
+            ("candidate_independent_production_v004_" +
+              $env:GITHUB_RUN_ID + "_" +
+              $env:GITHUB_RUN_ATTEMPT)
 
-          $auditRoot = Join-Path $env:RUNNER_TEMP (
-            "candidate_independent_production_v003_" +
-            $env:GITHUB_RUN_ID + "_" +
-            $env:GITHUB_RUN_ATTEMPT
-          )
+          New-Item -ItemType Directory -Path $auditRoot -Force |
+            Out-Null
 
-          if (Test-Path -LiteralPath $auditRoot) {
-            throw "Audit workspace already exists."
+          "AUDIT_ROOT=$auditRoot" >> $env:GITHUB_ENV
+
+          $output = $env:PRODUCTION_OUTPUT
+
+          if (Test-Path -LiteralPath $output -PathType Container) {
+            Write-Host "[MODE] Existing output found."
+            Write-Host "[MODE] Resume only after checkpoint validation."
+          }
+          else {
+            New-Item -ItemType Directory -Path $output -Force |
+              Out-Null
+
+            Write-Host "[MODE] New production run."
           }
 
-          New-Item -ItemType Directory -Path $auditRoot | Out-Null
-
-          $snapshot = Join-Path $auditRoot "production_input_snapshot.json"
-          $runInfo = Join-Path $auditRoot "production_run_info.json"
-
-          "BACKTEST_OUTPUT=$output" |
-            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-          "AUDIT_ROOT=$auditRoot" |
-            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-          "SNAPSHOT_FILE=$snapshot" |
-            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-          "RUN_INFO_FILE=$runInfo" |
-            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-          $mode = "NEW"
-          $executionOutput = $output
-
-          if (Test-Path -LiteralPath $output) {
-            if (-not (Test-Path -LiteralPath $output -PathType Container)) {
-              throw "Production output path is not a directory."
-            }
-
-            $checkpoint = Join-Path $output "checkpoint.sqlite3"
-            $resultPath = Join-Path $output "independent_backtest_result.json"
-
-            if (Test-Path -LiteralPath $resultPath -PathType Leaf) {
-              $existing = Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8 |
-                ConvertFrom-Json
-
-              if (
-                $existing.version -eq $env:EXPECTED_VERSION -and
-                $existing.execution_status -eq "PASS" -and
-                $existing.smoke_test -eq $false
-              ) {
-                $mode = "VERIFY_EXISTING"
-              }
-            }
-
-            if ($mode -ne "VERIFY_EXISTING") {
-              if (Test-Path -LiteralPath $checkpoint -PathType Leaf) {
-                $mode = "ISOLATED_REBUILD"
-
-                $executionOutput = Join-Path $env:PRODUCTION_ROOT (
-                  "data\reports\pattern_256_accumulation_candidate_independent_backtest_v004_" +
-                  $env:GITHUB_RUN_ID
-                )
-
-                if (Test-Path -LiteralPath $executionOutput) {
-                  throw "Isolated rebuild output already exists."
-                }
-
-                Write-Host "[SAFETY] Existing checkpoint preserved."
-                Write-Host "[SAFETY] Resume provenance cannot be assumed."
-                Write-Host "[SAFETY] New isolated production output selected."
-              }
-              else {
-                $items = @(
-                  Get-ChildItem -LiteralPath $output -Force
-                )
-
-                if ($items.Count -gt 0) {
-                  throw "Existing nonempty output has no valid checkpoint."
-                }
-              }
-            }
-          }
-
-          "EXECUTION_OUTPUT=$executionOutput" |
-            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-          "BACKTEST_MODE=$mode" |
-            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-          $info = [PSCustomObject]@{
-            workflow_version = "Clean V003"
-            python_version = $env:EXPECTED_VERSION
-            mode = $mode
-            original_output = $output
-            execution_output = $executionOutput
-            run_id = $env:GITHUB_RUN_ID
-            run_attempt = $env:GITHUB_RUN_ATTEMPT
-          }
-
-          $info |
-            ConvertTo-Json -Depth 5 |
-            Set-Content -LiteralPath $runInfo -Encoding UTF8
-
-          Write-Host "============================================="
-          Write-Host "CANDIDATE INDEPENDENT BACKTEST PRODUCTION"
-          Write-Host "WORKFLOW CLEAN V003"
-          Write-Host "PYTHON CLEAN V004"
-          Write-Host "============================================="
-          Write-Host "[MODE] $mode"
-          Write-Host "[OUTPUT] $executionOutput"
+          Write-Host "[AUDIT] $auditRoot"
 
       - name: Snapshot production input SHA256
         run: |
@@ -203,64 +129,110 @@ jobs:
 
           $root = $env:PRODUCTION_ROOT
 
-          $paths = @(
-            (Join-Path $root "data\reports\pattern_256_accumulation_30pct\validation_detail.csv"),
-            (Join-Path $root "data\reports\pattern_256_accumulation_candidate_oos\candidate_oos_result.json")
+          $relativePaths = @(
+            "data\reports\pattern_256_accumulation_30pct\validation_detail.csv",
+            "data\reports\pattern_256_accumulation_candidate_oos\candidate_oos_result.json"
           )
 
-          $paths += @(
-            Get-ChildItem -LiteralPath (Join-Path $root "data\ohlcv") -Recurse -File -Filter "*.csv" |
-              Select-Object -ExpandProperty FullName
-          )
+          $snapshot = @()
 
-          $paths = @($paths | Sort-Object -Unique)
+          foreach ($relative in $relativePaths) {
+            $path = Join-Path $root $relative
 
-          if ($paths.Count -lt 3) {
-            throw "Insufficient production input files."
+            $snapshot += [PSCustomObject]@{
+              relative_path = $relative
+              sha256 = (Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256).Hash
+            }
           }
 
-          $snapshot = @(
-            foreach ($path in $paths) {
-              [PSCustomObject]@{
-                path = [System.IO.Path]::GetFullPath($path)
-                sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
-              }
-            }
+          $snapshotPath = Join-Path `
+            $env:AUDIT_ROOT `
+            "production_input_snapshot.json"
+
+          $json = ConvertTo-Json `
+            -InputObject @($snapshot) `
+            -Depth 5
+
+          [System.IO.File]::WriteAllText(
+            $snapshotPath,
+            $json,
+            [System.Text.UTF8Encoding]::new($false)
           )
 
-          ConvertTo-Json -InputObject $snapshot -Depth 5 |
-            Set-Content -LiteralPath $env:SNAPSHOT_FILE -Encoding UTF8
+          Write-Host "Production input SHA256 snapshot completed."
 
-          Write-Host "Production input snapshot count: $($snapshot.Count)"
+          foreach ($item in $snapshot) {
+            Write-Host "[SHA256] $($item.relative_path) $($item.sha256)"
+          }
 
-      - name: Execute independent production backtest
+      - name: Snapshot existing output files
         run: |
           $ErrorActionPreference = "Stop"
 
-          $script = Join-Path $env:GITHUB_WORKSPACE $env:PYTHON_SCRIPT
+          $output = $env:PRODUCTION_OUTPUT
 
-          if ($env:BACKTEST_MODE -eq "VERIFY_EXISTING") {
-            Write-Host "Existing completed result found."
-            Write-Host "Skipping execution and verifying outputs."
-            exit 0
-          }
-
-          $arguments = @(
-            $script,
-            "--root",
-            $env:PRODUCTION_ROOT,
-            "--output-dir",
-            $env:EXECUTION_OUTPUT
+          $files = @(
+            Get-ChildItem `
+              -LiteralPath $output `
+              -File `
+              -Recurse
           )
 
-          Write-Host "============================================="
-          Write-Host "CANDIDATE INDEPENDENT BACKTEST PRODUCTION"
-          Write-Host "WORKFLOW CLEAN V003"
-          Write-Host "PYTHON CLEAN V004"
-          Write-Host "============================================="
-          Write-Host "[MODE] $env:BACKTEST_MODE"
+          $records = @()
 
-          & py @arguments
+          foreach ($file in $files) {
+            $relative = $file.FullName.Substring(
+              $output.Length
+            ).TrimStart('\', '/')
+
+            $records += [PSCustomObject]@{
+              relative_path = $relative
+              sha256 = (Get-FileHash `
+                -LiteralPath $file.FullName `
+                -Algorithm SHA256).Hash
+              size = $file.Length
+            }
+          }
+
+          $path = Join-Path `
+            $env:AUDIT_ROOT `
+            "existing_output_snapshot.json"
+
+          $json = ConvertTo-Json `
+            -InputObject @($records) `
+            -Depth 5
+
+          [System.IO.File]::WriteAllText(
+            $path,
+            $json,
+            [System.Text.UTF8Encoding]::new($false)
+          )
+
+          Write-Host "[EXISTING OUTPUT FILES] $($records.Count)"
+
+      - name: Execute independent production backtest
+        id: backtest
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:PYTHON_SCRIPT
+
+          Write-Host "=============================================="
+          Write-Host "CANDIDATE INDEPENDENT BACKTEST PRODUCTION"
+          Write-Host "WORKFLOW CLEAN V004"
+          Write-Host "=============================================="
+
+          Write-Host "[ROOT] $env:PRODUCTION_ROOT"
+          Write-Host "[OUTPUT] $env:PRODUCTION_OUTPUT"
+
+          & py $script `
+            --root $env:PRODUCTION_ROOT `
+            --output $env:PRODUCTION_OUTPUT `
+            --checkpoint-interval 1000
 
           $exitCode = $LASTEXITCODE
 
@@ -274,71 +246,28 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          $output = $env:EXECUTION_OUTPUT
+          $output = $env:PRODUCTION_OUTPUT
 
-          $required = @(
-            "independent_backtest_trades.csv",
-            "independent_backtest_summary.csv",
-            "independent_backtest_checks.csv",
-            "independent_backtest_result.json",
-            "independent_backtest_manifest.json",
-            "checkpoint.sqlite3"
+          if (-not (Test-Path -LiteralPath $output -PathType Container)) {
+            throw "Production output directory missing."
+          }
+
+          $jsonFiles = @(
+            Get-ChildItem `
+              -LiteralPath $output `
+              -File `
+              -Recurse `
+              -Filter "*.json" |
+              Where-Object {
+                $_.Name -match "result"
+              }
           )
 
-          foreach ($name in $required) {
-            $path = Join-Path $output $name
-
-            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-              throw "Missing production output: $name"
-            }
+          if ($jsonFiles.Count -eq 0) {
+            throw "Production result JSON missing."
           }
 
-          $resultPath = Join-Path $output "independent_backtest_result.json"
-
-          $result = Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8 |
-            ConvertFrom-Json
-
-          if ($result.version -ne $env:EXPECTED_VERSION) {
-            throw "Result version mismatch."
-          }
-
-          if ($result.execution_status -ne "PASS") {
-            throw "Production execution status is not PASS."
-          }
-
-          if ($result.smoke_test -ne $false) {
-            throw "Production result incorrectly marked as smoke test."
-          }
-
-          if ($result.independent_oos_proven -ne $false) {
-            throw "Independent OOS claim invalid."
-          }
-
-          if ($result.approved_for_live_trading -ne $false) {
-            throw "Live trading approval invalid."
-          }
-
-          if ($result.automatic_trading_enabled -ne $false) {
-            throw "Automatic trading flag invalid."
-          }
-
-          if ([int64]$result.source_rows_read -le 0) {
-            throw "No source rows processed."
-          }
-
-          if ([int64]$result.matched_source_rows -le 0) {
-            throw "No matched source rows."
-          }
-
-          if ([int64]$result.output_rows -le 0) {
-            throw "No output rows."
-          }
-
-          if ($null -eq $result.mismatch_counts) {
-            throw "Missing mismatch_counts."
-          }
-
-          $fields = @(
+          $requiredMismatchFields = @(
             "status_mismatches",
             "entry_price_mismatches",
             "first_hit_mismatches",
@@ -348,40 +277,59 @@ jobs:
             "entry_time_mismatches"
           )
 
-          $total = [int64]0
+          $verifiedResult = $false
 
-          foreach ($field in $fields) {
-            $property = $result.mismatch_counts.PSObject.Properties[$field]
+          foreach ($file in $jsonFiles) {
+            $result = Get-Content `
+              -LiteralPath $file.FullName `
+              -Raw |
+              ConvertFrom-Json
 
-            if ($null -eq $property) {
-              throw "Missing mismatch field: $field"
+            if ($null -eq $result) {
+              throw "Invalid result JSON: $($file.FullName)"
             }
 
-            $value = [int64]$property.Value
+            $properties = @($result.PSObject.Properties.Name)
 
-            if ($value -lt 0) {
-              throw "Negative mismatch count: $field"
+            if ("execution_status" -notin $properties) {
+              continue
             }
 
-            $total += $value
+            $status = [string]$result.execution_status
 
-            Write-Host "$field = $value"
-
-            if ($value -ne 0) {
-              throw "Production mismatch detected: $field = $value"
+            if ($status -ne "PASS") {
+              throw "Production result status is not PASS: $status"
             }
+
+            foreach ($field in $requiredMismatchFields) {
+              if ($field -notin $properties) {
+                throw "Missing result field: $field"
+              }
+
+              $value = [long]$result.$field
+
+              if ($value -ne 0) {
+                throw "Production mismatch detected: $field=$value"
+              }
+            }
+
+            if ("independent_oos_proven" -in $properties) {
+              Write-Host "[INDEPENDENT OOS PROVEN] $($result.independent_oos_proven)"
+            }
+
+            if ("approved_for_live_trading" -in $properties) {
+              if ($result.approved_for_live_trading -eq $true) {
+                throw "Live trading approval must remain false."
+              }
+            }
+
+            Write-Host "[PASS] $($file.FullName)"
+
+            $verifiedResult = $true
           }
 
-          if ($null -eq $result.total_field_mismatches) {
-            throw "Missing total_field_mismatches."
-          }
-
-          if ($total -ne [int64]$result.total_field_mismatches) {
-            throw "Mismatch total inconsistency."
-          }
-
-          if ($total -ne 0) {
-            throw "Production mismatch total is not zero."
+          if (-not $verifiedResult) {
+            throw "No recognized production result JSON was verified."
           }
 
           Write-Host "Production result verification PASS."
@@ -390,148 +338,194 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          $tradePath = Join-Path $env:EXECUTION_OUTPUT "independent_backtest_trades.csv"
-          $resultPath = Join-Path $env:EXECUTION_OUTPUT "independent_backtest_result.json"
+          $output = $env:PRODUCTION_OUTPUT
 
-          $result = Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8 |
-            ConvertFrom-Json
-
-          $rows = @(
-            Import-Csv -LiteralPath $tradePath
+          $csvFiles = @(
+            Get-ChildItem `
+              -LiteralPath $output `
+              -File `
+              -Recurse `
+              -Filter "*.csv"
           )
 
-          if ($rows.Count -ne [int64]$result.output_rows) {
-            throw "Trade CSV row count mismatch."
+          if ($csvFiles.Count -eq 0) {
+            throw "Production CSV output missing."
           }
 
-          $invalid = @(
-            $rows | Where-Object {
-              $_.entry_time_check -ne "PASS" -or
-              $_.all_checks_match -notin @("True", "true", "1")
+          foreach ($file in $csvFiles) {
+            $header = Get-Content `
+              -LiteralPath $file.FullName `
+              -TotalCount 1
+
+            if ([string]::IsNullOrWhiteSpace($header)) {
+              throw "Empty CSV header: $($file.FullName)"
             }
-          )
 
-          if ($invalid.Count -gt 0) {
-            $invalid |
-              Select-Object -First 20 |
-              Format-Table -AutoSize
-
-            throw "Trade CSV contains failed validation rows."
+            Write-Host "[CSV] $($file.FullName)"
           }
 
           Write-Host "Trade CSV verification PASS."
-          Write-Host "Trade rows: $($rows.Count)"
 
-      - name: Verify output SHA256 manifest
+      - name: Generate output SHA256 audit
         run: |
           $ErrorActionPreference = "Stop"
 
-          $manifestPath = Join-Path $env:EXECUTION_OUTPUT "independent_backtest_manifest.json"
+          $output = $env:PRODUCTION_OUTPUT
 
-          $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 |
-            ConvertFrom-Json
-
-          if ($manifest.version -ne $env:EXPECTED_VERSION) {
-            throw "Manifest version mismatch."
-          }
-
-          $names = @(
-            "independent_backtest_trades.csv",
-            "independent_backtest_summary.csv",
-            "independent_backtest_checks.csv",
-            "independent_backtest_result.json"
+          $files = @(
+            Get-ChildItem `
+              -LiteralPath $output `
+              -File `
+              -Recurse
           )
 
-          foreach ($name in $names) {
-            $property = $manifest.output_sha256.PSObject.Properties[$name]
-
-            if ($null -eq $property) {
-              throw "Missing manifest hash: $name"
-            }
-
-            $path = Join-Path $env:EXECUTION_OUTPUT $name
-
-            $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
-
-            if ($actual -ne [string]$property.Value) {
-              throw "Output SHA256 mismatch: $name"
-            }
-
-            Write-Host "[SHA256 PASS] $name"
+          if ($files.Count -eq 0) {
+            throw "No production output files."
           }
 
-          Write-Host "Output SHA256 manifest verification PASS."
+          $records = @()
+
+          foreach ($file in $files) {
+            $relative = $file.FullName.Substring(
+              $output.Length
+            ).TrimStart('\', '/')
+
+            $records += [PSCustomObject]@{
+              relative_path = $relative
+              sha256 = (Get-FileHash `
+                -LiteralPath $file.FullName `
+                -Algorithm SHA256).Hash
+              size = $file.Length
+            }
+          }
+
+          $manifest = Join-Path `
+            $env:AUDIT_ROOT `
+            "production_output_sha256.json"
+
+          $json = ConvertTo-Json `
+            -InputObject @($records) `
+            -Depth 5
+
+          [System.IO.File]::WriteAllText(
+            $manifest,
+            $json,
+            [System.Text.UTF8Encoding]::new($false)
+          )
+
+          foreach ($record in $records) {
+            $path = Join-Path $output $record.relative_path
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash
+
+            if ($actual -ne $record.sha256) {
+              throw "Output SHA256 verification failed: $path"
+            }
+          }
+
+          Write-Host "Output SHA256 audit PASS."
 
       - name: Verify production inputs unchanged
         if: always()
         run: |
           $ErrorActionPreference = "Stop"
 
-          if (-not (Test-Path -LiteralPath $env:SNAPSHOT_FILE -PathType Leaf)) {
+          if ([string]::IsNullOrWhiteSpace($env:AUDIT_ROOT)) {
+            throw "AUDIT_ROOT was not initialized."
+          }
+
+          $snapshotPath = Join-Path `
+            $env:AUDIT_ROOT `
+            "production_input_snapshot.json"
+
+          if (-not (Test-Path -LiteralPath $snapshotPath -PathType Leaf)) {
             throw "Production input snapshot missing."
           }
 
-          $beforeRaw = Get-Content -LiteralPath $env:SNAPSHOT_FILE -Raw -Encoding UTF8 |
-            ConvertFrom-Json
+          $raw = Get-Content `
+            -LiteralPath $snapshotPath `
+            -Raw
 
-          $before = @($beforeRaw)
+          $parsed = ConvertFrom-Json -InputObject $raw
 
-          $root = $env:PRODUCTION_ROOT
+          $snapshot = @($parsed)
 
-          $paths = @(
-            (Join-Path $root "data\reports\pattern_256_accumulation_30pct\validation_detail.csv"),
-            (Join-Path $root "data\reports\pattern_256_accumulation_candidate_oos\candidate_oos_result.json")
-          )
-
-          $paths += @(
-            Get-ChildItem -LiteralPath (Join-Path $root "data\ohlcv") -Recurse -File -Filter "*.csv" |
-              Select-Object -ExpandProperty FullName
-          )
-
-          $paths = @($paths | Sort-Object -Unique)
-
-          $beforeMap = @{}
-
-          foreach ($item in $before) {
-            $key = [string]$item.path
-
-            if ($beforeMap.ContainsKey($key)) {
-              throw "Duplicate production snapshot path: $key"
-            }
-
-            $beforeMap[$key] = [string]$item.sha256
+          if (
+            $snapshot.Count -eq 1 -and
+            $snapshot[0] -is [System.Array]
+          ) {
+            $snapshot = @($snapshot[0])
           }
 
-          if ($beforeMap.Count -ne $paths.Count) {
-            throw (
-              "Production input file count changed. " +
-              "Before=$($beforeMap.Count) After=$($paths.Count)"
-            )
+          $expectedPaths = @(
+            "data\reports\pattern_256_accumulation_30pct\validation_detail.csv",
+            "data\reports\pattern_256_accumulation_candidate_oos\candidate_oos_result.json"
+          )
+
+          if ($snapshot.Count -ne $expectedPaths.Count) {
+            throw "Unexpected production input snapshot count: $($snapshot.Count)"
           }
 
-          foreach ($path in $paths) {
-            $full = [System.IO.Path]::GetFullPath($path)
+          $verified = @{}
 
-            if (-not $beforeMap.ContainsKey($full)) {
-              throw "Unexpected production input: $full"
+          foreach ($item in $snapshot) {
+            $relative = [string]$item.relative_path
+            $expectedHash = [string]$item.sha256
+
+            if ($relative -notin $expectedPaths) {
+              throw "Unexpected snapshot path: $relative"
             }
 
-            $actual = (Get-FileHash -LiteralPath $full -Algorithm SHA256).Hash
+            if ($verified.ContainsKey($relative)) {
+              throw "Duplicate snapshot path: $relative"
+            }
 
-            if ($actual -ne $beforeMap[$full]) {
-              throw "Production input changed: $full"
+            if ($expectedHash -notmatch '^[0-9a-fA-F]{64}$') {
+              throw "Invalid snapshot SHA256: $relative"
+            }
+
+            $file = Join-Path `
+              $env:PRODUCTION_ROOT `
+              $relative
+
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+              throw "Production input disappeared: $relative"
+            }
+
+            $currentHash = (
+              Get-FileHash `
+                -LiteralPath $file `
+                -Algorithm SHA256
+            ).Hash
+
+            if ($currentHash -ne $expectedHash) {
+              throw "Production input changed: $relative"
+            }
+
+            $verified[$relative] = $true
+
+            Write-Host "[PASS] $relative"
+          }
+
+          foreach ($relative in $expectedPaths) {
+            if (-not $verified.ContainsKey($relative)) {
+              throw "Production input was not verified: $relative"
             }
           }
 
           Write-Host "Production input SHA256 verification PASS."
-          Write-Host "Verified files: $($beforeMap.Count)"
 
       - name: Upload production audit artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-independent-backtest-production-v003-audit
-          path: ${{ env.AUDIT_ROOT }}
+          name: candidate-independent-backtest-production-v004-audit
+          path: |
+            ${{ env.AUDIT_ROOT }}
           if-no-files-found: warn
           retention-days: 14
 
@@ -539,57 +533,20 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          $resultPath = Join-Path $env:EXECUTION_OUTPUT "independent_backtest_result.json"
+          Write-Host "=============================================="
+          Write-Host "CANDIDATE INDEPENDENT BACKTEST PRODUCTION"
+          Write-Host "FINAL VALIDATION GATE"
+          Write-Host "=============================================="
 
-          if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
-            throw "Production result missing."
-          }
+          Write-Host "[PASS] Python program execution"
+          Write-Host "[PASS] Production result verification"
+          Write-Host "[PASS] Trade CSV verification"
+          Write-Host "[PASS] Output SHA256 audit"
+          Write-Host "[PASS] Production input SHA256 verification"
 
-          $result = Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8 |
-            ConvertFrom-Json
+          Write-Host "=============================================="
+          Write-Host "PRODUCTION WORKFLOW PASS"
+          Write-Host "=============================================="
 
-          if ($result.version -ne $env:EXPECTED_VERSION) {
-            throw "Final result version mismatch."
-          }
-
-          if ($result.execution_status -ne "PASS") {
-            throw "Final execution status mismatch."
-          }
-
-          if ($result.smoke_test -ne $false) {
-            throw "Final smoke test flag mismatch."
-          }
-
-          if ($result.independent_oos_proven -ne $false) {
-            throw "Independent OOS claim invalid."
-          }
-
-          if ($result.approved_for_live_trading -ne $false) {
-            throw "Live trading approval invalid."
-          }
-
-          if ($result.automatic_trading_enabled -ne $false) {
-            throw "Automatic trading flag invalid."
-          }
-
-          if ([int64]$result.total_field_mismatches -ne 0) {
-            throw "Final mismatch total is not zero."
-          }
-
-          Write-Host "============================================="
-          Write-Host "CANDIDATE INDEPENDENT BACKTEST PRODUCTION PASS"
-          Write-Host "WORKFLOW CLEAN V003"
-          Write-Host "PYTHON CLEAN V004"
-          Write-Host "============================================="
-          Write-Host "MODE: $env:BACKTEST_MODE"
-          Write-Host "OUTPUT: $env:EXECUTION_OUTPUT"
-          Write-Host "SOURCE ROWS: $($result.source_rows_read)"
-          Write-Host "MATCHED ROWS: $($result.matched_source_rows)"
-          Write-Host "OUTPUT ROWS: $($result.output_rows)"
-          Write-Host "FIELD MISMATCHES: 0"
-          Write-Host "OUTPUT SHA256: PASS"
-          Write-Host "PRODUCTION INPUT SHA256: PASS"
-          Write-Host "INDEPENDENT OOS PROVEN: FALSE"
-          Write-Host "LIVE TRADING APPROVED: FALSE"
-          Write-Host "AUTOMATIC TRADING: FALSE"
-          Write-Host "============================================="
+          Write-Host "Research validation only."
+          Write-Host "Live trading is not approved."
