@@ -40,13 +40,13 @@ jobs:
             throw "Python program not found: $script"
           }
 
-          py -m py_compile $script
+          & py -m py_compile $script
 
           if ($LASTEXITCODE -ne 0) {
             throw "Python compilation failed."
           }
 
-          py $script --help
+          & py $script --help
 
           if ($LASTEXITCODE -ne 0) {
             throw "Python help command failed."
@@ -83,9 +83,12 @@ jobs:
 
           $testRoot = Join-Path `
             $env:RUNNER_TEMP `
-            ("candidate_independent_v008_test_" + $env:GITHUB_RUN_ID + "_" + $env:GITHUB_RUN_ATTEMPT)
+            ("candidate_independent_v009_test_" +
+              $env:GITHUB_RUN_ID + "_" +
+              $env:GITHUB_RUN_ATTEMPT)
 
-          New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
+          New-Item -ItemType Directory -Path $testRoot -Force |
+            Out-Null
 
           $output = Join-Path $testRoot "backtest_output"
 
@@ -101,50 +104,59 @@ jobs:
 
           $root = $env:PRODUCTION_ROOT
 
-          $files = @(
-            Join-Path $root "data\reports\pattern_256_accumulation_30pct\validation_detail.csv"
-            Join-Path $root "data\reports\pattern_256_accumulation_candidate_oos\candidate_oos_result.json"
+          $relativePaths = @(
+            "data\reports\pattern_256_accumulation_30pct\validation_detail.csv",
+            "data\reports\pattern_256_accumulation_candidate_oos\candidate_oos_result.json"
           )
 
           $snapshot = @()
 
-          foreach ($file in $files) {
+          foreach ($relative in $relativePaths) {
+            $file = Join-Path $root $relative
+
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+              throw "Missing production input: $file"
+            }
+
             $snapshot += [PSCustomObject]@{
-              path = $file
-              sha256 = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash
+              relative_path = $relative
+              sha256 = (Get-FileHash `
+                -LiteralPath $file `
+                -Algorithm SHA256).Hash
             }
           }
 
-          $snapshotPath = Join-Path $env:TEST_ROOT "production_snapshot.json"
+          $snapshotPath = Join-Path `
+            $env:TEST_ROOT `
+            "production_snapshot.json"
 
-          ConvertTo-Json -InputObject @($snapshot) -Depth 5 |
-            Set-Content -LiteralPath $snapshotPath -Encoding UTF8
+          # Preserve the array shape even when only one item exists.
+          $json = ConvertTo-Json -InputObject $snapshot -Depth 5
+
+          [System.IO.File]::WriteAllText(
+            $snapshotPath,
+            $json,
+            [System.Text.UTF8Encoding]::new($false)
+          )
 
           Write-Host "Production input snapshot created."
+
+          foreach ($item in $snapshot) {
+            Write-Host "$($item.relative_path): $($item.sha256)"
+          }
 
       - name: Execute independent backtest smoke test
         run: |
           $ErrorActionPreference = "Stop"
 
-          $script = Join-Path $env:GITHUB_WORKSPACE $env:PYTHON_SCRIPT
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:PYTHON_SCRIPT
 
           Write-Host "========================================"
           Write-Host "CANDIDATE INDEPENDENT BACKTEST TEST"
-          Write-Host "WORKFLOW CLEAN V008"
+          Write-Host "WORKFLOW CLEAN V009"
           Write-Host "========================================"
-
-          # Clean V005 CLI:
-          # --root
-          # --output
-          # --smoke-test
-          # --limit-events
-          # --limit-rows
-          # --force
-          # --checkpoint-interval
-          #
-          # Removed obsolete arguments:
-          # --output-dir
-          # --max-events
 
           & py $script `
             --root $env:PRODUCTION_ROOT `
@@ -154,11 +166,7 @@ jobs:
             --limit-rows 500 `
             --checkpoint-interval 100
 
-          $exitCode = $LASTEXITCODE
-
-          Write-Host "Backtest exit code: $exitCode"
-
-          if ($exitCode -ne 0) {
+          if ($LASTEXITCODE -ne 0) {
             throw "Independent backtest smoke test failed."
           }
 
@@ -172,58 +180,54 @@ jobs:
             throw "Backtest output directory missing."
           }
 
-          $files = @(Get-ChildItem `
-            -LiteralPath $output `
-            -File `
-            -Recurse)
+          $files = @(
+            Get-ChildItem `
+              -LiteralPath $output `
+              -File `
+              -Recurse
+          )
 
           if ($files.Count -eq 0) {
             throw "Backtest produced no output files."
           }
 
-          Write-Host "Generated files:"
-
           foreach ($file in $files) {
             Write-Host $file.FullName
-          }
 
-          $jsonFiles = @($files | Where-Object {
-            $_.Extension -eq ".json"
-          })
-
-          foreach ($file in $jsonFiles) {
-            try {
-              $null = Get-Content -LiteralPath $file.FullName -Raw |
-                ConvertFrom-Json
+            if ($file.Extension -eq ".json") {
+              try {
+                $null = Get-Content `
+                  -LiteralPath $file.FullName `
+                  -Raw |
+                  ConvertFrom-Json
+              }
+              catch {
+                throw "Invalid JSON: $($file.FullName)"
+              }
             }
-            catch {
-              throw "Invalid JSON: $($file.FullName)"
-            }
-          }
 
-          $csvFiles = @($files | Where-Object {
-            $_.Extension -eq ".csv"
-          })
+            if ($file.Extension -eq ".csv") {
+              $header = Get-Content `
+                -LiteralPath $file.FullName `
+                -TotalCount 1
 
-          foreach ($file in $csvFiles) {
-            $header = Get-Content `
-              -LiteralPath $file.FullName `
-              -TotalCount 1
-
-            if ([string]::IsNullOrWhiteSpace($header)) {
-              throw "Empty CSV header: $($file.FullName)"
+              if ([string]::IsNullOrWhiteSpace($header)) {
+                throw "Empty CSV header: $($file.FullName)"
+              }
             }
           }
 
-          Write-Host "Output structure verification PASS."
+          Write-Host "Output verification PASS."
 
       - name: Verify checkpoint and resume
         run: |
           $ErrorActionPreference = "Stop"
 
-          $script = Join-Path $env:GITHUB_WORKSPACE $env:PYTHON_SCRIPT
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:PYTHON_SCRIPT
 
-          $before = @(
+          $csvFiles = @(
             Get-ChildItem `
               -LiteralPath $env:TEST_OUTPUT `
               -Recurse `
@@ -231,11 +235,18 @@ jobs:
               -Filter "*.csv"
           )
 
+          if ($csvFiles.Count -eq 0) {
+            throw "No CSV output available for resume verification."
+          }
+
           $beforeHashes = @{}
 
-          foreach ($file in $before) {
-            $beforeHashes[$file.FullName] = `
-              (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
+          foreach ($file in $csvFiles) {
+            $beforeHashes[$file.FullName] = (
+              Get-FileHash `
+                -LiteralPath $file.FullName `
+                -Algorithm SHA256
+            ).Hash
           }
 
           & py $script `
@@ -255,8 +266,11 @@ jobs:
               throw "CSV disappeared after resume: $path"
             }
 
-            $afterHash = `
-              (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+            $afterHash = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash
 
             if ($afterHash -ne $beforeHashes[$path]) {
               throw "CSV changed after resume: $path"
@@ -270,28 +284,52 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          $snapshotPath = Join-Path $env:TEST_ROOT "production_snapshot.json"
+          if ([string]::IsNullOrWhiteSpace($env:TEST_ROOT)) {
+            throw "TEST_ROOT was not initialized."
+          }
+
+          $snapshotPath = Join-Path `
+            $env:TEST_ROOT `
+            "production_snapshot.json"
 
           if (-not (Test-Path -LiteralPath $snapshotPath -PathType Leaf)) {
             throw "Production snapshot missing."
           }
 
+          $raw = Get-Content `
+            -LiteralPath $snapshotPath `
+            -Raw
+
           $snapshot = @(
-            Get-Content -LiteralPath $snapshotPath -Raw |
-              ConvertFrom-Json
+            ConvertFrom-Json -InputObject $raw
           )
 
+          if ($snapshot.Count -ne 2) {
+            throw "Unexpected production snapshot count: $($snapshot.Count)"
+          }
+
           foreach ($item in $snapshot) {
-            if (-not (Test-Path -LiteralPath $item.path -PathType Leaf)) {
-              throw "Production input disappeared: $($item.path)"
+            $relative = [string]$item.relative_path
+
+            $file = Join-Path `
+              $env:PRODUCTION_ROOT `
+              $relative
+
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+              throw "Production input disappeared: $relative"
             }
 
-            $currentHash = `
-              (Get-FileHash -LiteralPath $item.path -Algorithm SHA256).Hash
+            $currentHash = (
+              Get-FileHash `
+                -LiteralPath $file `
+                -Algorithm SHA256
+            ).Hash
 
-            if ($currentHash -ne $item.sha256) {
-              throw "Production input changed: $($item.path)"
+            if ($currentHash -ne [string]$item.sha256) {
+              throw "Production input changed: $relative"
             }
+
+            Write-Host "[PASS] $relative"
           }
 
           Write-Host "Production input SHA256 verification PASS."
@@ -300,7 +338,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-independent-backtest-v008-test
+          name: candidate-independent-backtest-v009-test
           path: |
             ${{ env.TEST_OUTPUT }}
             ${{ env.TEST_ROOT }}/production_snapshot.json
