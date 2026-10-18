@@ -83,7 +83,7 @@ jobs:
 
           $testRoot = Join-Path `
             $env:RUNNER_TEMP `
-            ("candidate_independent_v009_test_" +
+            ("candidate_independent_v010_test_" +
               $env:GITHUB_RUN_ID + "_" +
               $env:GITHUB_RUN_ATTEMPT)
 
@@ -130,8 +130,10 @@ jobs:
             $env:TEST_ROOT `
             "production_snapshot.json"
 
-          # Preserve the array shape even when only one item exists.
-          $json = ConvertTo-Json -InputObject $snapshot -Depth 5
+          # Explicitly serialize the collection as a JSON array.
+          $json = ConvertTo-Json `
+            -InputObject @($snapshot) `
+            -Depth 5
 
           [System.IO.File]::WriteAllText(
             $snapshotPath,
@@ -155,7 +157,7 @@ jobs:
 
           Write-Host "========================================"
           Write-Host "CANDIDATE INDEPENDENT BACKTEST TEST"
-          Write-Host "WORKFLOW CLEAN V009"
+          Write-Host "WORKFLOW CLEAN V010"
           Write-Host "========================================"
 
           & py $script `
@@ -300,16 +302,45 @@ jobs:
             -LiteralPath $snapshotPath `
             -Raw
 
-          $snapshot = @(
-            ConvertFrom-Json -InputObject $raw
-          )
+          # Prevent PowerShell from collapsing JSON arrays into a scalar.
+          $parsed = ConvertFrom-Json -InputObject $raw
+          $snapshot = @($parsed)
+
+          # PowerShell 5.1 can preserve an entire JSON array as one
+          # nested object. Normalize that case without dropping entries.
+          if (
+            $snapshot.Count -eq 1 -and
+            $snapshot[0] -is [System.Array]
+          ) {
+            $snapshot = @($snapshot[0])
+          }
 
           if ($snapshot.Count -ne 2) {
             throw "Unexpected production snapshot count: $($snapshot.Count)"
           }
 
+          $expectedPaths = @(
+            "data\reports\pattern_256_accumulation_30pct\validation_detail.csv",
+            "data\reports\pattern_256_accumulation_candidate_oos\candidate_oos_result.json"
+          )
+
+          $verified = @{}
+
           foreach ($item in $snapshot) {
             $relative = [string]$item.relative_path
+            $expectedHash = [string]$item.sha256
+
+            if ($relative -notin $expectedPaths) {
+              throw "Unexpected production snapshot path: $relative"
+            }
+
+            if ($verified.ContainsKey($relative)) {
+              throw "Duplicate production snapshot path: $relative"
+            }
+
+            if ($expectedHash -notmatch '^[0-9a-fA-F]{64}$') {
+              throw "Invalid snapshot SHA256: $relative"
+            }
 
             $file = Join-Path `
               $env:PRODUCTION_ROOT `
@@ -325,11 +356,19 @@ jobs:
                 -Algorithm SHA256
             ).Hash
 
-            if ($currentHash -ne [string]$item.sha256) {
+            if ($currentHash -ne $expectedHash) {
               throw "Production input changed: $relative"
             }
 
+            $verified[$relative] = $true
+
             Write-Host "[PASS] $relative"
+          }
+
+          foreach ($relative in $expectedPaths) {
+            if (-not $verified.ContainsKey($relative)) {
+              throw "Production input was not verified: $relative"
+            }
           }
 
           Write-Host "Production input SHA256 verification PASS."
@@ -338,7 +377,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-independent-backtest-v009-test
+          name: candidate-independent-backtest-v010-test
           path: |
             ${{ env.TEST_OUTPUT }}
             ${{ env.TEST_ROOT }}/production_snapshot.json
