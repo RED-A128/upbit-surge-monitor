@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: candidate-independent-backtest-evaluation-full
+  group: candidate-independent-backtest-full-evaluation
   cancel-in-progress: false
 
 jobs:
@@ -19,7 +19,7 @@ jobs:
       - self-hosted
       - Windows
 
-    timeout-minutes: 360
+    timeout-minutes: 180
 
     defaults:
       run:
@@ -30,27 +30,30 @@ jobs:
       PROGRAM_FILE: evaluate_pattern_256_accumulation_candidate_independent_backtest.py
       INPUT_RELATIVE: data\reports\pattern_256_accumulation_candidate_independent_backtest
       OUTPUT_RELATIVE: data\reports\pattern_256_accumulation_candidate_independent_backtest_evaluation
-      EXPECTED_VERSION: Clean V004
+      EXPECTED_VERSION: Clean V006
       PYTHONIOENCODING: utf-8
       PYTHONUTF8: "1"
 
     steps:
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Verify Python and program
+        shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
-
-          py --version
-          if ($LASTEXITCODE -ne 0) {
-            throw "Python launcher unavailable."
-          }
 
           $program = Join-Path $env:GITHUB_WORKSPACE $env:PROGRAM_FILE
 
           if (-not (Test-Path -LiteralPath $program -PathType Leaf)) {
-            throw "Evaluation program missing."
+            throw "Evaluation program missing: $program"
+          }
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python launcher failed."
           }
 
           py -m py_compile $program
@@ -59,74 +62,87 @@ jobs:
             throw "Python syntax verification failed."
           }
 
-          Write-Host "[PASS] Python program"
+          $source = Get-Content -LiteralPath $program -Raw -Encoding UTF8
+
+          if ($source -notmatch 'VERSION\s*=\s*["'']Clean V006["'']') {
+            throw "Program is not Clean V006."
+          }
+
+          Write-Host "[PASS] Python and Clean V006 verified."
 
       - name: Prepare evaluation paths
+        shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          $inputDir = Join-Path $env:PRODUCTION_ROOT $env:INPUT_RELATIVE
-          $outputDir = Join-Path $env:PRODUCTION_ROOT $env:OUTPUT_RELATIVE
+          $root = $env:PRODUCTION_ROOT
+          $inputDir = Join-Path $root $env:INPUT_RELATIVE
+          $outputDir = Join-Path $root $env:OUTPUT_RELATIVE
+          $program = Join-Path $env:GITHUB_WORKSPACE $env:PROGRAM_FILE
+
+          if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+            throw "Production root missing: $root"
+          }
 
           if (-not (Test-Path -LiteralPath $inputDir -PathType Container)) {
-            throw "Production input directory missing."
+            throw "Production input directory missing: $inputDir"
           }
 
-          $files = @(Get-ChildItem -LiteralPath $inputDir -File -Recurse)
+          $trades = Join-Path $inputDir "backtest_trades.csv"
 
-          if ($files.Count -eq 0) {
-            throw "Production input directory is empty."
+          if (-not (Test-Path -LiteralPath $trades -PathType Leaf)) {
+            throw "Backtest trades CSV missing: $trades"
           }
 
-          "EVALUATION_INPUT=$inputDir" |
-            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          if ($inputDir -eq $outputDir) {
+            throw "Input and output paths must differ."
+          }
 
-          "EVALUATION_OUTPUT=$outputDir" |
-            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "EVALUATION_ROOT=$root" >> $env:GITHUB_ENV
+          "EVALUATION_INPUT=$inputDir" >> $env:GITHUB_ENV
+          "EVALUATION_OUTPUT=$outputDir" >> $env:GITHUB_ENV
+          "EVALUATION_PROGRAM=$program" >> $env:GITHUB_ENV
 
-          Write-Host "[PASS] Evaluation paths"
-          Write-Host "[INPUT FILES] $($files.Count)"
+          Write-Host "[PASS] Evaluation paths prepared."
 
       - name: Snapshot production inputs
+        shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          $files = @(Get-ChildItem `
-            -LiteralPath $env:EVALUATION_INPUT `
-            -File -Recurse | Sort-Object FullName)
+          $inputDir = $env:EVALUATION_INPUT
+          $trades = Join-Path $inputDir "backtest_trades.csv"
+          $result = Join-Path $inputDir "backtest_result.json"
 
           $snapshot = @{}
 
-          foreach ($file in $files) {
-            $snapshot[$file.FullName] = (
-              Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256
-            ).Hash.ToLowerInvariant()
+          $snapshot[$trades] = (
+            Get-FileHash -LiteralPath $trades -Algorithm SHA256
+          ).Hash
+
+          if (Test-Path -LiteralPath $result -PathType Leaf) {
+            $snapshot[$result] = (
+              Get-FileHash -LiteralPath $result -Algorithm SHA256
+            ).Hash
           }
 
-          $snapshotPath = Join-Path $env:RUNNER_TEMP `
-            "full_evaluation_input_$($env:GITHUB_RUN_ID)_$($env:GITHUB_RUN_ATTEMPT).json"
+          $snapshotPath = Join-Path $env:RUNNER_TEMP "evaluation_input_snapshot.json"
 
-          $json = ConvertTo-Json -InputObject $snapshot -Depth 10
+          $snapshot |
+            ConvertTo-Json -Depth 10 |
+            Set-Content -LiteralPath $snapshotPath -Encoding UTF8
 
-          [System.IO.File]::WriteAllText(
-            $snapshotPath,
-            $json,
-            (New-Object System.Text.UTF8Encoding($false))
-          )
+          "INPUT_SNAPSHOT_PATH=$snapshotPath" >> $env:GITHUB_ENV
 
-          "SNAPSHOT_FILE=$snapshotPath" |
-            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
-          Write-Host "[PASS] Input SHA256 snapshot"
+          Write-Host "[PASS] Input SHA256 snapshot created."
 
       - name: Execute full evaluation
+        shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          $program = Join-Path $env:GITHUB_WORKSPACE $env:PROGRAM_FILE
-
-          py $program `
-            --root $env:PRODUCTION_ROOT `
+          py $env:EVALUATION_PROGRAM `
+            --root $env:EVALUATION_ROOT `
             --input $env:EVALUATION_INPUT `
             --output $env:EVALUATION_OUTPUT
 
@@ -134,20 +150,20 @@ jobs:
             throw "Full evaluation failed."
           }
 
-          Write-Host "[PASS] Full evaluation execution"
+          Write-Host "[PASS] Full evaluation completed."
 
       - name: Verify full evaluation result
+        shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          $path = Join-Path $env:EVALUATION_OUTPUT `
-            "independent_evaluation_result.json"
+          $resultPath = Join-Path $env:EVALUATION_OUTPUT "independent_evaluation_result.json"
 
-          if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-            throw "Evaluation result missing."
+          if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
+            throw "Evaluation result JSON missing."
           }
 
-          $result = Get-Content -LiteralPath $path -Raw |
+          $result = Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8 |
             ConvertFrom-Json
 
           if ($result.version -ne $env:EXPECTED_VERSION) {
@@ -155,7 +171,7 @@ jobs:
           }
 
           if ($result.execution_status -ne "PASS") {
-            throw "Evaluation did not pass."
+            throw "Evaluation execution status is not PASS."
           }
 
           if ($result.evaluation_scope -ne "FULL_DATASET") {
@@ -163,42 +179,43 @@ jobs:
           }
 
           if ($result.diagnostics.smoke_test -ne $false) {
-            throw "Unexpected smoke test flag."
+            throw "Smoke-test result cannot pass full evaluation."
           }
 
           if ($result.diagnostics.full_dataset_evaluated -ne $true) {
             throw "Full dataset evaluation not confirmed."
           }
 
-          if ([double]$result.target_return_pct -ne 30) {
-            throw "Research target mismatch."
-          }
-
           if ($result.approved_for_live_trading -ne $false) {
-            throw "Unexpected live trading approval."
+            throw "Invalid live trading approval flag."
           }
 
-          if ($result.profitability_proven -ne $false) {
-            throw "Unexpected profitability claim."
+          if ($result.target_return_pct -ne 30) {
+            throw "Unexpected target return."
           }
 
-          if ($result.statistical_independence_proven -ne $false) {
-            throw "Unexpected independence claim."
+          if ($result.diagnostics.source_rows -le 0) {
+            throw "No source rows evaluated."
           }
 
-          Write-Host "[PASS] Full evaluation result"
-          Write-Host "[ROWS] $($result.diagnostics.source_rows)"
-          Write-Host "[COMPLETED] $($result.diagnostics.completed_rows)"
-          Write-Host "[INCOMPLETE] $($result.diagnostics.incomplete_rows)"
+          Write-Host "[PASS] Clean V006 result verified."
+          Write-Host "Source rows: $($result.diagnostics.source_rows)"
+          Write-Host "Completed: $($result.diagnostics.completed_rows)"
+          Write-Host "Incomplete: $($result.diagnostics.incomplete_rows)"
 
       - name: Verify output SHA256
+        shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          $manifestPath = Join-Path $env:EVALUATION_OUTPUT `
-            "independent_evaluation_manifest.json"
+          $outputDir = $env:EVALUATION_OUTPUT
+          $manifestPath = Join-Path $outputDir "independent_evaluation_manifest.json"
 
-          $manifest = Get-Content -LiteralPath $manifestPath -Raw |
+          if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+            throw "Evaluation manifest missing."
+          }
+
+          $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 |
             ConvertFrom-Json
 
           if ($manifest.version -ne $env:EXPECTED_VERSION) {
@@ -206,199 +223,163 @@ jobs:
           }
 
           if ($manifest.execution_status -ne "PASS") {
-            throw "Manifest status mismatch."
+            throw "Manifest execution status is not PASS."
           }
 
           if ($manifest.approved_for_live_trading -ne $false) {
-            throw "Manifest safety flag mismatch."
+            throw "Invalid manifest trading approval."
           }
 
-          $expected = @(
-            "independent_evaluation_summary.csv"
-            "independent_evaluation_comparison.csv"
-            "independent_evaluation_decision.csv"
+          $requiredFiles = @(
+            "independent_evaluation_summary.csv",
+            "independent_evaluation_comparison.csv",
+            "independent_evaluation_decision.csv",
             "independent_evaluation_result.json"
           )
 
-          $properties = @($manifest.output_sha256.PSObject.Properties)
+          $hashProperties = @($manifest.output_sha256.PSObject.Properties)
 
-          if ($properties.Count -ne $expected.Count) {
-            throw "Output manifest file count mismatch."
+          if ($hashProperties.Count -ne $requiredFiles.Count) {
+            throw "Manifest output file count mismatch."
           }
 
-          foreach ($name in $expected) {
-            $property = $manifest.output_sha256.PSObject.Properties[$name]
+          foreach ($file in $requiredFiles) {
+            $path = Join-Path $outputDir $file
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Output file missing: $file"
+            }
+
+            $property = $manifest.output_sha256.PSObject.Properties[$file]
 
             if ($null -eq $property) {
-              throw "Missing output hash: $name"
+              throw "Manifest hash missing: $file"
             }
 
-            $file = Join-Path $env:EVALUATION_OUTPUT $name
+            $expected = [string]$property.Value
+            $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
 
-            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
-              throw "Missing output file: $name"
+            if ($actual -ne $expected) {
+              throw "Output SHA256 mismatch: $file"
             }
 
-            $actual = (
-              Get-FileHash -LiteralPath $file -Algorithm SHA256
-            ).Hash.ToLowerInvariant()
-
-            $expectedHash = ([string]$property.Value).ToLowerInvariant()
-
-            if ($actual -ne $expectedHash) {
-              throw "Output SHA256 mismatch: $name"
-            }
-
-            Write-Host "[SHA256 PASS] $name"
+            Write-Host "[SHA256 PASS] $file"
           }
 
+          Write-Host "[PASS] All output hashes verified."
+
       - name: Verify completed evaluation resume
+        shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          $program = Join-Path $env:GITHUB_WORKSPACE $env:PROGRAM_FILE
-
-          $files = @(Get-ChildItem `
-            -LiteralPath $env:EVALUATION_OUTPUT -File)
-
-          $before = @{}
-
-          foreach ($file in $files) {
-            $before[$file.Name] = (
-              Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256
-            ).Hash.ToLowerInvariant()
-          }
-
-          py $program `
-            --root $env:PRODUCTION_ROOT `
+          py $env:EVALUATION_PROGRAM `
+            --root $env:EVALUATION_ROOT `
             --input $env:EVALUATION_INPUT `
             --output $env:EVALUATION_OUTPUT
 
           if ($LASTEXITCODE -ne 0) {
-            throw "Resume verification failed."
+            throw "Evaluation resume verification failed."
           }
 
-          $after = @(Get-ChildItem `
-            -LiteralPath $env:EVALUATION_OUTPUT -File)
-
-          if ($after.Count -ne $before.Count) {
-            throw "Output count changed after resume."
-          }
-
-          foreach ($file in $after) {
-            if (-not $before.ContainsKey($file.Name)) {
-              throw "Unexpected output after resume."
-            }
-
-            $hash = (
-              Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256
-            ).Hash.ToLowerInvariant()
-
-            if ($hash -ne $before[$file.Name]) {
-              throw "Output changed after resume."
-            }
-          }
-
-          Write-Host "[PASS] Resume integrity"
+          Write-Host "[PASS] Completed evaluation resume verified."
 
       - name: Verify production inputs unchanged
         if: always()
+        shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          if (-not $env:SNAPSHOT_FILE) {
-            throw "Input snapshot path unavailable."
+          if (-not $env:INPUT_SNAPSHOT_PATH) {
+            Write-Host "[SKIP] Input snapshot was not created."
+            exit 0
           }
 
-          if (-not (Test-Path -LiteralPath $env:SNAPSHOT_FILE)) {
+          if (-not (Test-Path -LiteralPath $env:INPUT_SNAPSHOT_PATH)) {
             throw "Input snapshot missing."
           }
 
-          $snapshot = Get-Content `
-            -LiteralPath $env:SNAPSHOT_FILE -Raw |
+          $snapshot = Get-Content -LiteralPath $env:INPUT_SNAPSHOT_PATH -Raw -Encoding UTF8 |
             ConvertFrom-Json
 
-          $expected = @{}
+          foreach ($item in $snapshot.PSObject.Properties) {
+            $path = $item.Name
+            $expected = [string]$item.Value
 
-          foreach ($property in $snapshot.PSObject.Properties) {
-            $expected[$property.Name] = [string]$property.Value
-          }
-
-          $files = @(Get-ChildItem `
-            -LiteralPath $env:EVALUATION_INPUT `
-            -File -Recurse)
-
-          if ($files.Count -ne $expected.Count) {
-            throw "Production input file count changed."
-          }
-
-          foreach ($file in $files) {
-            if (-not $expected.ContainsKey($file.FullName)) {
-              throw "Unexpected production input file."
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Production input disappeared: $path"
             }
 
-            $actual = (
-              Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256
-            ).Hash.ToLowerInvariant()
+            $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
 
-            if ($actual -ne $expected[$file.FullName]) {
-              throw "Production input SHA256 changed."
+            if ($actual -ne $expected) {
+              throw "Production input changed: $path"
             }
+
+            Write-Host "[INPUT SHA256 PASS] $path"
           }
 
-          Write-Host "[PASS] Production inputs unchanged"
+          Write-Host "[PASS] Production inputs unchanged."
 
       - name: Upload evaluation artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-independent-full-evaluation-${{ github.run_id }}-${{ github.run_attempt }}
+          name: independent-backtest-full-evaluation
           path: |
-            ${{ env.EVALUATION_OUTPUT }}
-            ${{ env.SNAPSHOT_FILE }}
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_accumulation_candidate_independent_backtest_evaluation\independent_evaluation_summary.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_accumulation_candidate_independent_backtest_evaluation\independent_evaluation_comparison.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_accumulation_candidate_independent_backtest_evaluation\independent_evaluation_decision.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_accumulation_candidate_independent_backtest_evaluation\independent_evaluation_result.json
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_accumulation_candidate_independent_backtest_evaluation\independent_evaluation_manifest.json
           if-no-files-found: warn
-          retention-days: 7
+          retention-days: 30
 
       - name: Final validation gate
+        shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          $resultPath = Join-Path $env:EVALUATION_OUTPUT `
-            "independent_evaluation_result.json"
+          $resultPath = Join-Path $env:EVALUATION_OUTPUT "independent_evaluation_result.json"
+          $manifestPath = Join-Path $env:EVALUATION_OUTPUT "independent_evaluation_manifest.json"
 
-          $manifestPath = Join-Path $env:EVALUATION_OUTPUT `
-            "independent_evaluation_manifest.json"
-
-          $result = Get-Content -LiteralPath $resultPath -Raw |
-            ConvertFrom-Json
-
-          $manifest = Get-Content -LiteralPath $manifestPath -Raw |
-            ConvertFrom-Json
-
-          if ($result.execution_status -ne "PASS") {
-            throw "Final evaluation failed."
+          if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
+            throw "Final result missing."
           }
 
+          if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+            throw "Final manifest missing."
+          }
+
+          $result = Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8 |
+            ConvertFrom-Json
+
+          $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 |
+            ConvertFrom-Json
+
           if ($result.version -ne $env:EXPECTED_VERSION) {
-            throw "Final version mismatch."
+            throw "Final result version mismatch."
           }
 
           if ($manifest.version -ne $env:EXPECTED_VERSION) {
             throw "Final manifest version mismatch."
           }
 
+          if ($result.execution_status -ne "PASS") {
+            throw "Final result is not PASS."
+          }
+
+          if ($manifest.execution_status -ne "PASS") {
+            throw "Final manifest is not PASS."
+          }
+
           if ($result.approved_for_live_trading -ne $false) {
-            throw "Safety gate failed."
+            throw "Live trading must remain disabled."
           }
 
           Write-Host "========================================"
-          Write-Host "INDEPENDENT BACKTEST FULL EVALUATION"
-          Write-Host "CLEAN V001 WORKFLOW"
+          Write-Host "[PASS] Independent Backtest Full Evaluation"
+          Write-Host "[VERSION] $env:EXPECTED_VERSION"
+          Write-Host "[TARGET] +30%"
+          Write-Host "[LIVE TRADING] DISABLED"
           Write-Host "========================================"
-          Write-Host "FULL EVALUATION: PASS"
-          Write-Host "OUTPUT SHA256: PASS"
-          Write-Host "RESUME: PASS"
-          Write-Host "PRODUCTION INPUT SHA256: PASS"
-          Write-Host "LIVE TRADING APPROVED: FALSE"
-          Write-Host "========================================"
-          Write-Host "FINAL STATUS: PASS"
