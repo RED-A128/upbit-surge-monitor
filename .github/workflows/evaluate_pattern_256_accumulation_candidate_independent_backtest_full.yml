@@ -1,0 +1,404 @@
+
+name: evaluate_pattern_256_accumulation_candidate_independent_backtest_full.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-independent-backtest-evaluation-full
+  cancel-in-progress: false
+
+jobs:
+  independent-backtest-full-evaluation:
+    name: Independent Backtest Full Evaluation
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 360
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PRODUCTION_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+      PROGRAM_FILE: evaluate_pattern_256_accumulation_candidate_independent_backtest.py
+      INPUT_RELATIVE: data\reports\pattern_256_accumulation_candidate_independent_backtest
+      OUTPUT_RELATIVE: data\reports\pattern_256_accumulation_candidate_independent_backtest_evaluation
+      EXPECTED_VERSION: Clean V004
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Python and program
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python launcher unavailable."
+          }
+
+          $program = Join-Path $env:GITHUB_WORKSPACE $env:PROGRAM_FILE
+
+          if (-not (Test-Path -LiteralPath $program -PathType Leaf)) {
+            throw "Evaluation program missing."
+          }
+
+          py -m py_compile $program
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax verification failed."
+          }
+
+          Write-Host "[PASS] Python program"
+
+      - name: Prepare evaluation paths
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $inputDir = Join-Path $env:PRODUCTION_ROOT $env:INPUT_RELATIVE
+          $outputDir = Join-Path $env:PRODUCTION_ROOT $env:OUTPUT_RELATIVE
+
+          if (-not (Test-Path -LiteralPath $inputDir -PathType Container)) {
+            throw "Production input directory missing."
+          }
+
+          $files = @(Get-ChildItem -LiteralPath $inputDir -File -Recurse)
+
+          if ($files.Count -eq 0) {
+            throw "Production input directory is empty."
+          }
+
+          "EVALUATION_INPUT=$inputDir" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          "EVALUATION_OUTPUT=$outputDir" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          Write-Host "[PASS] Evaluation paths"
+          Write-Host "[INPUT FILES] $($files.Count)"
+
+      - name: Snapshot production inputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $files = @(Get-ChildItem `
+            -LiteralPath $env:EVALUATION_INPUT `
+            -File -Recurse | Sort-Object FullName)
+
+          $snapshot = @{}
+
+          foreach ($file in $files) {
+            $snapshot[$file.FullName] = (
+              Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+          }
+
+          $snapshotPath = Join-Path $env:RUNNER_TEMP `
+            "full_evaluation_input_$($env:GITHUB_RUN_ID)_$($env:GITHUB_RUN_ATTEMPT).json"
+
+          $json = ConvertTo-Json -InputObject $snapshot -Depth 10
+
+          [System.IO.File]::WriteAllText(
+            $snapshotPath,
+            $json,
+            (New-Object System.Text.UTF8Encoding($false))
+          )
+
+          "SNAPSHOT_FILE=$snapshotPath" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          Write-Host "[PASS] Input SHA256 snapshot"
+
+      - name: Execute full evaluation
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $program = Join-Path $env:GITHUB_WORKSPACE $env:PROGRAM_FILE
+
+          py $program `
+            --root $env:PRODUCTION_ROOT `
+            --input $env:EVALUATION_INPUT `
+            --output $env:EVALUATION_OUTPUT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Full evaluation failed."
+          }
+
+          Write-Host "[PASS] Full evaluation execution"
+
+      - name: Verify full evaluation result
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $path = Join-Path $env:EVALUATION_OUTPUT `
+            "independent_evaluation_result.json"
+
+          if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            throw "Evaluation result missing."
+          }
+
+          $result = Get-Content -LiteralPath $path -Raw |
+            ConvertFrom-Json
+
+          if ($result.version -ne $env:EXPECTED_VERSION) {
+            throw "Evaluation version mismatch."
+          }
+
+          if ($result.execution_status -ne "PASS") {
+            throw "Evaluation did not pass."
+          }
+
+          if ($result.evaluation_scope -ne "FULL_DATASET") {
+            throw "Evaluation scope is not FULL_DATASET."
+          }
+
+          if ($result.diagnostics.smoke_test -ne $false) {
+            throw "Unexpected smoke test flag."
+          }
+
+          if ($result.diagnostics.full_dataset_evaluated -ne $true) {
+            throw "Full dataset evaluation not confirmed."
+          }
+
+          if ([double]$result.target_return_pct -ne 30) {
+            throw "Research target mismatch."
+          }
+
+          if ($result.approved_for_live_trading -ne $false) {
+            throw "Unexpected live trading approval."
+          }
+
+          if ($result.profitability_proven -ne $false) {
+            throw "Unexpected profitability claim."
+          }
+
+          if ($result.statistical_independence_proven -ne $false) {
+            throw "Unexpected independence claim."
+          }
+
+          Write-Host "[PASS] Full evaluation result"
+          Write-Host "[ROWS] $($result.diagnostics.source_rows)"
+          Write-Host "[COMPLETED] $($result.diagnostics.completed_rows)"
+          Write-Host "[INCOMPLETE] $($result.diagnostics.incomplete_rows)"
+
+      - name: Verify output SHA256
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $manifestPath = Join-Path $env:EVALUATION_OUTPUT `
+            "independent_evaluation_manifest.json"
+
+          $manifest = Get-Content -LiteralPath $manifestPath -Raw |
+            ConvertFrom-Json
+
+          if ($manifest.version -ne $env:EXPECTED_VERSION) {
+            throw "Manifest version mismatch."
+          }
+
+          if ($manifest.execution_status -ne "PASS") {
+            throw "Manifest status mismatch."
+          }
+
+          if ($manifest.approved_for_live_trading -ne $false) {
+            throw "Manifest safety flag mismatch."
+          }
+
+          $expected = @(
+            "independent_evaluation_summary.csv"
+            "independent_evaluation_comparison.csv"
+            "independent_evaluation_decision.csv"
+            "independent_evaluation_result.json"
+          )
+
+          $properties = @($manifest.output_sha256.PSObject.Properties)
+
+          if ($properties.Count -ne $expected.Count) {
+            throw "Output manifest file count mismatch."
+          }
+
+          foreach ($name in $expected) {
+            $property = $manifest.output_sha256.PSObject.Properties[$name]
+
+            if ($null -eq $property) {
+              throw "Missing output hash: $name"
+            }
+
+            $file = Join-Path $env:EVALUATION_OUTPUT $name
+
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+              throw "Missing output file: $name"
+            }
+
+            $actual = (
+              Get-FileHash -LiteralPath $file -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            $expectedHash = ([string]$property.Value).ToLowerInvariant()
+
+            if ($actual -ne $expectedHash) {
+              throw "Output SHA256 mismatch: $name"
+            }
+
+            Write-Host "[SHA256 PASS] $name"
+          }
+
+      - name: Verify completed evaluation resume
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $program = Join-Path $env:GITHUB_WORKSPACE $env:PROGRAM_FILE
+
+          $files = @(Get-ChildItem `
+            -LiteralPath $env:EVALUATION_OUTPUT -File)
+
+          $before = @{}
+
+          foreach ($file in $files) {
+            $before[$file.Name] = (
+              Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+          }
+
+          py $program `
+            --root $env:PRODUCTION_ROOT `
+            --input $env:EVALUATION_INPUT `
+            --output $env:EVALUATION_OUTPUT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Resume verification failed."
+          }
+
+          $after = @(Get-ChildItem `
+            -LiteralPath $env:EVALUATION_OUTPUT -File)
+
+          if ($after.Count -ne $before.Count) {
+            throw "Output count changed after resume."
+          }
+
+          foreach ($file in $after) {
+            if (-not $before.ContainsKey($file.Name)) {
+              throw "Unexpected output after resume."
+            }
+
+            $hash = (
+              Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($hash -ne $before[$file.Name]) {
+              throw "Output changed after resume."
+            }
+          }
+
+          Write-Host "[PASS] Resume integrity"
+
+      - name: Verify production inputs unchanged
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if (-not $env:SNAPSHOT_FILE) {
+            throw "Input snapshot path unavailable."
+          }
+
+          if (-not (Test-Path -LiteralPath $env:SNAPSHOT_FILE)) {
+            throw "Input snapshot missing."
+          }
+
+          $snapshot = Get-Content `
+            -LiteralPath $env:SNAPSHOT_FILE -Raw |
+            ConvertFrom-Json
+
+          $expected = @{}
+
+          foreach ($property in $snapshot.PSObject.Properties) {
+            $expected[$property.Name] = [string]$property.Value
+          }
+
+          $files = @(Get-ChildItem `
+            -LiteralPath $env:EVALUATION_INPUT `
+            -File -Recurse)
+
+          if ($files.Count -ne $expected.Count) {
+            throw "Production input file count changed."
+          }
+
+          foreach ($file in $files) {
+            if (-not $expected.ContainsKey($file.FullName)) {
+              throw "Unexpected production input file."
+            }
+
+            $actual = (
+              Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($actual -ne $expected[$file.FullName]) {
+              throw "Production input SHA256 changed."
+            }
+          }
+
+          Write-Host "[PASS] Production inputs unchanged"
+
+      - name: Upload evaluation artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-independent-full-evaluation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.EVALUATION_OUTPUT }}
+            ${{ env.SNAPSHOT_FILE }}
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Final validation gate
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $resultPath = Join-Path $env:EVALUATION_OUTPUT `
+            "independent_evaluation_result.json"
+
+          $manifestPath = Join-Path $env:EVALUATION_OUTPUT `
+            "independent_evaluation_manifest.json"
+
+          $result = Get-Content -LiteralPath $resultPath -Raw |
+            ConvertFrom-Json
+
+          $manifest = Get-Content -LiteralPath $manifestPath -Raw |
+            ConvertFrom-Json
+
+          if ($result.execution_status -ne "PASS") {
+            throw "Final evaluation failed."
+          }
+
+          if ($result.version -ne $env:EXPECTED_VERSION) {
+            throw "Final version mismatch."
+          }
+
+          if ($manifest.version -ne $env:EXPECTED_VERSION) {
+            throw "Final manifest version mismatch."
+          }
+
+          if ($result.approved_for_live_trading -ne $false) {
+            throw "Safety gate failed."
+          }
+
+          Write-Host "========================================"
+          Write-Host "INDEPENDENT BACKTEST FULL EVALUATION"
+          Write-Host "CLEAN V001 WORKFLOW"
+          Write-Host "========================================"
+          Write-Host "FULL EVALUATION: PASS"
+          Write-Host "OUTPUT SHA256: PASS"
+          Write-Host "RESUME: PASS"
+          Write-Host "PRODUCTION INPUT SHA256: PASS"
+          Write-Host "LIVE TRADING APPROVED: FALSE"
+          Write-Host "========================================"
+          Write-Host "FINAL STATUS: PASS"
