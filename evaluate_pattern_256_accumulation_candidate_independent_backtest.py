@@ -4,7 +4,7 @@
 
 """
 evaluate_pattern_256_accumulation_candidate_independent_backtest.py
-Clean V005
+Clean V006
 
 Independent backtest evaluation.
 Standard library only.
@@ -17,6 +17,13 @@ Safety:
 - No profitability or statistical-independence claims.
 - SHA256 input/output audit.
 - Resume only after complete integrity verification.
+
+Clean V006:
+- Preserve Clean V005 CENSORED handling.
+- Validate HIT/MISS using source target and maximum prices.
+- Handle floating-point boundary differences without
+  silently changing the source HIT/MISS classification.
+- Preserve source SHA256, output SHA256, and resume checks.
 """
 
 from __future__ import annotations
@@ -30,17 +37,21 @@ import os
 import re
 import sys
 import tempfile
+
 from collections import defaultdict
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-VERSION = "Clean V005"
+
+VERSION = "Clean V006"
 TARGET_PCT = 30.0
 
 INPUT_RELATIVE = (
     "data/reports/"
     "pattern_256_accumulation_candidate_independent_backtest"
 )
+
 OUTPUT_RELATIVE = (
     "data/reports/"
     "pattern_256_accumulation_candidate_independent_backtest_evaluation"
@@ -86,6 +97,8 @@ ALIASES = {
         "target_return",
     ),
     "entry_price": ("entry_price",),
+    "target_price": ("target_price",),
+    "max_high": ("max_high",),
     "first_hit_bars": ("first_hit_bars",),
 }
 
@@ -112,7 +125,9 @@ CLASSIFICATIONS = {
 }
 
 TIMEFRAMES = {"h1", "h4", "d1"}
+
 COMPLETE = {"HIT", "MISS"}
+
 INCOMPLETE = {
     "INCOMPLETE",
     "PENDING",
@@ -165,6 +180,10 @@ DECISION_COLUMNS = [
 ]
 
 
+# ============================================================
+# Logging and errors
+# ============================================================
+
 def log(message):
     now = datetime.now(timezone.utc).strftime(
         "%Y-%m-%d %H:%M:%S UTC"
@@ -176,33 +195,48 @@ def fail(message):
     raise RuntimeError(message)
 
 
+# ============================================================
+# SHA256 and atomic output
+# ============================================================
+
 def sha256(path):
     digest = hashlib.sha256()
+
     with Path(path).open("rb") as handle:
         for chunk in iter(
-            lambda: handle.read(1024 * 1024), b""
+            lambda: handle.read(1024 * 1024),
+            b"",
         ):
             digest.update(chunk)
+
     return digest.hexdigest()
 
 
 def atomic_write(path, writer_function):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+
     fd, name = tempfile.mkstemp(
         prefix=f".{path.name}.",
         suffix=".tmp",
         dir=str(path.parent),
     )
+
     temporary = Path(name)
+
     try:
         with os.fdopen(
-            fd, "w", encoding="utf-8", newline=""
+            fd,
+            "w",
+            encoding="utf-8",
+            newline="",
         ) as handle:
             writer_function(handle)
             handle.flush()
             os.fsync(handle.fileno())
+
         os.replace(temporary, path)
+
     finally:
         if temporary.exists():
             temporary.unlink()
@@ -238,27 +272,43 @@ def write_csv(path, columns, rows):
 
 def read_json(path):
     with Path(path).open(
-        "r", encoding="utf-8-sig"
+        "r",
+        encoding="utf-8-sig",
     ) as handle:
         value = json.load(handle)
+
     if not isinstance(value, dict):
         fail(f"Invalid JSON object: {path}")
+
     return value
 
 
+# ============================================================
+# CSV column handling
+# ============================================================
+
 def normalize(value):
-    return str(value).strip().lower().replace(" ", "_")
+    return (
+        str(value)
+        .strip()
+        .lower()
+        .replace(" ", "_")
+    )
 
 
 def column_map(headers):
     normalized = {}
+
     for header in headers:
         key = normalize(header)
+
         if key in normalized:
             fail(f"Duplicate CSV column: {key}")
+
         normalized[key] = header
 
     mapped = {}
+
     for canonical, aliases in ALIASES.items():
         matches = [
             normalized[alias]
@@ -266,18 +316,20 @@ def column_map(headers):
             if alias in normalized
         ]
 
-        # Two equivalent column names can coexist.
-        # Prefer the primary name, but verify values per row.
         if matches:
             mapped[canonical] = matches[0]
+
             if len(matches) > 1:
-                mapped[f"{canonical}__alternates"] = matches[1:]
+                mapped[
+                    f"{canonical}__alternates"
+                ] = matches[1:]
 
     return mapped
 
 
 def get(row, columns, field):
     name = columns.get(field)
+
     if name is None:
         return ""
 
@@ -285,31 +337,24 @@ def get(row, columns, field):
     value = "" if value is None else str(value).strip()
 
     for alternate in columns.get(
-        f"{field}__alternates", []
+        f"{field}__alternates",
+        [],
     ):
         other = row.get(alternate)
         other = "" if other is None else str(other).strip()
+
         if value and other and value != other:
-            if field == "horizon":
-                try:
-                    equivalent = (
-                        float(value) == float(other)
-                    )
-                except ValueError:
-                    equivalent = False
-                if not equivalent:
-                    fail(
-                        f"Conflicting {field}: "
-                        f"{value} vs {other}"
-                    )
-            elif field == "target_return":
+            if field in ("horizon", "target_return"):
                 try:
                     equivalent = math.isclose(
-                        float(value), float(other),
+                        float(value),
+                        float(other),
+                        rel_tol=0.0,
                         abs_tol=1e-8,
                     )
                 except ValueError:
                     equivalent = False
+
                 if not equivalent:
                     fail(
                         f"Conflicting {field}: "
@@ -327,16 +372,23 @@ def get(row, columns, field):
     return value
 
 
+# ============================================================
+# Value parsing
+# ============================================================
+
 def number(value, field, line, blank=False):
     if value == "":
         if blank:
             return None
+
         fail(f"Missing {field} at line {line}")
 
     try:
         result = float(value)
     except (TypeError, ValueError):
-        fail(f"Invalid {field} at line {line}: {value}")
+        fail(
+            f"Invalid {field} at line {line}: {value}"
+        )
 
     if not math.isfinite(result):
         fail(f"Non-finite {field} at line {line}")
@@ -345,12 +397,40 @@ def number(value, field, line, blank=False):
 
 
 def integer(value, field, line, blank=False):
-    parsed = number(value, field, line, blank)
+    parsed = number(
+        value,
+        field,
+        line,
+        blank,
+    )
+
     if parsed is None:
         return None
+
     if not parsed.is_integer():
         fail(f"Non-integer {field} at line {line}")
+
     return int(parsed)
+
+
+def decimal_number(value, field, line, blank=False):
+    if value == "":
+        if blank:
+            return None
+
+        fail(f"Missing {field} at line {line}")
+
+    try:
+        result = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        fail(
+            f"Invalid {field} at line {line}: {value}"
+        )
+
+    if not result.is_finite():
+        fail(f"Non-finite {field} at line {line}")
+
+    return result
 
 
 def timestamp(value, field, line):
@@ -368,7 +448,8 @@ def timestamp(value, field, line):
 
     if parsed.tzinfo is None:
         fail(
-            f"Timezone missing in {field} at line {line}"
+            f"Timezone missing in {field} "
+            f"at line {line}"
         )
 
     return parsed.astimezone(timezone.utc)
@@ -377,10 +458,161 @@ def timestamp(value, field, line):
 def parse_hit(value, line):
     if value.lower() in ("1", "1.0", "true"):
         return 1
+
     if value.lower() in ("0", "0.0", "false"):
         return 0
-    fail(f"Invalid hit_30pct at line {line}: {value}")
 
+    fail(
+        f"Invalid hit_30pct at line {line}: {value}"
+    )
+
+
+# ============================================================
+# Clean V006 price validation
+# ============================================================
+
+def validate_price_boundary(
+    row,
+    columns,
+    line,
+    entry_price,
+    max_return,
+    hit,
+):
+    """
+    Verify HIT/MISS using source price information.
+
+    Important:
+    - Never silently change HIT into MISS or vice versa.
+    - Preserve the source's exact numeric target boundary.
+    - Distinguish a float-rounding discrepancy from a
+      materially inconsistent result.
+    """
+
+    target_text = get(
+        row,
+        columns,
+        "target_price",
+    )
+
+    high_text = get(
+        row,
+        columns,
+        "max_high",
+    )
+
+    # Legacy input files may omit both columns.
+    # In that case, use the original return-based
+    # validation, with no artificial tolerance
+    # that would classify a boundary MISS as HIT.
+    if not target_text and not high_text:
+        if hit and max_return < TARGET_PCT - 1e-7:
+            fail(
+                f"HIT below 30% at line {line}"
+            )
+
+        if not hit and max_return >= TARGET_PCT:
+            fail(
+                f"MISS reached 30% at line {line}"
+            )
+
+        return
+
+    if not target_text or not high_text:
+        fail(
+            f"Partial target/max_high data "
+            f"at line {line}"
+        )
+
+    entry_decimal = decimal_number(
+        get(row, columns, "entry_price"),
+        "entry_price",
+        line,
+    )
+
+    target_decimal = decimal_number(
+        target_text,
+        "target_price",
+        line,
+    )
+
+    high_decimal = decimal_number(
+        high_text,
+        "max_high",
+        line,
+    )
+
+    if (
+        entry_decimal <= 0
+        or target_decimal <= 0
+        or high_decimal < 0
+    ):
+        fail(
+            f"Invalid price values at line {line}"
+        )
+
+    # Check that the recorded target corresponds
+    # to +30%, allowing only tiny float differences.
+    expected_target = (
+        entry_decimal
+        * Decimal("1.30")
+    )
+
+    if not math.isclose(
+        float(target_decimal),
+        float(expected_target),
+        rel_tol=1e-12,
+        abs_tol=1e-12,
+    ):
+        fail(
+            f"Target price is not +30% "
+            f"at line {line}"
+        )
+
+    # Validate the reported return against the
+    # source high and entry price.
+    expected_return = float(
+        (
+            high_decimal / entry_decimal
+            - Decimal("1")
+        )
+        * Decimal("100")
+    )
+
+    if not math.isclose(
+        max_return,
+        expected_return,
+        rel_tol=1e-10,
+        abs_tol=1e-7,
+    ):
+        fail(
+            f"max_return_pct/max_high mismatch "
+            f"at line {line}"
+        )
+
+    # Decimal comparison uses the values recorded
+    # in the CSV without introducing another
+    # binary floating-point comparison.
+    reached_target = (
+        high_decimal >= target_decimal
+    )
+
+    if hit and not reached_target:
+        fail(
+            f"HIT below target price "
+            f"at line {line}"
+        )
+
+    if not hit and reached_target:
+        fail(
+            f"MISS reached target price "
+            f"at line {line}"
+        )
+
+
+# ============================================================
+# Statistical helpers
+# ============================================================
 
 def wilson(hits, total):
     if total == 0:
@@ -388,10 +620,15 @@ def wilson(hits, total):
 
     z = 1.959963984540054
     p = hits / total
-    denominator = 1 + z * z / total
+
+    denominator = (
+        1 + z * z / total
+    )
+
     center = (
         p + z * z / (2 * total)
     ) / denominator
+
     margin = (
         z
         * math.sqrt(
@@ -402,14 +639,27 @@ def wilson(hits, total):
     )
 
     return (
-        round(max(0, center - margin) * 100, 6),
-        round(min(1, center + margin) * 100, 6),
+        round(
+            max(0, center - margin) * 100,
+            6,
+        ),
+        round(
+            min(1, center + margin) * 100,
+            6,
+        ),
     )
 
 
 def rounded(value):
-    return None if value is None else round(value, 6)
+    if value is None:
+        return None
 
+    return round(value, 6)
+
+
+# ============================================================
+# Aggregation
+# ============================================================
 
 class Aggregate:
     def __init__(self):
@@ -417,17 +667,26 @@ class Aggregate:
         self.completed = 0
         self.hits = 0
         self.incomplete = 0
+
         self.return_sum = 0.0
         self.drawdown_sum = 0.0
+
         self.best_return = None
         self.worst_drawdown = None
+
         self.markets = set()
         self.events = set()
 
     def add(self, event):
         self.total_rows += 1
-        self.markets.add(event["market"])
-        self.events.add(event["event_key"])
+
+        self.markets.add(
+            event["market"]
+        )
+
+        self.events.add(
+            event["event_key"]
+        )
 
         if not event["completed"]:
             self.incomplete += 1
@@ -438,6 +697,7 @@ class Aggregate:
 
         ret = event["max_return"]
         dd = event["max_drawdown"]
+
         self.return_sum += ret
         self.drawdown_sum += dd
 
@@ -455,8 +715,10 @@ class Aggregate:
 
     def summary(self, key):
         timeframe, classification, horizon = key
+
         lower, upper = wilson(
-            self.hits, self.completed
+            self.hits,
+            self.completed,
         )
 
         return {
@@ -466,21 +728,26 @@ class Aggregate:
             "total_rows": self.total_rows,
             "completed": self.completed,
             "hits": self.hits,
-            "misses": self.completed - self.hits,
+            "misses": (
+                self.completed - self.hits
+            ),
             "incomplete": self.incomplete,
             "hit_rate_pct": rounded(
                 100 * self.hits / self.completed
-                if self.completed else None
+                if self.completed
+                else None
             ),
             "wilson_95_lower_pct": lower,
             "wilson_95_upper_pct": upper,
             "avg_max_return_pct": rounded(
                 self.return_sum / self.completed
-                if self.completed else None
+                if self.completed
+                else None
             ),
             "avg_max_drawdown_pct": rounded(
                 self.drawdown_sum / self.completed
-                if self.completed else None
+                if self.completed
+                else None
             ),
             "best_max_return_pct": rounded(
                 self.best_return
@@ -488,46 +755,79 @@ class Aggregate:
             "worst_max_drawdown_pct": rounded(
                 self.worst_drawdown
             ),
-            "unique_markets": len(self.markets),
-            "unique_signal_events": len(self.events),
+            "unique_markets": len(
+                self.markets
+            ),
+            "unique_signal_events": len(
+                self.events
+            ),
         }
 
+
+# ============================================================
+# Input discovery
+# ============================================================
 
 def choose_trades(directory, explicit=None):
     if explicit:
         path = Path(explicit).resolve()
+
         if not path.is_file():
-            fail(f"Trade CSV missing: {path}")
+            fail(
+                f"Trade CSV missing: {path}"
+            )
+
         return path
 
     for name in TRADE_NAMES:
         path = directory / name
+
         if path.is_file():
             return path
 
     matches = []
-    for path in sorted(directory.glob("*.csv")):
+
+    for path in sorted(
+        directory.glob("*.csv")
+    ):
         with path.open(
-            "r", encoding="utf-8-sig", newline=""
+            "r",
+            encoding="utf-8-sig",
+            newline="",
         ) as handle:
-            header = next(csv.reader(handle), [])
+            header = next(
+                csv.reader(handle),
+                [],
+            )
+
         columns = column_map(header)
-        if all(field in columns for field in REQUIRED):
+
+        if all(
+            field in columns
+            for field in REQUIRED
+        ):
             matches.append(path)
 
     if len(matches) != 1:
         fail(
             "Cannot uniquely identify trade CSV: "
-            + ", ".join(map(str, matches))
+            + ", ".join(
+                map(str, matches)
+            )
         )
+
     return matches[0]
 
 
 def choose_result(directory, explicit=None):
     if explicit:
         path = Path(explicit).resolve()
+
         if not path.is_file():
-            fail(f"Result JSON missing: {path}")
+            fail(
+                f"Result JSON missing: {path}"
+            )
+
         return path
 
     matches = [
@@ -535,8 +835,12 @@ def choose_result(directory, explicit=None):
         for name in RESULT_NAMES
         if (directory / name).is_file()
     ]
+
     if len(matches) > 1:
-        fail("Multiple backtest result JSON files")
+        fail(
+            "Multiple backtest result JSON files"
+        )
+
     return matches[0] if matches else None
 
 
@@ -551,6 +855,7 @@ def result_metadata(path):
         }
 
     source = read_json(path)
+
     status = str(
         source.get(
             "execution_status",
@@ -558,174 +863,358 @@ def result_metadata(path):
         )
     ).upper()
 
-    if status not in ("PASS", "SUCCESS", "COMPLETED"):
-        fail(f"Backtest result not successful: {status}")
+    if status not in (
+        "PASS",
+        "SUCCESS",
+        "COMPLETED",
+    ):
+        fail(
+            f"Backtest result not successful: "
+            f"{status}"
+        )
 
-    if source.get("approved_for_live_trading") is True:
-        fail("Source unexpectedly approves live trading")
+    if source.get(
+        "approved_for_live_trading"
+    ) is True:
+        fail(
+            "Source unexpectedly approves "
+            "live trading"
+        )
 
     return {
         "result_json_found": True,
         "execution_status": status,
         "independent_oos_proven": (
-            source.get("independent_oos_proven") is True
+            source.get(
+                "independent_oos_proven"
+            ) is True
         ),
         "approved_for_live_trading": False,
         "result_metadata_verified": True,
     }
 
 
+# ============================================================
+# Row validation
+# ============================================================
+
 def validate_row(row, columns, line):
     timeframe = get(
-        row, columns, "timeframe"
+        row,
+        columns,
+        "timeframe",
     ).lower()
+
     market = get(
-        row, columns, "market"
+        row,
+        columns,
+        "market",
     ).upper()
+
     classification = get(
-        row, columns, "classification"
+        row,
+        columns,
+        "classification",
     ).upper()
+
     status = get(
-        row, columns, "status"
+        row,
+        columns,
+        "status",
     ).upper()
 
     if timeframe not in TIMEFRAMES:
-        fail(f"Invalid timeframe at line {line}")
-    if not re.fullmatch(r"KRW-[A-Z0-9]+", market):
-        fail(f"Invalid market at line {line}")
+        fail(
+            f"Invalid timeframe at line {line}"
+        )
+
+    if not re.fullmatch(
+        r"KRW-[A-Z0-9]+",
+        market,
+    ):
+        fail(
+            f"Invalid market at line {line}"
+        )
+
     if classification not in CLASSIFICATIONS:
-        fail(f"Invalid classification at line {line}")
+        fail(
+            f"Invalid classification at line {line}"
+        )
+
     if status not in COMPLETE | INCOMPLETE:
-        fail(f"Invalid status at line {line}")
+        fail(
+            f"Invalid status at line {line}"
+        )
 
     horizon = integer(
         get(row, columns, "horizon"),
-        "horizon", line,
+        "horizon",
+        line,
     )
+
     observed = integer(
         get(row, columns, "observed_bars"),
-        "observed_bars", line,
+        "observed_bars",
+        line,
     )
 
     if horizon <= 0:
-        fail(f"Invalid horizon at line {line}")
+        fail(
+            f"Invalid horizon at line {line}"
+        )
+
     if not 0 <= observed <= horizon:
-        fail(f"Invalid observed_bars at line {line}")
+        fail(
+            f"Invalid observed_bars "
+            f"at line {line}"
+        )
 
     signal = timestamp(
-        get(row, columns, "signal_timestamp"),
-        "signal_timestamp", line,
+        get(
+            row,
+            columns,
+            "signal_timestamp",
+        ),
+        "signal_timestamp",
+        line,
     )
+
     completed = status in COMPLETE
-    entry_text = get(row, columns, "entry_timestamp")
-    price_text = get(row, columns, "entry_price")
 
-    # A censored event can have no executable entry candle.
-    # Incomplete events never contribute to completed hit-rate metrics.
-    if completed:
-        entry = timestamp(entry_text, "entry_timestamp", line)
-        price = number(price_text, "entry_price", line)
-        if price <= 0:
-            fail(f"Invalid entry_price at line {line}")
-    else:
-        entry = (
-            timestamp(entry_text, "entry_timestamp", line)
-            if entry_text else None
-        )
-        price = number(price_text, "entry_price", line, blank=True)
-        if price is not None and price <= 0:
-            fail(f"Invalid entry_price at line {line}")
-        if (entry is None) != (price is None):
-            fail(f"Partial entry data at line {line}")
-
-    if entry is not None and entry <= signal:
-        fail(f"Entry not after signal at line {line}")
-
-    # The source CSV may omit target_return_pct.
-    # This evaluator has an explicit fixed +30% target.
-    target_text = get(
-        row, columns, "target_return"
+    entry_text = get(
+        row,
+        columns,
+        "entry_timestamp",
     )
-    if target_text:
-        target = number(
-            target_text, "target_return_pct", line
+
+    price_text = get(
+        row,
+        columns,
+        "entry_price",
+    )
+
+    # CENSORED and other incomplete events
+    # may have no executable entry candle.
+    if completed:
+        entry = timestamp(
+            entry_text,
+            "entry_timestamp",
+            line,
         )
-        if not math.isclose(
-            target, TARGET_PCT, abs_tol=1e-8
-        ):
+
+        price = number(
+            price_text,
+            "entry_price",
+            line,
+        )
+
+        if price <= 0:
             fail(
-                f"Target is not 30% at line {line}: "
-                f"{target}"
+                f"Invalid entry_price "
+                f"at line {line}"
             )
 
-    hit_text = get(row, columns, "hit")
+    else:
+        entry = (
+            timestamp(
+                entry_text,
+                "entry_timestamp",
+                line,
+            )
+            if entry_text
+            else None
+        )
+
+        price = number(
+            price_text,
+            "entry_price",
+            line,
+            blank=True,
+        )
+
+        if price is not None and price <= 0:
+            fail(
+                f"Invalid entry_price "
+                f"at line {line}"
+            )
+
+        if (entry is None) != (price is None):
+            fail(
+                f"Partial entry data "
+                f"at line {line}"
+            )
+
+    if (
+        entry is not None
+        and entry <= signal
+    ):
+        fail(
+            f"Entry not after signal "
+            f"at line {line}"
+        )
+
+    # Fixed +30% research target.
+    target_text = get(
+        row,
+        columns,
+        "target_return",
+    )
+
+    if target_text:
+        target = number(
+            target_text,
+            "target_return_pct",
+            line,
+        )
+
+        if not math.isclose(
+            target,
+            TARGET_PCT,
+            rel_tol=0.0,
+            abs_tol=1e-8,
+        ):
+            fail(
+                f"Target is not 30% "
+                f"at line {line}: {target}"
+            )
+
+    hit_text = get(
+        row,
+        columns,
+        "hit",
+    )
 
     if completed:
-        hit = parse_hit(hit_text, line)
-        if hit != int(status == "HIT"):
-            fail(f"Status/hit mismatch at line {line}")
+        hit = parse_hit(
+            hit_text,
+            line,
+        )
 
-        # A HIT can be confirmed before the full horizon ends.
-        # A MISS requires observing the entire horizon.
-        if status == "HIT" and observed < 1:
-            fail(f"HIT has no observed bars at line {line}")
-        if status == "MISS" and observed != horizon:
+        if hit != int(
+            status == "HIT"
+        ):
             fail(
-                f"MISS has insufficient bars at line {line}: "
-                f"observed={observed}, horizon={horizon}"
+                f"Status/hit mismatch "
+                f"at line {line}"
+            )
+
+        # HIT may occur before the horizon ends.
+        # MISS requires the full horizon.
+        if (
+            status == "HIT"
+            and observed < 1
+        ):
+            fail(
+                f"HIT has no observed bars "
+                f"at line {line}"
+            )
+
+        if (
+            status == "MISS"
+            and observed != horizon
+        ):
+            fail(
+                f"MISS has insufficient bars "
+                f"at line {line}: "
+                f"observed={observed}, "
+                f"horizon={horizon}"
             )
 
         ret = number(
-            get(row, columns, "max_return"),
-            "max_return_pct", line,
+            get(
+                row,
+                columns,
+                "max_return",
+            ),
+            "max_return_pct",
+            line,
         )
+
         dd = number(
-            get(row, columns, "max_drawdown"),
-            "max_drawdown_pct", line,
+            get(
+                row,
+                columns,
+                "max_drawdown",
+            ),
+            "max_drawdown_pct",
+            line,
         )
 
-        if ret < -100 or dd < -100 or dd > 0.000001:
-            fail(f"Invalid return/drawdown at line {line}")
+        if (
+            ret < -100
+            or dd < -100
+            or dd > 0.000001
+        ):
+            fail(
+                f"Invalid return/drawdown "
+                f"at line {line}"
+            )
 
-        if hit and ret < TARGET_PCT - 1e-7:
-            fail(f"HIT below 30% at line {line}")
-
-        if not hit and ret >= TARGET_PCT - 1e-7:
-            fail(f"MISS reached 30% at line {line}")
+        # Clean V006:
+        # Validate the source price boundary.
+        # Do not automatically relabel a MISS.
+        validate_price_boundary(
+            row=row,
+            columns=columns,
+            line=line,
+            entry_price=price,
+            max_return=ret,
+            hit=hit,
+        )
 
     else:
         if hit_text.lower() not in (
-            "", "0", "0.0", "false"
+            "",
+            "0",
+            "0.0",
+            "false",
         ):
             fail(
-                f"Incomplete event has hit at line {line}"
+                f"Incomplete event has hit "
+                f"at line {line}"
             )
+
         hit = 0
         ret = None
         dd = None
 
     if "first_hit_bars" in columns:
         first = integer(
-            get(row, columns, "first_hit_bars"),
+            get(
+                row,
+                columns,
+                "first_hit_bars",
+            ),
             "first_hit_bars",
             line,
             blank=True,
         )
+
         if completed and hit:
-            if first is None or not 1 <= first <= observed:
+            if (
+                first is None
+                or not 1 <= first <= observed
+            ):
                 fail(
-                    f"Invalid first_hit_bars at line {line}"
+                    f"Invalid first_hit_bars "
+                    f"at line {line}"
                 )
+
         elif first is not None:
             fail(
-                f"Unexpected first_hit_bars at line {line}"
+                f"Unexpected first_hit_bars "
+                f"at line {line}"
             )
 
     event_key = (
         timeframe,
         market,
         signal.isoformat(),
-        entry.isoformat() if entry is not None else "NO_ENTRY",
+        (
+            entry.isoformat()
+            if entry is not None
+            else "NO_ENTRY"
+        ),
     )
 
     return {
@@ -741,88 +1230,184 @@ def validate_row(row, columns, line):
     }
 
 
-def analyze_trades(path, smoke_test, limit_rows):
+# ============================================================
+# Full trade analysis
+# ============================================================
+
+def analyze_trades(
+    path,
+    smoke_test,
+    limit_rows,
+):
     aggregates = defaultdict(Aggregate)
+
     seen = set()
     classification_by_event = {}
+
     horizons = set()
     timeframes = set()
+
     count = 0
 
     with path.open(
-        "r", encoding="utf-8-sig", newline=""
+        "r",
+        encoding="utf-8-sig",
+        newline="",
     ) as handle:
         reader = csv.DictReader(handle)
 
         if not reader.fieldnames:
-            fail("Trade CSV header missing")
+            fail(
+                "Trade CSV header missing"
+            )
 
-        columns = column_map(reader.fieldnames)
+        columns = column_map(
+            reader.fieldnames
+        )
+
         missing = [
-            field for field in REQUIRED
+            field
+            for field in REQUIRED
             if field not in columns
         ]
+
         if missing:
             fail(
                 "Missing required trade CSV columns: "
                 + ", ".join(missing)
             )
 
-        for line, row in enumerate(reader, 2):
-            if smoke_test and count >= limit_rows:
+        for line, row in enumerate(
+            reader,
+            2,
+        ):
+            if (
+                smoke_test
+                and count >= limit_rows
+            ):
                 break
 
             if None in row:
-                fail(f"Malformed CSV line {line}")
+                fail(
+                    f"Malformed CSV line {line}"
+                )
 
-            event = validate_row(row, columns, line)
+            event = validate_row(
+                row,
+                columns,
+                line,
+            )
+
             count += 1
 
             key = event["event_key"]
             horizon = event["horizon"]
-            classification = event["classification"]
-            timeframe = event["timeframe"]
 
-            old = classification_by_event.get(key)
-            if old is not None and old != classification:
+            classification = event[
+                "classification"
+            ]
+
+            timeframe = event[
+                "timeframe"
+            ]
+
+            old = classification_by_event.get(
+                key
+            )
+
+            if (
+                old is not None
+                and old != classification
+            ):
                 fail(
-                    f"Conflicting classification at line {line}"
+                    f"Conflicting classification "
+                    f"at line {line}"
                 )
-            classification_by_event[key] = classification
 
-            unique = (key, horizon)
+            classification_by_event[
+                key
+            ] = classification
+
+            unique = (
+                key,
+                horizon,
+            )
+
             if unique in seen:
                 fail(
-                    f"Duplicate event/horizon at line {line}"
+                    f"Duplicate event/horizon "
+                    f"at line {line}"
                 )
+
             seen.add(unique)
 
             horizons.add(horizon)
             timeframes.add(timeframe)
 
             for group in (
-                (timeframe, classification, str(horizon)),
-                (timeframe, classification, "ALL"),
-                (timeframe, "ALL", str(horizon)),
-                (timeframe, "ALL", "ALL"),
-                ("ALL", classification, str(horizon)),
-                ("ALL", classification, "ALL"),
-                ("ALL", "ALL", str(horizon)),
-                ("ALL", "ALL", "ALL"),
+                (
+                    timeframe,
+                    classification,
+                    str(horizon),
+                ),
+                (
+                    timeframe,
+                    classification,
+                    "ALL",
+                ),
+                (
+                    timeframe,
+                    "ALL",
+                    str(horizon),
+                ),
+                (
+                    timeframe,
+                    "ALL",
+                    "ALL",
+                ),
+                (
+                    "ALL",
+                    classification,
+                    str(horizon),
+                ),
+                (
+                    "ALL",
+                    classification,
+                    "ALL",
+                ),
+                (
+                    "ALL",
+                    "ALL",
+                    str(horizon),
+                ),
+                (
+                    "ALL",
+                    "ALL",
+                    "ALL",
+                ),
             ):
-                aggregates[group].add(event)
+                aggregates[group].add(
+                    event
+                )
 
             if count % 100000 == 0:
-                log(f"[PROGRESS] rows={count:,}")
+                log(
+                    f"[PROGRESS] rows={count:,}"
+                )
 
     if count == 0:
-        fail("Trade CSV has no evaluated rows")
+        fail(
+            "Trade CSV has no evaluated rows"
+        )
 
     summaries = [
         aggregates[key].summary(key)
         for key in sorted(aggregates)
     ]
-    overall = aggregates[("ALL", "ALL", "ALL")]
+
+    overall = aggregates[
+        ("ALL", "ALL", "ALL")
+    ]
 
     diagnostics = {
         "source_rows": count,
@@ -835,7 +1420,9 @@ def analyze_trades(path, smoke_test, limit_rows):
         "timeframes": sorted(timeframes),
         "horizons": sorted(horizons),
         "smoke_test": smoke_test,
-        "full_dataset_evaluated": not smoke_test,
+        "full_dataset_evaluated": (
+            not smoke_test
+        ),
         "target_return_pct": TARGET_PCT,
         "target_return_source": (
             "FIXED_30PCT_WITH_OPTIONAL_CSV_VALIDATION"
@@ -845,10 +1432,20 @@ def analyze_trades(path, smoke_test, limit_rows):
     return summaries, diagnostics
 
 
-def find_summary(rows, timeframe, classification, horizon):
+# ============================================================
+# Summary lookup
+# ============================================================
+
+def find_summary(
+    rows,
+    timeframe,
+    classification,
+    horizon,
+):
     return next(
         (
-            row for row in rows
+            row
+            for row in rows
             if row["timeframe"] == timeframe
             and row["classification"] == classification
             and row["horizon"] == horizon
@@ -857,13 +1454,19 @@ def find_summary(rows, timeframe, classification, horizon):
     )
 
 
+# ============================================================
+# Comparison
+# ============================================================
+
 def comparisons_from(summaries):
     results = []
+
     timeframes = sorted({
         row["timeframe"]
         for row in summaries
         if row["timeframe"] != "ALL"
     })
+
     horizons = sorted(
         {
             row["horizon"]
@@ -881,6 +1484,7 @@ def comparisons_from(summaries):
                 "PATTERN_256_ONLY",
                 horizon,
             )
+
             combined = find_summary(
                 summaries,
                 timeframe,
@@ -889,37 +1493,61 @@ def comparisons_from(summaries):
             )
 
             base_n = (
-                baseline["completed"] if baseline else 0
+                baseline["completed"]
+                if baseline
+                else 0
             )
+
             both_n = (
-                combined["completed"] if combined else 0
+                combined["completed"]
+                if combined
+                else 0
             )
+
             base_rate = (
                 baseline["hit_rate_pct"]
-                if baseline else None
+                if baseline
+                else None
             )
+
             both_rate = (
                 combined["hit_rate_pct"]
-                if combined else None
+                if combined
+                else None
             )
 
             difference = (
-                rounded(both_rate - base_rate)
-                if base_rate is not None
-                and both_rate is not None
+                rounded(
+                    both_rate - base_rate
+                )
+                if (
+                    base_rate is not None
+                    and both_rate is not None
+                )
                 else None
             )
 
             if not baseline or not combined:
-                status = "INSUFFICIENT_GROUPS"
+                status = (
+                    "INSUFFICIENT_GROUPS"
+                )
+
             elif min(base_n, both_n) < 30:
                 status = "SMALL_SAMPLE"
+
             elif difference is None:
                 status = "NOT_EVALUABLE"
+
             elif difference > 0:
-                status = "OBSERVED_IMPROVEMENT"
+                status = (
+                    "OBSERVED_IMPROVEMENT"
+                )
+
             elif difference < 0:
-                status = "OBSERVED_DETERIORATION"
+                status = (
+                    "OBSERVED_DETERIORATION"
+                )
+
             else:
                 status = "OBSERVED_TIE"
 
@@ -937,7 +1565,16 @@ def comparisons_from(summaries):
     return results
 
 
-def decisions_from(summaries, comparisons, metadata, diagnostics):
+# ============================================================
+# Research decisions
+# ============================================================
+
+def decisions_from(
+    summaries,
+    comparisons,
+    metadata,
+    diagnostics,
+):
     results = []
 
     for item in comparisons:
@@ -947,36 +1584,55 @@ def decisions_from(summaries, comparisons, metadata, diagnostics):
             "BOTH",
             item["horizon"],
         )
+
         sample = (
-            combined["completed"] if combined else 0
+            combined["completed"]
+            if combined
+            else 0
         )
-        status = item["comparison_status"]
+
+        status = item[
+            "comparison_status"
+        ]
 
         if diagnostics["smoke_test"]:
             decision, reason = (
-                "HOLD", "SMOKE_TEST_ONLY"
+                "HOLD",
+                "SMOKE_TEST_ONLY",
             )
+
         elif sample < 100:
             decision, reason = (
-                "HOLD", "INSUFFICIENT_SAMPLE"
+                "HOLD",
+                "INSUFFICIENT_SAMPLE",
             )
-        elif not metadata["independent_oos_proven"]:
+
+        elif not metadata[
+            "independent_oos_proven"
+        ]:
             decision, reason = (
-                "HOLD", "INDEPENDENT_OOS_NOT_PROVEN"
+                "HOLD",
+                "INDEPENDENT_OOS_NOT_PROVEN",
             )
+
         elif status == "OBSERVED_DETERIORATION":
             decision, reason = (
                 "REJECT",
                 "COMBINED_PATTERN_UNDERPERFORMED",
             )
+
         elif status == "OBSERVED_IMPROVEMENT":
             decision, reason = (
                 "REVIEW",
                 "OBSERVED_IMPROVEMENT_REQUIRES_"
                 "INDEPENDENT_STATISTICAL_REVIEW",
             )
+
         else:
-            decision, reason = "HOLD", status
+            decision, reason = (
+                "HOLD",
+                status,
+            )
 
         results.append({
             "timeframe": item["timeframe"],
@@ -991,6 +1647,10 @@ def decisions_from(summaries, comparisons, metadata, diagnostics):
     return results
 
 
+# ============================================================
+# Input integrity
+# ============================================================
+
 def input_snapshot(paths):
     return {
         str(path.resolve()): sha256(path)
@@ -1001,96 +1661,175 @@ def input_snapshot(paths):
 def verify_input_snapshot(snapshot):
     for name, expected in snapshot.items():
         path = Path(name)
-        if not path.is_file():
-            fail(f"Input disappeared: {name}")
-        if sha256(path) != expected:
-            fail(f"Input SHA256 changed: {name}")
-        log(f"[INPUT SHA256 PASS] {name}")
 
+        if not path.is_file():
+            fail(
+                f"Input disappeared: {name}"
+            )
+
+        if sha256(path) != expected:
+            fail(
+                f"Input SHA256 changed: {name}"
+            )
+
+        log(
+            f"[INPUT SHA256 PASS] {name}"
+        )
+
+
+# ============================================================
+# Resume integrity
+# ============================================================
 
 def verify_resume(output, snapshot):
     manifest_path = (
-        output / "independent_evaluation_manifest.json"
+        output
+        / "independent_evaluation_manifest.json"
     )
+
     result_path = (
-        output / "independent_evaluation_result.json"
+        output
+        / "independent_evaluation_result.json"
     )
 
     if not manifest_path.is_file():
         return False
 
     if not result_path.is_file():
-        fail("Existing manifest without result JSON")
+        fail(
+            "Existing manifest without result JSON"
+        )
 
-    manifest = read_json(manifest_path)
-    result = read_json(result_path)
+    manifest = read_json(
+        manifest_path
+    )
+
+    result = read_json(
+        result_path
+    )
 
     if manifest.get("version") != VERSION:
-        fail("Existing output version mismatch")
+        fail(
+            "Existing output version mismatch"
+        )
 
     if manifest.get("input_sha256") != snapshot:
-        fail("Existing input SHA256 mismatch")
+        fail(
+            "Existing input SHA256 mismatch"
+        )
 
-    expected = set(OUTPUT_FILES) - {
+    expected = set(
+        OUTPUT_FILES
+    ) - {
         "independent_evaluation_manifest.json"
     }
-    hashes = manifest.get("output_sha256")
+
+    hashes = manifest.get(
+        "output_sha256"
+    )
 
     if not isinstance(hashes, dict):
-        fail("Invalid existing output manifest")
+        fail(
+            "Invalid existing output manifest"
+        )
 
     if set(hashes) != expected:
-        fail("Existing output file list mismatch")
+        fail(
+            "Existing output file list mismatch"
+        )
 
     for name, expected_hash in hashes.items():
         path = output / name
+
         if not path.is_file():
-            fail(f"Existing output missing: {name}")
+            fail(
+                f"Existing output missing: {name}"
+            )
+
         if sha256(path) != expected_hash:
-            fail(f"Existing output SHA256 mismatch: {name}")
+            fail(
+                f"Existing output SHA256 mismatch: "
+                f"{name}"
+            )
 
-    if result.get("execution_status") != "PASS":
-        fail("Existing result is not PASS")
+    if result.get(
+        "execution_status"
+    ) != "PASS":
+        fail(
+            "Existing result is not PASS"
+        )
 
-    if result.get("approved_for_live_trading") is not False:
-        fail("Existing result safety flag invalid")
+    if result.get(
+        "approved_for_live_trading"
+    ) is not False:
+        fail(
+            "Existing result safety flag invalid"
+        )
 
-    if manifest.get("approved_for_live_trading") is not False:
-        fail("Existing manifest safety flag invalid")
+    if manifest.get(
+        "approved_for_live_trading"
+    ) is not False:
+        fail(
+            "Existing manifest safety flag invalid"
+        )
 
-    log("[RESUME] Completed output verified")
+    log(
+        "[RESUME] Completed output verified"
+    )
+
     return True
 
 
+# ============================================================
+# Main
+# ============================================================
+
 def main():
     parser = argparse.ArgumentParser()
+
     parser.add_argument(
-        "--root", required=True
+        "--root",
+        required=True,
     )
+
     parser.add_argument("--input")
     parser.add_argument("--trades")
     parser.add_argument("--result")
     parser.add_argument("--output")
+
     parser.add_argument(
-        "--smoke-test", action="store_true"
+        "--smoke-test",
+        action="store_true",
     )
+
     parser.add_argument(
-        "--limit-rows", type=int, default=1000
+        "--limit-rows",
+        type=int,
+        default=1000,
     )
+
     args = parser.parse_args()
 
     if args.limit_rows <= 0:
-        fail("--limit-rows must be positive")
+        fail(
+            "--limit-rows must be positive"
+        )
 
-    root = Path(args.root).resolve()
+    root = Path(
+        args.root
+    ).resolve()
+
     if not root.is_dir():
-        fail(f"Production root missing: {root}")
+        fail(
+            f"Production root missing: {root}"
+        )
 
     input_dir = (
         Path(args.input).resolve()
         if args.input
         else root / INPUT_RELATIVE
     )
+
     output_dir = (
         Path(args.output).resolve()
         if args.output
@@ -1098,60 +1837,111 @@ def main():
     )
 
     if not input_dir.is_dir():
-        fail(f"Input directory missing: {input_dir}")
+        fail(
+            f"Input directory missing: {input_dir}"
+        )
 
     if output_dir == input_dir:
-        fail("Input and output directories must differ")
+        fail(
+            "Input and output directories must differ"
+        )
 
     if output_dir == root:
-        fail("Output cannot be production root")
+        fail(
+            "Output cannot be production root"
+        )
 
     if input_dir in output_dir.parents:
-        fail("Output cannot be inside input directory")
+        fail(
+            "Output cannot be inside input directory"
+        )
 
     if output_dir in input_dir.parents:
-        fail("Output cannot contain input directory")
+        fail(
+            "Output cannot contain input directory"
+        )
 
-    trades = choose_trades(input_dir, args.trades)
-    result_path = choose_result(input_dir, args.result)
+    trades = choose_trades(
+        input_dir,
+        args.trades,
+    )
+
+    result_path = choose_result(
+        input_dir,
+        args.result,
+    )
 
     source_paths = [trades]
-    if result_path is not None:
-        source_paths.append(result_path)
 
-    snapshot = input_snapshot(source_paths)
+    if result_path is not None:
+        source_paths.append(
+            result_path
+        )
+
+    snapshot = input_snapshot(
+        source_paths
+    )
 
     log("=" * 64)
-    log(f"{VERSION} | Independent Backtest Evaluation")
+
+    log(
+        f"{VERSION} | "
+        "Independent Backtest Evaluation"
+    )
+
     log(f"[ROOT] {root}")
     log(f"[INPUT] {input_dir}")
     log(f"[TRADES] {trades}")
     log(f"[RESULT] {result_path}")
     log(f"[OUTPUT] {output_dir}")
-    log(f"[SMOKE TEST] {args.smoke_test}")
-    log(f"[TARGET] {TARGET_PCT}%")
+
+    log(
+        f"[SMOKE TEST] {args.smoke_test}"
+    )
+
+    log(
+        f"[TARGET] {TARGET_PCT}%"
+    )
 
     for name, digest in snapshot.items():
-        log(f"[INPUT SHA256] {name} = {digest}")
+        log(
+            f"[INPUT SHA256] "
+            f"{name} = {digest}"
+        )
 
-    if verify_resume(output_dir, snapshot):
-        verify_input_snapshot(snapshot)
+    if verify_resume(
+        output_dir,
+        snapshot,
+    ):
+        verify_input_snapshot(
+            snapshot
+        )
+
         return 0
 
-    if output_dir.exists() and any(output_dir.iterdir()):
+    if (
+        output_dir.exists()
+        and any(output_dir.iterdir())
+    ):
         fail(
             "Output directory already contains files. "
             "Refusing to overwrite."
         )
 
-    metadata = result_metadata(result_path)
+    metadata = result_metadata(
+        result_path
+    )
+
     summaries, diagnostics = analyze_trades(
         trades,
         args.smoke_test,
         args.limit_rows,
     )
 
-    comparisons = comparisons_from(summaries)
+    comparisons = comparisons_from(
+        summaries
+    )
+
     decisions = decisions_from(
         summaries,
         comparisons,
@@ -1159,20 +1949,27 @@ def main():
         diagnostics,
     )
 
-    verify_input_snapshot(snapshot)
+    verify_input_snapshot(
+        snapshot
+    )
 
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
     write_csv(
         output_dir / OUTPUT_FILES[0],
         SUMMARY_COLUMNS,
         summaries,
     )
+
     write_csv(
         output_dir / OUTPUT_FILES[1],
         COMPARISON_COLUMNS,
         comparisons,
     )
+
     write_csv(
         output_dir / OUTPUT_FILES[2],
         DECISION_COLUMNS,
@@ -1208,7 +2005,9 @@ def main():
     )
 
     hashes = {
-        name: sha256(output_dir / name)
+        name: sha256(
+            output_dir / name
+        )
         for name in OUTPUT_FILES[:-1]
     }
 
@@ -1228,24 +2027,60 @@ def main():
         manifest,
     )
 
-    verify_input_snapshot(snapshot)
+    verify_input_snapshot(
+        snapshot
+    )
 
-    if not verify_resume(output_dir, snapshot):
-        fail("Final output verification failed")
+    if not verify_resume(
+        output_dir,
+        snapshot,
+    ):
+        fail(
+            "Final output verification failed"
+        )
 
-    log(f"[PASS] Source rows: {diagnostics['source_rows']:,}")
-    log(f"[PASS] Summary groups: {len(summaries)}")
-    log(f"[PASS] Comparison groups: {len(comparisons)}")
-    log(f"[PASS] Decision groups: {len(decisions)}")
-    log("[PASS] Input SHA256 unchanged")
-    log("[PASS] Output SHA256 verified")
-    log("[PASS] Live trading approval: FALSE")
+    log(
+        f"[PASS] Source rows: "
+        f"{diagnostics['source_rows']:,}"
+    )
+
+    log(
+        f"[PASS] Summary groups: "
+        f"{len(summaries)}"
+    )
+
+    log(
+        f"[PASS] Comparison groups: "
+        f"{len(comparisons)}"
+    )
+
+    log(
+        f"[PASS] Decision groups: "
+        f"{len(decisions)}"
+    )
+
+    log(
+        "[PASS] Input SHA256 unchanged"
+    )
+
+    log(
+        "[PASS] Output SHA256 verified"
+    )
+
+    log(
+        "[PASS] Live trading approval: FALSE"
+    )
+
     return 0
 
 
 if __name__ == "__main__":
     try:
         sys.exit(main())
+
     except Exception as exc:
-        log(f"[FAIL] {type(exc).__name__}: {exc}")
+        log(
+            f"[FAIL] "
+            f"{type(exc).__name__}: {exc}"
+        )
         raise
