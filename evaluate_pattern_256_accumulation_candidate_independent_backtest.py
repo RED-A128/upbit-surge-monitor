@@ -4,7 +4,7 @@
 
 """
 evaluate_pattern_256_accumulation_candidate_independent_backtest.py
-Clean V003
+Clean V004
 
 Independent backtest evaluation.
 Standard library only.
@@ -34,7 +34,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-VERSION = "Clean V003"
+VERSION = "Clean V004"
 TARGET_PCT = 30.0
 
 INPUT_RELATIVE = (
@@ -652,15 +652,19 @@ def validate_row(row, columns, line):
     hit_text = get(row, columns, "hit")
 
     if completed:
-        if observed != horizon:
-            fail(
-                f"Completed event has insufficient "
-                f"bars at line {line}"
-            )
-
         hit = parse_hit(hit_text, line)
         if hit != int(status == "HIT"):
             fail(f"Status/hit mismatch at line {line}")
+
+        # A HIT can be confirmed before the full horizon ends.
+        # A MISS requires observing the entire horizon.
+        if status == "HIT" and observed < 1:
+            fail(f"HIT has no observed bars at line {line}")
+        if status == "MISS" and observed != horizon:
+            fail(
+                f"MISS has insufficient bars at line {line}: "
+                f"observed={observed}, horizon={horizon}"
+            )
 
         ret = number(
             get(row, columns, "max_return"),
@@ -699,11 +703,11 @@ def validate_row(row, columns, line):
             blank=True,
         )
         if completed and hit:
-            if first is None or not 1 <= first <= horizon:
+            if first is None or not 1 <= first <= observed:
                 fail(
                     f"Invalid first_hit_bars at line {line}"
                 )
-        elif completed and first is not None:
+        elif first is not None:
             fail(
                 f"Unexpected first_hit_bars at line {line}"
             )
