@@ -64,7 +64,7 @@ from pathlib import Path
 from typing import Any
 
 
-VERSION = "Clean V001"
+VERSION = "Clean V002"
 
 PROGRAM_NAME = (
     "evaluate_pattern_256_accumulation_"
@@ -326,6 +326,16 @@ def build_column_map(fieldnames: list[str]) -> dict:
     result = {}
 
     for canonical, aliases in COLUMN_ALIASES.items():
+
+        # horizon과 required_bars는 우선순위로 처리한다.
+        # 두 컬럼이 동시에 존재해도 중복 오류로 판단하지 않는다.
+        if canonical == "horizon":
+            if "horizon" in normalized:
+                result["horizon"] = normalized["horizon"]
+            elif "required_bars" in normalized:
+                result["horizon"] = normalized["required_bars"]
+            continue
+
         matches = [
             normalized[alias]
             for alias in aliases
