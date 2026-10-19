@@ -1,4 +1,3 @@
-
 name: evaluate_pattern_256_accumulation_candidate_independent_backtest_test.yml
 
 on:
@@ -13,7 +12,7 @@ concurrency:
 
 jobs:
   candidate-independent-backtest-evaluation-test:
-    name: Candidate Independent Backtest Evaluation Test
+    name: evaluate_pattern_256_accumulation_candidate_independent_backtest_test.yml
 
     runs-on:
       - self-hosted
@@ -30,7 +29,7 @@ jobs:
       PROGRAM_FILE: evaluate_pattern_256_accumulation_candidate_independent_backtest.py
       INPUT_RELATIVE: data\reports\pattern_256_accumulation_candidate_independent_backtest
       OUTPUT_NAME: candidate_independent_backtest_evaluation_test
-      EXPECTED_VERSION: Clean V003
+      EXPECTED_VERSION: Clean V004
       PYTHONIOENCODING: utf-8
       PYTHONUTF8: "1"
 
@@ -475,7 +474,7 @@ jobs:
 
           Write-Host "============================================"
           Write-Host "CANDIDATE INDEPENDENT BACKTEST EVALUATION"
-          Write-Host "TEST CLEAN V003"
+          Write-Host "TEST CLEAN V004"
           Write-Host "============================================"
           Write-Host "EXECUTION STATUS: PASS"
           Write-Host "SMOKE TEST: PASS"
