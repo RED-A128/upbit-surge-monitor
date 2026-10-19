@@ -4,7 +4,7 @@
 
 """
 evaluate_pattern_256_accumulation_candidate_independent_backtest.py
-Clean V004
+Clean V005
 
 Independent backtest evaluation.
 Standard library only.
@@ -34,7 +34,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-VERSION = "Clean V004"
+VERSION = "Clean V005"
 TARGET_PCT = 30.0
 
 INPUT_RELATIVE = (
@@ -616,20 +616,30 @@ def validate_row(row, columns, line):
         get(row, columns, "signal_timestamp"),
         "signal_timestamp", line,
     )
-    entry = timestamp(
-        get(row, columns, "entry_timestamp"),
-        "entry_timestamp", line,
-    )
+    completed = status in COMPLETE
+    entry_text = get(row, columns, "entry_timestamp")
+    price_text = get(row, columns, "entry_price")
 
-    if entry <= signal:
+    # A censored event can have no executable entry candle.
+    # Incomplete events never contribute to completed hit-rate metrics.
+    if completed:
+        entry = timestamp(entry_text, "entry_timestamp", line)
+        price = number(price_text, "entry_price", line)
+        if price <= 0:
+            fail(f"Invalid entry_price at line {line}")
+    else:
+        entry = (
+            timestamp(entry_text, "entry_timestamp", line)
+            if entry_text else None
+        )
+        price = number(price_text, "entry_price", line, blank=True)
+        if price is not None and price <= 0:
+            fail(f"Invalid entry_price at line {line}")
+        if (entry is None) != (price is None):
+            fail(f"Partial entry data at line {line}")
+
+    if entry is not None and entry <= signal:
         fail(f"Entry not after signal at line {line}")
-
-    price = number(
-        get(row, columns, "entry_price"),
-        "entry_price", line,
-    )
-    if price <= 0:
-        fail(f"Invalid entry_price at line {line}")
 
     # The source CSV may omit target_return_pct.
     # This evaluator has an explicit fixed +30% target.
@@ -648,7 +658,6 @@ def validate_row(row, columns, line):
                 f"{target}"
             )
 
-    completed = status in COMPLETE
     hit_text = get(row, columns, "hit")
 
     if completed:
@@ -716,7 +725,7 @@ def validate_row(row, columns, line):
         timeframe,
         market,
         signal.isoformat(),
-        entry.isoformat(),
+        entry.isoformat() if entry is not None else "NO_ENTRY",
     )
 
     return {
