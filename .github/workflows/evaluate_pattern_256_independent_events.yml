@@ -29,6 +29,8 @@ jobs:
       EXPECTED_VERSION: Clean V002
       SOURCE_RELATIVE: data/reports/pattern_256_accumulation_candidate_independent_backtest/backtest_trades.csv
       OUTPUT_RELATIVE: data/reports/pattern_256_independent_events
+      SCRIPT_NAME: evaluate_pattern_256_independent_events.py
+      LOCAL_PROJECT_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
 
     steps:
       - name: Checkout repository
@@ -36,6 +38,8 @@ jobs:
 
       - name: Show Python version
         run: |
+          $ErrorActionPreference = "Stop"
+
           py --version
 
           if ($LASTEXITCODE -ne 0) {
@@ -46,11 +50,11 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          $repositoryRoot = (Get-Location).Path
+          $relativeSource = $env:SOURCE_RELATIVE.Replace("/", "\")
 
           $candidates = @(
-            (Join-Path $repositoryRoot $env:SOURCE_RELATIVE),
-            (Join-Path "C:\Users\USER\Documents\upbit-surge-monitor" $env:SOURCE_RELATIVE)
+            (Join-Path $env:GITHUB_WORKSPACE $relativeSource),
+            (Join-Path $env:LOCAL_PROJECT_ROOT $relativeSource)
           )
 
           $source = $null
@@ -86,93 +90,140 @@ jobs:
           Write-Host "Bytes: $($sourceInfo.Length)"
           Write-Host "SHA256: $sourceHash"
 
-          $sourceDirectory = Split-Path -Parent $source
-
-          $sourceRoot = (
-            Resolve-Path -LiteralPath (
-              Join-Path $sourceDirectory "..\.."
-            )
-          ).Path
-
-          $sourceRoot = Split-Path -Parent $sourceRoot
-
-          $expectedSource = Join-Path $sourceRoot $env:SOURCE_RELATIVE
-
-          if (-not (Test-Path -LiteralPath $expectedSource -PathType Leaf)) {
-            throw "Source root resolution failed."
-          }
-
-          "EVALUATION_SOURCE_ROOT=$sourceRoot" |
+          "EVALUATION_SOURCE=$source" |
             Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
           "EVALUATION_SOURCE_SHA256=$sourceHash" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Locate evaluation Python script
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $candidates = @(
+            (Join-Path $env:GITHUB_WORKSPACE $env:SCRIPT_NAME),
+            (Join-Path $env:LOCAL_PROJECT_ROOT $env:SCRIPT_NAME)
+          )
+
+          $scriptPath = $null
+
+          foreach ($candidate in $candidates) {
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+              $scriptPath = (Resolve-Path -LiteralPath $candidate).Path
+              break
+            }
+          }
+
+          if (-not $scriptPath) {
+            Write-Host "Checked Python script locations:"
+
+            foreach ($candidate in $candidates) {
+              Write-Host "  $candidate"
+            }
+
+            throw @"
+Evaluation Python script not found.
+
+Create and commit this file in the GitHub repository root:
+
+evaluate_pattern_256_independent_events.py
+
+The workflow cannot run without this Python file.
+"@
+          }
+
+          Write-Host "Python script: $scriptPath"
+
+          "EVALUATION_SCRIPT=$scriptPath" |
             Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Prepare isolated evaluation workspace
         run: |
           $ErrorActionPreference = "Stop"
 
-          $evaluationRoot = Join-Path $env:RUNNER_TEMP "pattern_256_independent_events_workspace"
+          $evaluationRoot = Join-Path `
+            $env:RUNNER_TEMP `
+            "pattern_256_independent_events_workspace"
 
           if (Test-Path -LiteralPath $evaluationRoot) {
-            Remove-Item -LiteralPath $evaluationRoot -Recurse -Force
+            Remove-Item `
+              -LiteralPath $evaluationRoot `
+              -Recurse `
+              -Force
           }
 
-          New-Item -ItemType Directory -Path $evaluationRoot -Force |
+          New-Item `
+            -ItemType Directory `
+            -Path $evaluationRoot `
+            -Force |
             Out-Null
 
           $relativeSource = $env:SOURCE_RELATIVE.Replace("/", "\")
 
-          $destinationSource = Join-Path $evaluationRoot $relativeSource
+          $destinationSource = Join-Path `
+            $evaluationRoot `
+            $relativeSource
 
-          $destinationDirectory = Split-Path -Parent $destinationSource
+          $destinationDirectory = Split-Path `
+            -Parent `
+            $destinationSource
 
-          New-Item -ItemType Directory -Path $destinationDirectory -Force |
+          New-Item `
+            -ItemType Directory `
+            -Path $destinationDirectory `
+            -Force |
             Out-Null
 
-          $originalSource = Join-Path $env:EVALUATION_SOURCE_ROOT $relativeSource
-
-          if (-not (Test-Path -LiteralPath $originalSource -PathType Leaf)) {
-            throw "Original source disappeared."
-          }
-
-          Write-Host "Copying source into isolated workspace..."
+          Write-Host "Copying source CSV..."
 
           Copy-Item `
-            -LiteralPath $originalSource `
+            -LiteralPath $env:EVALUATION_SOURCE `
             -Destination $destinationSource `
             -Force
 
           $copiedHash = (
-            Get-FileHash -LiteralPath $destinationSource -Algorithm SHA256
+            Get-FileHash `
+              -LiteralPath $destinationSource `
+              -Algorithm SHA256
           ).Hash.ToLowerInvariant()
 
           if ($copiedHash -ne $env:EVALUATION_SOURCE_SHA256) {
             throw "Source copy SHA256 mismatch."
           }
 
-          Write-Host "Source copy SHA256 verified."
+          $destinationScript = Join-Path `
+            $evaluationRoot `
+            $env:SCRIPT_NAME
+
+          Copy-Item `
+            -LiteralPath $env:EVALUATION_SCRIPT `
+            -Destination $destinationScript `
+            -Force
+
+          if (-not (Test-Path -LiteralPath $destinationScript)) {
+            throw "Python script copy failed."
+          }
+
+          Write-Host "Source SHA256 verified."
+          Write-Host "Script copied successfully."
 
           "EVALUATION_ROOT=$evaluationRoot" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          "EVALUATION_SCRIPT_COPY=$destinationScript" |
             Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Run independent event evaluation
         run: |
           $ErrorActionPreference = "Stop"
 
-          if (-not $env:EVALUATION_ROOT) {
-            throw "Evaluation workspace was not initialized."
-          }
-
-          $scriptPath = Join-Path `
-            $env:GITHUB_WORKSPACE `
-            "evaluate_pattern_256_independent_events.py"
-
-          if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) {
+          if (-not (Test-Path -LiteralPath $env:EVALUATION_SCRIPT_COPY)) {
             throw "Evaluation Python script not found."
           }
 
-          py -u $scriptPath --root $env:EVALUATION_ROOT
+          py -u `
+            $env:EVALUATION_SCRIPT_COPY `
+            --root $env:EVALUATION_ROOT
 
           if ($LASTEXITCODE -ne 0) {
             throw "Independent event evaluation failed."
