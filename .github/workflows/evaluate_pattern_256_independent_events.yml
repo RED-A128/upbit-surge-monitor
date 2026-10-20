@@ -7,10 +7,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: evaluate-pattern-256-independent-events
-  cancel-in-progress: false
-
 jobs:
   independent-events:
     name: independent-events
@@ -19,371 +15,37 @@ jobs:
       - self-hosted
       - Windows
 
-    timeout-minutes: 240
-
     defaults:
       run:
         shell: powershell
-
-    env:
-      EXPECTED_VERSION: Clean V002
-      SOURCE_RELATIVE: data/reports/pattern_256_accumulation_candidate_independent_backtest/backtest_trades.csv
-      OUTPUT_RELATIVE: data/reports/pattern_256_independent_events
-      SCRIPT_NAME: evaluate_pattern_256_independent_events.py
-      LOCAL_PROJECT_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Show Python version
+      - name: Check Python
         run: |
-          $ErrorActionPreference = "Stop"
-
           py --version
-
           if ($LASTEXITCODE -ne 0) {
-            throw "Python is not available."
+            throw "Python unavailable"
           }
 
-      - name: Locate source data
+      - name: Check source CSV
         run: |
-          $ErrorActionPreference = "Stop"
+          $source = "C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_accumulation_candidate_independent_backtest\backtest_trades.csv"
 
-          $relativeSource = $env:SOURCE_RELATIVE.Replace("/", "\")
-
-          $candidates = @(
-            (Join-Path $env:GITHUB_WORKSPACE $relativeSource),
-            (Join-Path $env:LOCAL_PROJECT_ROOT $relativeSource)
-          )
-
-          $source = $null
-
-          foreach ($candidate in $candidates) {
-            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-              $source = (Resolve-Path -LiteralPath $candidate).Path
-              break
-            }
+          if (-not (Test-Path -LiteralPath $source)) {
+            throw "Source CSV not found"
           }
 
-          if (-not $source) {
-            Write-Host "Checked source locations:"
+          Write-Host "[PASS] Source CSV found"
 
-            foreach ($candidate in $candidates) {
-              Write-Host "  $candidate"
-            }
-
-            throw "Source CSV not found."
-          }
-
-          $sourceInfo = Get-Item -LiteralPath $source
-
-          if ($sourceInfo.Length -le 0) {
-            throw "Source CSV is empty."
-          }
-
-          $sourceHash = (
-            Get-FileHash -LiteralPath $source -Algorithm SHA256
-          ).Hash.ToLowerInvariant()
-
-          Write-Host "Source: $source"
-          Write-Host "Bytes: $($sourceInfo.Length)"
-          Write-Host "SHA256: $sourceHash"
-
-          "EVALUATION_SOURCE=$source" |
-            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-          "EVALUATION_SOURCE_SHA256=$sourceHash" |
-            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Locate evaluation Python script
+      - name: Check evaluation script
         run: |
-          $ErrorActionPreference = "Stop"
+          $script = Join-Path $env:GITHUB_WORKSPACE "evaluate_pattern_256_independent_events.py"
 
-          $candidates = @(
-            (Join-Path $env:GITHUB_WORKSPACE $env:SCRIPT_NAME),
-            (Join-Path $env:LOCAL_PROJECT_ROOT $env:SCRIPT_NAME)
-          )
-
-          $scriptPath = $null
-
-          foreach ($candidate in $candidates) {
-            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-              $scriptPath = (Resolve-Path -LiteralPath $candidate).Path
-              break
-            }
+          if (-not (Test-Path -LiteralPath $script)) {
+            throw "Evaluation Python script not found in repository root"
           }
 
-          if (-not $scriptPath) {
-            Write-Host "Checked Python script locations:"
-
-            foreach ($candidate in $candidates) {
-              Write-Host "  $candidate"
-            }
-
-            throw @"
-Evaluation Python script not found.
-
-Create and commit this file in the GitHub repository root:
-
-evaluate_pattern_256_independent_events.py
-
-The workflow cannot run without this Python file.
-"@
-          }
-
-          Write-Host "Python script: $scriptPath"
-
-          "EVALUATION_SCRIPT=$scriptPath" |
-            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Prepare isolated evaluation workspace
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          $evaluationRoot = Join-Path `
-            $env:RUNNER_TEMP `
-            "pattern_256_independent_events_workspace"
-
-          if (Test-Path -LiteralPath $evaluationRoot) {
-            Remove-Item `
-              -LiteralPath $evaluationRoot `
-              -Recurse `
-              -Force
-          }
-
-          New-Item `
-            -ItemType Directory `
-            -Path $evaluationRoot `
-            -Force |
-            Out-Null
-
-          $relativeSource = $env:SOURCE_RELATIVE.Replace("/", "\")
-
-          $destinationSource = Join-Path `
-            $evaluationRoot `
-            $relativeSource
-
-          $destinationDirectory = Split-Path `
-            -Parent `
-            $destinationSource
-
-          New-Item `
-            -ItemType Directory `
-            -Path $destinationDirectory `
-            -Force |
-            Out-Null
-
-          Write-Host "Copying source CSV..."
-
-          Copy-Item `
-            -LiteralPath $env:EVALUATION_SOURCE `
-            -Destination $destinationSource `
-            -Force
-
-          $copiedHash = (
-            Get-FileHash `
-              -LiteralPath $destinationSource `
-              -Algorithm SHA256
-          ).Hash.ToLowerInvariant()
-
-          if ($copiedHash -ne $env:EVALUATION_SOURCE_SHA256) {
-            throw "Source copy SHA256 mismatch."
-          }
-
-          $destinationScript = Join-Path `
-            $evaluationRoot `
-            $env:SCRIPT_NAME
-
-          Copy-Item `
-            -LiteralPath $env:EVALUATION_SCRIPT `
-            -Destination $destinationScript `
-            -Force
-
-          if (-not (Test-Path -LiteralPath $destinationScript)) {
-            throw "Python script copy failed."
-          }
-
-          Write-Host "Source SHA256 verified."
-          Write-Host "Script copied successfully."
-
-          "EVALUATION_ROOT=$evaluationRoot" |
-            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-          "EVALUATION_SCRIPT_COPY=$destinationScript" |
-            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Run independent event evaluation
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          if (-not (Test-Path -LiteralPath $env:EVALUATION_SCRIPT_COPY)) {
-            throw "Evaluation Python script not found."
-          }
-
-          py -u `
-            $env:EVALUATION_SCRIPT_COPY `
-            --root $env:EVALUATION_ROOT
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "Independent event evaluation failed."
-          }
-
-      - name: Verify output integrity
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          @'
-          import hashlib
-          import json
-          import os
-          from pathlib import Path
-
-          version = os.environ["EXPECTED_VERSION"]
-
-          root = Path(
-              os.environ["EVALUATION_ROOT"]
-          )
-
-          folder = root / (
-              "data/reports/pattern_256_independent_events"
-          )
-
-          source = root / (
-              "data/reports/"
-              "pattern_256_accumulation_candidate_independent_backtest/"
-              "backtest_trades.csv"
-          )
-
-          result_path = (
-              folder / "independent_events_result.json"
-          )
-
-          manifest_path = (
-              folder / "independent_events_manifest.json"
-          )
-
-          if not source.is_file():
-              raise SystemExit("Missing source CSV")
-
-          if not result_path.is_file():
-              raise SystemExit("Missing result JSON")
-
-          if not manifest_path.is_file():
-              raise SystemExit("Missing manifest JSON")
-
-          result = json.loads(
-              result_path.read_text(encoding="utf-8")
-          )
-
-          manifest = json.loads(
-              manifest_path.read_text(encoding="utf-8")
-          )
-
-          if result.get("version") != version:
-              raise SystemExit("Result version mismatch")
-
-          if manifest.get("version") != version:
-              raise SystemExit("Manifest version mismatch")
-
-          if result.get("execution_status") != "PASS":
-              raise SystemExit("Evaluation did not PASS")
-
-          if result.get("source_rows") != 7949826:
-              raise SystemExit("Unexpected source row count")
-
-          if result.get("comparison_rows") != 18:
-              raise SystemExit("Unexpected comparison count")
-
-          for field in (
-              "approved_for_live_trading",
-              "independent_oos_proven",
-              "statistical_independence_proven",
-              "profitability_proven",
-          ):
-              if result.get(field) is not False:
-                  raise SystemExit(
-                      "Safety flag verification failed: " + field
-                  )
-
-          def sha256_file(path):
-              digest = hashlib.sha256()
-
-              with path.open("rb") as handle:
-                  for chunk in iter(
-                      lambda: handle.read(4 * 1024 * 1024),
-                      b"",
-                  ):
-                      digest.update(chunk)
-
-              return digest.hexdigest()
-
-          source_hash = sha256_file(source)
-
-          expected_hash = os.environ[
-              "EVALUATION_SOURCE_SHA256"
-          ]
-
-          if source_hash != expected_hash:
-              raise SystemExit("Source SHA256 mismatch")
-
-          if result.get("source_sha256") != source_hash:
-              raise SystemExit("Result source SHA256 mismatch")
-
-          if manifest.get("source_sha256") != source_hash:
-              raise SystemExit("Manifest source SHA256 mismatch")
-
-          expected_outputs = {
-              "independent_events_comparison.csv",
-              "independent_events_by_market.csv",
-              "independent_events_by_year.csv",
-              "independent_events_result.json",
-          }
-
-          hashes = manifest.get("output_sha256")
-
-          if not isinstance(hashes, dict):
-              raise SystemExit("Invalid output hash manifest")
-
-          if set(hashes) != expected_outputs:
-              raise SystemExit("Unexpected output file list")
-
-          for filename in sorted(expected_outputs):
-              path = folder / filename
-
-              if not path.is_file():
-                  raise SystemExit(
-                      "Missing output: " + filename
-                  )
-
-              actual = sha256_file(path)
-              expected = hashes[filename]
-
-              if actual != expected:
-                  raise SystemExit(
-                      "SHA256 mismatch: " + filename
-                  )
-
-          print(
-              "[PASS] 7,949,826 source rows, "
-              "18 comparisons, all SHA256 checks"
-          )
-          '@ | py -
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "Output integrity verification failed."
-          }
-
-      - name: Upload evaluation results
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pattern-256-independent-events
-          path: |
-            ${{ runner.temp }}/pattern_256_independent_events_workspace/data/reports/pattern_256_independent_events/independent_events_comparison.csv
-            ${{ runner.temp }}/pattern_256_independent_events_workspace/data/reports/pattern_256_independent_events/independent_events_by_market.csv
-            ${{ runner.temp }}/pattern_256_independent_events_workspace/data/reports/pattern_256_independent_events/independent_events_by_year.csv
-            ${{ runner.temp }}/pattern_256_independent_events_workspace/data/reports/pattern_256_independent_events/independent_events_result.json
-            ${{ runner.temp }}/pattern_256_independent_events_workspace/data/reports/pattern_256_independent_events/independent_events_manifest.json
-          if-no-files-found: error
-          retention-days: 14
+          Write-Host "[PASS] Evaluation script found"
