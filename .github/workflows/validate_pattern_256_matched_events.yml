@@ -1,0 +1,202 @@
+
+name: validate_pattern_256_matched_events.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-pattern-256-matched-events
+  cancel-in-progress: false
+
+jobs:
+  validate-matched-events:
+    name: validate-matched-events
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 240
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PROJECT_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+      SCRIPT_NAME: validate_pattern_256_matched_events.py
+      SOURCE_RELATIVE: data/reports/pattern_256_accumulation_candidate_independent_backtest/backtest_trades.csv
+      EXPECTED_SHA256: ed4b4e44fcb387ab70eaac465b3eaa87036466298fde344195e25d06ad7996e0
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Python
+        run: |
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+      - name: Verify script and source
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path $env:GITHUB_WORKSPACE $env:SCRIPT_NAME
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Python script missing from GitHub repository root"
+          }
+
+          $source = Join-Path $env:PROJECT_ROOT $env:SOURCE_RELATIVE
+
+          if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+            throw "Source CSV missing"
+          }
+
+          $hash = (
+            Get-FileHash -LiteralPath $source -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if ($hash -ne $env:EXPECTED_SHA256) {
+            throw "Source SHA256 mismatch"
+          }
+
+          Write-Host "[PASS] Script and source verified"
+
+      - name: Prepare persistent evaluation workspace
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = Join-Path `
+            $env:PROJECT_ROOT `
+            "data\work\pattern_256_matched_events_v003_1"
+
+          New-Item -ItemType Directory -Path $root -Force |
+            Out-Null
+
+          $source = Join-Path $env:PROJECT_ROOT $env:SOURCE_RELATIVE
+          $destination = Join-Path $root $env:SOURCE_RELATIVE
+
+          New-Item `
+            -ItemType Directory `
+            -Path (Split-Path -Parent $destination) `
+            -Force |
+            Out-Null
+
+          if (Test-Path -LiteralPath $destination -PathType Leaf) {
+            $hash = (
+              Get-FileHash -LiteralPath $destination -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($hash -ne $env:EXPECTED_SHA256) {
+              throw "Existing workspace source SHA256 mismatch"
+            }
+
+          } else {
+            Copy-Item `
+              -LiteralPath $source `
+              -Destination $destination
+
+            $hash = (
+              Get-FileHash -LiteralPath $destination -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($hash -ne $env:EXPECTED_SHA256) {
+              throw "Copied source SHA256 mismatch"
+            }
+          }
+
+          "EVALUATION_ROOT=$root" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          Write-Host "[PASS] Persistent workspace ready"
+
+      - name: Run matched event diagnostic
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path $env:GITHUB_WORKSPACE $env:SCRIPT_NAME
+
+          py -u $script --root $env:EVALUATION_ROOT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Matched event diagnostic failed"
+          }
+
+      - name: Verify output
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          @'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["EVALUATION_ROOT"])
+
+          output = root / (
+              "data/reports/"
+              "pattern_256_matched_events_diagnostic"
+          )
+
+          result_path = output / "matched_events_result.json"
+          manifest_path = output / "matched_events_manifest.json"
+
+          result = json.loads(
+              result_path.read_text(encoding="utf-8")
+          )
+
+          manifest = json.loads(
+              manifest_path.read_text(encoding="utf-8")
+          )
+
+          if result.get("version") != "Clean V003-1":
+              raise SystemExit("Version mismatch")
+
+          if result.get("execution_status") != "PASS":
+              raise SystemExit("Execution did not PASS")
+
+          if result.get("source_rows") != 7949826:
+              raise SystemExit("Source row count mismatch")
+
+          if result.get("approved_for_live_trading") is not False:
+              raise SystemExit("Safety flag mismatch")
+
+          digest = hashlib.sha256(
+              result_path.read_bytes()
+          ).hexdigest()
+
+          if digest != manifest["output_sha256"][result_path.name]:
+              raise SystemExit("Result SHA256 mismatch")
+
+          if result["source_sha256"] != manifest["source_sha256"]:
+              raise SystemExit("Source SHA256 mismatch")
+
+          print("[PASS] Clean V003-1 integrity")
+          print(
+              "[MATCHED PAIRS]",
+              result["total_matched_pairs"],
+          )
+          '@ | py -
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Output verification failed"
+          }
+
+      - name: Upload diagnostic results
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-matched-events-v003-1
+          path: |
+            ${{ env.EVALUATION_ROOT }}/data/reports/pattern_256_matched_events_diagnostic/matched_events_result.json
+            ${{ env.EVALUATION_ROOT }}/data/reports/pattern_256_matched_events_diagnostic/matched_events_manifest.json
+          if-no-files-found: error
+          retention-days: 14
