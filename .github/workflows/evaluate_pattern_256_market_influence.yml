@@ -1,0 +1,251 @@
+
+name: evaluate_pattern_256_market_influence.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evaluate-pattern-256-market-influence
+  cancel-in-progress: false
+
+jobs:
+  market-influence:
+    name: market-influence
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 60
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PROJECT_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+      SCRIPT_NAME: evaluate_pattern_256_market_influence.py
+      OUTPUT_RELATIVE: data/reports/pattern_256_market_influence
+      EXPECTED_VERSION: Clean V003-5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Python and inputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Evaluation script not found"
+          }
+
+          $inputDir = Join-Path `
+            $env:PROJECT_ROOT `
+            "data/reports/pattern_256_market_sensitivity"
+
+          $files = @(
+            "market_sensitivity_detail.csv",
+            "market_sensitivity_summary.csv",
+            "market_sensitivity_result.json",
+            "market_sensitivity_manifest.json"
+          )
+
+          foreach ($file in $files) {
+            $path = Join-Path $inputDir $file
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing input: $path"
+            }
+          }
+
+          Write-Host "[PASS] Inputs located"
+
+      - name: Run market influence evaluation
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
+
+          py -u $script --root $env:PROJECT_ROOT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Market influence evaluation failed"
+          }
+
+      - name: Verify results and SHA256
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          @'
+          import csv
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["PROJECT_ROOT"])
+          output = root / os.environ["OUTPUT_RELATIVE"]
+          expected = os.environ["EXPECTED_VERSION"]
+
+          def sha256(path):
+              h = hashlib.sha256()
+              with path.open("rb") as f:
+                  for chunk in iter(
+                      lambda: f.read(4 * 1024 * 1024),
+                      b"",
+                  ):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          result_path = output / "market_influence_result.json"
+          manifest_path = output / "market_influence_manifest.json"
+
+          result = json.loads(
+              result_path.read_text(encoding="utf-8")
+          )
+
+          manifest = json.loads(
+              manifest_path.read_text(encoding="utf-8")
+          )
+
+          if result.get("version") != expected:
+              raise SystemExit("Result version mismatch")
+
+          if manifest.get("version") != expected:
+              raise SystemExit("Manifest version mismatch")
+
+          if result.get("execution_status") != "PASS":
+              raise SystemExit("Execution status mismatch")
+
+          if result.get("overall_decision") != "HOLD":
+              raise SystemExit("Unexpected decision")
+
+          if result.get("candidate_count") != 2:
+              raise SystemExit("Candidate count mismatch")
+
+          if result.get("summary_rows") != 4:
+              raise SystemExit("Summary count mismatch")
+
+          if len(result.get("summary", [])) != 4:
+              raise SystemExit("Summary length mismatch")
+
+          for flag in (
+              "independent_oos_proven",
+              "statistical_independence_proven",
+              "causal_improvement_proven",
+              "profitability_proven",
+              "approved_for_live_trading",
+          ):
+              if result.get(flag) is not False:
+                  raise SystemExit(
+                      "Safety flag mismatch: " + flag
+                  )
+
+          expected_files = {
+              "market_influence_detail.csv",
+              "market_influence_summary.csv",
+              "market_influence_result.json",
+          }
+
+          hashes = manifest.get("output_sha256")
+
+          if not isinstance(hashes, dict):
+              raise SystemExit("Missing SHA256 manifest")
+
+          if set(hashes) != expected_files:
+              raise SystemExit("Unexpected output file set")
+
+          for filename in sorted(expected_files):
+              path = output / filename
+
+              if not path.is_file():
+                  raise SystemExit(
+                      "Missing output: " + filename
+                  )
+
+              if sha256(path) != hashes[filename]:
+                  raise SystemExit(
+                      "SHA256 mismatch: " + filename
+                  )
+
+              print("[PASS] SHA256:", filename)
+
+          with (
+              output / "market_influence_detail.csv"
+          ).open(encoding="utf-8-sig", newline="") as f:
+              detail = list(csv.DictReader(f))
+
+          with (
+              output / "market_influence_summary.csv"
+          ).open(encoding="utf-8-sig", newline="") as f:
+              summary = list(csv.DictReader(f))
+
+          if len(detail) != result["influence_rows"]:
+              raise SystemExit("Detail row count mismatch")
+
+          if len(summary) != 4:
+              raise SystemExit("Summary CSV count mismatch")
+
+          expected_groups = {
+              ("h1", "24", "2025"),
+              ("h1", "24", "2026"),
+              ("h4", "24", "2025"),
+              ("h4", "24", "2026"),
+          }
+
+          actual_groups = {
+              (
+                  row["timeframe"],
+                  row["horizon"],
+                  row["test_year"],
+              )
+              for row in summary
+          }
+
+          if actual_groups != expected_groups:
+              raise SystemExit("Summary groups mismatch")
+
+          if any(
+              row["decision"] != "HOLD"
+              for row in summary
+          ):
+              raise SystemExit("Unexpected summary decision")
+
+          print("[PASS] Clean V003-5")
+          print("[PASS] Influence rows:", len(detail))
+          print("[PASS] Four TEST summaries")
+          print("[DECISION] HOLD")
+          '@ | py -
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Output verification failed"
+          }
+
+      - name: Upload market influence results
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-market-influence-v003-5
+          path: |
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_market_influence/market_influence_detail.csv
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_market_influence/market_influence_summary.csv
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_market_influence/market_influence_result.json
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_market_influence/market_influence_manifest.json
+          if-no-files-found: error
+          retention-days: 14
