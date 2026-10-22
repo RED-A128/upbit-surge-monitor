@@ -1,0 +1,295 @@
+
+name: evaluate_pattern_256_walk_forward.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evaluate-pattern-256-walk-forward
+  cancel-in-progress: false
+
+jobs:
+  walk-forward:
+    name: walk-forward
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 360
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PROJECT_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+      SCRIPT_NAME: evaluate_pattern_256_walk_forward.py
+      SOURCE_RELATIVE: data/reports/pattern_256_accumulation_candidate_independent_backtest/backtest_trades.csv
+      OUTPUT_RELATIVE: data/reports/pattern_256_walk_forward
+      EXPECTED_SHA256: ed4b4e44fcb387ab70eaac465b3eaa87036466298fde344195e25d06ad7996e0
+      EXPECTED_ROWS: "7949826"
+      EXPECTED_VERSION: Clean V003-2
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Python
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+      - name: Verify source and script
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Walk-Forward Python script missing from repository root"
+          }
+
+          $source = Join-Path `
+            $env:PROJECT_ROOT `
+            $env:SOURCE_RELATIVE
+
+          if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+            throw "Source CSV not found"
+          }
+
+          $hash = (
+            Get-FileHash -LiteralPath $source -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if ($hash -ne $env:EXPECTED_SHA256) {
+            throw "Source SHA256 mismatch"
+          }
+
+          Write-Host "[PASS] Python script found"
+          Write-Host "[PASS] Source SHA256 verified"
+
+      - name: Run Walk-Forward evaluation
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
+
+          py -u $script --root $env:PROJECT_ROOT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Walk-Forward evaluation failed"
+          }
+
+      - name: Verify Walk-Forward results
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          @'
+          import csv
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["PROJECT_ROOT"])
+
+          source = root / (
+              "data/reports/"
+              "pattern_256_accumulation_candidate_independent_backtest/"
+              "backtest_trades.csv"
+          )
+
+          output = root / (
+              "data/reports/pattern_256_walk_forward"
+          )
+
+          result_path = output / "walk_forward_result.json"
+          manifest_path = output / "walk_forward_manifest.json"
+
+          comparison_path = (
+              output / "walk_forward_comparison.csv"
+          )
+
+          market_path = (
+              output / "walk_forward_by_market.csv"
+          )
+
+          expected_hash = os.environ["EXPECTED_SHA256"]
+          expected_rows = int(os.environ["EXPECTED_ROWS"])
+          expected_version = os.environ["EXPECTED_VERSION"]
+
+          def sha256_file(path):
+              digest = hashlib.sha256()
+
+              with path.open("rb") as handle:
+                  for chunk in iter(
+                      lambda: handle.read(4 * 1024 * 1024),
+                      b"",
+                  ):
+                      digest.update(chunk)
+
+              return digest.hexdigest()
+
+          for path in (
+              source,
+              result_path,
+              manifest_path,
+              comparison_path,
+              market_path,
+          ):
+              if not path.is_file():
+                  raise SystemExit(
+                      "Missing file: " + str(path)
+                  )
+
+          result = json.loads(
+              result_path.read_text(encoding="utf-8")
+          )
+
+          manifest = json.loads(
+              manifest_path.read_text(encoding="utf-8")
+          )
+
+          if result.get("version") != expected_version:
+              raise SystemExit("Result version mismatch")
+
+          if manifest.get("version") != expected_version:
+              raise SystemExit("Manifest version mismatch")
+
+          if result.get("execution_status") != "PASS":
+              raise SystemExit("Evaluation did not PASS")
+
+          if result.get("source_rows") != expected_rows:
+              raise SystemExit("Source row count mismatch")
+
+          if result.get("comparison_rows") != 36:
+              raise SystemExit("Comparison row count mismatch")
+
+          if len(result.get("decisions", [])) != 18:
+              raise SystemExit("Decision row count mismatch")
+
+          if result.get("matched_timestamp_pairs") != 0:
+              raise SystemExit("Matched pair assumption mismatch")
+
+          for flag in (
+              "approved_for_live_trading",
+              "independent_oos_proven",
+              "statistical_independence_proven",
+              "profitability_proven",
+          ):
+              if result.get(flag) is not False:
+                  raise SystemExit(
+                      "Safety flag mismatch: " + flag
+                  )
+
+          source_hash = sha256_file(source)
+
+          if source_hash != expected_hash:
+              raise SystemExit("Source SHA256 mismatch")
+
+          if result.get("source_sha256") != source_hash:
+              raise SystemExit("Result source hash mismatch")
+
+          if manifest.get("source_sha256") != source_hash:
+              raise SystemExit("Manifest source hash mismatch")
+
+          hashes = manifest.get("output_sha256")
+
+          expected_files = {
+              "walk_forward_comparison.csv",
+              "walk_forward_by_market.csv",
+              "walk_forward_result.json",
+          }
+
+          if not isinstance(hashes, dict):
+              raise SystemExit("Invalid hash manifest")
+
+          if set(hashes) != expected_files:
+              raise SystemExit("Output list mismatch")
+
+          for filename in sorted(expected_files):
+              path = output / filename
+
+              if sha256_file(path) != hashes[filename]:
+                  raise SystemExit(
+                      "Output SHA256 mismatch: " + filename
+                  )
+
+              print("[PASS] SHA256:", filename)
+
+          with comparison_path.open(
+              "r",
+              encoding="utf-8-sig",
+              newline="",
+          ) as handle:
+              comparisons = list(csv.DictReader(handle))
+
+          if len(comparisons) != 36:
+              raise SystemExit("Comparison CSV row mismatch")
+
+          expected_groups = {
+              (
+                  fold,
+                  role,
+                  timeframe,
+                  str(horizon),
+              )
+              for fold in (
+                  "2024_to_2025",
+                  "2025_to_2026",
+              )
+              for role in ("TRAIN", "TEST")
+              for timeframe in ("h1", "h4", "d1")
+              for horizon in (24, 72, 168)
+          }
+
+          actual_groups = {
+              (
+                  row["fold"],
+                  row["role"],
+                  row["timeframe"],
+                  row["horizon"],
+              )
+              for row in comparisons
+          }
+
+          if actual_groups != expected_groups:
+              raise SystemExit("Fold groups mismatch")
+
+          print("[PASS] Clean V003-2")
+          print("[PASS] Source rows:", expected_rows)
+          print("[PASS] Comparison rows:", len(comparisons))
+          print("[PASS] Decisions:", len(result["decisions"]))
+          print("[PASS] Safety flags verified")
+          print("[PASS] SHA256 integrity verified")
+          '@ | py -
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Walk-Forward verification failed"
+          }
+
+      - name: Upload Walk-Forward results
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-walk-forward-v003-2
+          path: |
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_walk_forward/walk_forward_comparison.csv
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_walk_forward/walk_forward_by_market.csv
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_walk_forward/walk_forward_result.json
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_walk_forward/walk_forward_manifest.json
+          if-no-files-found: error
+          retention-days: 14
