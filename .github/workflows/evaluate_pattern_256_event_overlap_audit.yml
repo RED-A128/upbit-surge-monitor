@@ -1,0 +1,151 @@
+
+name: evaluate_pattern_256_event_overlap_audit.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern-256-event-overlap-audit
+  cancel-in-progress: false
+
+jobs:
+  event-overlap-audit:
+    name: event-overlap-audit
+    runs-on: [self-hosted, Windows]
+    timeout-minutes: 180
+
+    defaults:
+      run:
+        shell: powershell
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          clean: false
+          persist-credentials: false
+
+      - name: Validate Python
+        run: |
+          $ErrorActionPreference = "Stop"
+          py --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+      - name: Validate audit script
+        run: |
+          $ErrorActionPreference = "Stop"
+          if (-not (Test-Path "audit_pattern_256_event_overlap.py")) {
+            throw "Audit script missing"
+          }
+
+          py -m py_compile audit_pattern_256_event_overlap.py
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax validation failed"
+          }
+
+      - name: Validate source data
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $source = "data/reports/pattern_256_accumulation_candidate_independent_backtest/backtest_trades.csv"
+
+          if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+            throw "Source CSV missing: $source"
+          }
+
+          $size = (Get-Item -LiteralPath $source).Length
+          Write-Host "Source size: $size bytes"
+
+          if ($size -le 0) {
+            throw "Source CSV is empty"
+          }
+
+      - name: Run event overlap audit
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py audit_pattern_256_event_overlap.py --root .
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Event overlap audit failed"
+          }
+
+      - name: Verify result files and SHA256
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $dir = "data/reports/pattern_256_event_overlap_audit"
+          $manifestPath = Join-Path $dir "event_overlap_manifest.json"
+          $resultPath = Join-Path $dir "event_overlap_result.json"
+          $comparisonPath = Join-Path $dir "event_overlap_comparison.csv"
+
+          foreach ($file in @($manifestPath, $resultPath, $comparisonPath)) {
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+              throw "Missing result file: $file"
+            }
+          }
+
+          $manifest = Get-Content -LiteralPath $manifestPath -Raw |
+            ConvertFrom-Json
+
+          $result = Get-Content -LiteralPath $resultPath -Raw |
+            ConvertFrom-Json
+
+          if ($manifest.version -ne "Clean V001") {
+            throw "Manifest version mismatch"
+          }
+
+          if ($result.version -ne "Clean V001") {
+            throw "Result version mismatch"
+          }
+
+          $source = "data/reports/pattern_256_accumulation_candidate_independent_backtest/backtest_trades.csv"
+          $sourceHash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
+
+          if ($sourceHash -ne $manifest.source_sha256) {
+            throw "Source SHA256 mismatch"
+          }
+
+          foreach ($name in @("event_overlap_result.json", "event_overlap_comparison.csv")) {
+            $file = Join-Path $dir $name
+            $actual = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
+            $expected = $manifest.output_sha256.$name
+
+            if ($actual -ne $expected) {
+              throw "Output SHA256 mismatch: $name"
+            }
+          }
+
+          if ($result.execution_status -ne "PASS") {
+            throw "Audit execution status is not PASS"
+          }
+
+          if ($result.approved_for_live_trading -ne $false) {
+            throw "Unsafe live trading approval"
+          }
+
+          if ($result.research_decision -ne "HOLD") {
+            throw "Unexpected research decision"
+          }
+
+          Write-Host "SHA256 verification PASS"
+          Write-Host "Unique signals: $($result.unique_signal_events)"
+          Write-Host "Duplicate rows: $($result.duplicate_horizon_rows)"
+          Write-Host "Research decision: $($result.research_decision)"
+
+      - name: Upload audit reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-event-overlap-audit-v001
+          path: |
+            data/reports/pattern_256_event_overlap_audit/event_overlap_comparison.csv
+            data/reports/pattern_256_event_overlap_audit/event_overlap_result.json
+            data/reports/pattern_256_event_overlap_audit/event_overlap_manifest.json
+          if-no-files-found: warn
+          retention-days: 30
