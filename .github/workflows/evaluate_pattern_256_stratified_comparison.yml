@@ -1,0 +1,248 @@
+
+name: evaluate_pattern_256_stratified_comparison.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evaluate-pattern-256-stratified-comparison
+  cancel-in-progress: false
+
+jobs:
+  stratified-comparison:
+    name: stratified-comparison
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 180
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PROJECT_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+      SCRIPT_NAME: evaluate_pattern_256_stratified_comparison.py
+      EXPECTED_VERSION: Clean V003-7
+      OUTPUT_RELATIVE: data/reports/pattern_256_stratified_comparison
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Python and source
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Python script not found: $script"
+          }
+
+          $source = Join-Path `
+            $env:PROJECT_ROOT `
+            "data/reports/pattern_256_accumulation_candidate_independent_backtest/backtest_trades.csv"
+
+          if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+            throw "Source CSV not found: $source"
+          }
+
+          Write-Host "[PASS] Python script and source located"
+
+      - name: Run stratified comparison
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
+
+          py -u $script --root $env:PROJECT_ROOT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Stratified comparison failed"
+          }
+
+      - name: Verify results and SHA256
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          @'
+          import csv
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["PROJECT_ROOT"])
+          output = root / os.environ["OUTPUT_RELATIVE"]
+          version = os.environ["EXPECTED_VERSION"]
+
+          def sha256(path):
+              h = hashlib.sha256()
+              with path.open("rb") as f:
+                  for chunk in iter(
+                      lambda: f.read(4 * 1024 * 1024),
+                      b"",
+                  ):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          result_path = output / "stratified_result.json"
+          manifest_path = output / "stratified_manifest.json"
+          detail_path = output / "stratified_detail.csv"
+          summary_path = output / "stratified_summary.csv"
+
+          result = json.loads(
+              result_path.read_text(encoding="utf-8")
+          )
+
+          manifest = json.loads(
+              manifest_path.read_text(encoding="utf-8")
+          )
+
+          if result.get("version") != version:
+              raise SystemExit("Result version mismatch")
+
+          if manifest.get("version") != version:
+              raise SystemExit("Manifest version mismatch")
+
+          if result.get("execution_status") != "PASS":
+              raise SystemExit("Execution status mismatch")
+
+          if result.get("source_rows") != 7949826:
+              raise SystemExit("Source row count mismatch")
+
+          if result.get("summary_rows") != 4:
+              raise SystemExit("Summary count mismatch")
+
+          if result.get("overall_decision") != "HOLD":
+              raise SystemExit("Unexpected decision")
+
+          for flag in (
+              "independent_oos_proven",
+              "causal_improvement_proven",
+              "profitability_proven",
+              "approved_for_live_trading",
+          ):
+              if result.get(flag) is not False:
+                  raise SystemExit(
+                      "Safety flag mismatch: " + flag
+                  )
+
+          expected_files = {
+              "stratified_detail.csv",
+              "stratified_summary.csv",
+              "stratified_result.json",
+          }
+
+          hashes = manifest.get("output_sha256")
+
+          if not isinstance(hashes, dict):
+              raise SystemExit("Missing output hashes")
+
+          if set(hashes) != expected_files:
+              raise SystemExit("Output file set mismatch")
+
+          for filename in sorted(expected_files):
+              path = output / filename
+
+              if not path.is_file():
+                  raise SystemExit(
+                      "Missing output: " + filename
+                  )
+
+              if sha256(path) != hashes[filename]:
+                  raise SystemExit(
+                      "SHA256 mismatch: " + filename
+                  )
+
+              print("[PASS] SHA256:", filename)
+
+          with detail_path.open(
+              encoding="utf-8-sig",
+              newline="",
+          ) as f:
+              details = list(csv.DictReader(f))
+
+          with summary_path.open(
+              encoding="utf-8-sig",
+              newline="",
+          ) as f:
+              summaries = list(csv.DictReader(f))
+
+          if len(details) != result["detail_rows"]:
+              raise SystemExit("Detail row count mismatch")
+
+          if len(summaries) != 4:
+              raise SystemExit("Summary row count mismatch")
+
+          expected_groups = {
+              ("h1", "2025"),
+              ("h1", "2026"),
+              ("h4", "2025"),
+              ("h4", "2026"),
+          }
+
+          actual_groups = {
+              (row["timeframe"], row["test_year"])
+              for row in summaries
+          }
+
+          if actual_groups != expected_groups:
+              raise SystemExit("Summary group mismatch")
+
+          for row in summaries:
+              total = int(row["total_strata"])
+              eligible = int(row["eligible_strata"])
+              excluded = int(row["excluded_strata"])
+
+              if total != eligible + excluded:
+                  raise SystemExit("Stratum count mismatch")
+
+              if (
+                  int(row["positive_strata"])
+                  + int(row["negative_strata"])
+                  + int(row["zero_strata"])
+                  != eligible
+              ):
+                  raise SystemExit("Sign count mismatch")
+
+              if row["decision"] != "HOLD":
+                  raise SystemExit("Unexpected row decision")
+
+          print("[PASS] Clean V003-7")
+          print("[PASS] Four stratified summaries")
+          print("[DECISION] HOLD")
+          '@ | py -
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Result verification failed"
+          }
+
+      - name: Upload stratified comparison results
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-stratified-comparison-v003-7
+          path: |
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_stratified_comparison/stratified_detail.csv
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_stratified_comparison/stratified_summary.csv
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_stratified_comparison/stratified_result.json
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_stratified_comparison/stratified_manifest.json
+          if-no-files-found: error
+          retention-days: 14
