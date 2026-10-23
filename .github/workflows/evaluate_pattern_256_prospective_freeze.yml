@@ -1,0 +1,298 @@
+
+name: evaluate_pattern_256_prospective_freeze.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evaluate-pattern-256-prospective-freeze
+  cancel-in-progress: false
+
+jobs:
+  prospective-freeze:
+    name: prospective-freeze
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PROJECT_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+      SCRIPT_NAME: evaluate_pattern_256_prospective_freeze.py
+      INPUT_RELATIVE: data/reports/pattern_256_validation_priority
+      OUTPUT_RELATIVE: data/reports/pattern_256_prospective_freeze
+      EXPECTED_VERSION: Clean V003-16
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Python and input files
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Python script not found: $script"
+          }
+
+          $source = Join-Path `
+            $env:PROJECT_ROOT `
+            $env:INPUT_RELATIVE
+
+          $files = @(
+            "validation_priority_markets.csv",
+            "validation_priority_summary.csv",
+            "validation_priority_result.json",
+            "validation_priority_manifest.json"
+          )
+
+          foreach ($name in $files) {
+            $path = Join-Path $source $name
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Source file missing: $path"
+            }
+          }
+
+          Write-Host "[PASS] Python and source files"
+
+      - name: Run prospective freeze
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
+
+          py -u $script --root $env:PROJECT_ROOT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Prospective freeze failed"
+          }
+
+      - name: Verify frozen protocol and SHA256
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          @'
+          import csv
+          import hashlib
+          import json
+          import os
+
+          from collections import Counter
+          from pathlib import Path
+
+          root = Path(os.environ["PROJECT_ROOT"])
+          source = root / os.environ["INPUT_RELATIVE"]
+          output = root / os.environ["OUTPUT_RELATIVE"]
+          version = os.environ["EXPECTED_VERSION"]
+
+          def sha256(path):
+              h = hashlib.sha256()
+              with path.open("rb") as f:
+                  for chunk in iter(
+                      lambda: f.read(1024 * 1024),
+                      b"",
+                  ):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          def read_json(path):
+              return json.loads(
+                  path.read_text(encoding="utf-8")
+              )
+
+          result = read_json(
+              output / "freeze_result.json"
+          )
+
+          protocol = read_json(
+              output / "prospective_protocol.json"
+          )
+
+          manifest = read_json(
+              output / "freeze_manifest.json"
+          )
+
+          if result.get("version") != version:
+              raise SystemExit("Version mismatch")
+
+          if manifest.get("version") != version:
+              raise SystemExit("Manifest version mismatch")
+
+          if protocol.get("version") != version:
+              raise SystemExit("Protocol version mismatch")
+
+          if result.get("execution_status") != "PASS":
+              raise SystemExit("Execution not PASS")
+
+          if result.get("overall_decision") != "HOLD":
+              raise SystemExit("Unexpected decision")
+
+          if result.get("market_count") != 209:
+              raise SystemExit("Market count mismatch")
+
+          if result.get("original_candidate_count") != 22:
+              raise SystemExit("Candidate count mismatch")
+
+          if result.get("primary_market") != "KRW-DKA":
+              raise SystemExit("Primary market mismatch")
+
+          cutoff = "2026-10-24T00:00:00+00:00"
+
+          for obj in (result, protocol, manifest):
+              if obj.get("freeze_cutoff_utc") != cutoff:
+                  raise SystemExit("Freeze cutoff mismatch")
+
+          if result.get("prospective_events_collected") != 0:
+              raise SystemExit("Unexpected prospective events")
+
+          if protocol.get("prospective_events_collected") != 0:
+              raise SystemExit("Unexpected prospective events")
+
+          for flag in (
+              "independent_oos_proven",
+              "statistical_independence_proven",
+              "profitability_proven",
+              "approved_for_live_trading",
+          ):
+              if result.get(flag) is not False:
+                  raise SystemExit("Unsafe flag: " + flag)
+
+          output_files = {
+              "frozen_candidates.csv",
+              "prospective_protocol.json",
+              "freeze_result.json",
+          }
+
+          output_hashes = manifest.get("output_sha256")
+
+          if not isinstance(output_hashes, dict):
+              raise SystemExit("Missing output SHA256")
+
+          if set(output_hashes) != output_files:
+              raise SystemExit("Unexpected output files")
+
+          for name in sorted(output_files):
+              path = output / name
+
+              if not path.is_file():
+                  raise SystemExit("Missing output: " + name)
+
+              if sha256(path) != output_hashes[name]:
+                  raise SystemExit("SHA256 mismatch: " + name)
+
+              print("[PASS] SHA256:", name)
+
+          for name, expected in manifest[
+              "input_sha256"
+          ].items():
+              path = source / name
+
+              if not path.is_file():
+                  raise SystemExit("Missing input: " + name)
+
+              if sha256(path) != expected:
+                  raise SystemExit(
+                      "Input SHA256 mismatch: " + name
+                  )
+
+          with (
+              output / "frozen_candidates.csv"
+          ).open(
+              encoding="utf-8-sig",
+              newline="",
+          ) as f:
+              rows = list(csv.DictReader(f))
+
+          if len(rows) != 209:
+              raise SystemExit("Frozen market count mismatch")
+
+          if len({
+              r["market"] for r in rows
+          }) != 209:
+              raise SystemExit("Duplicate frozen market")
+
+          expected_tiers = {
+              "P1_STRICT_REPLICATION": 1,
+              "P2_SAMPLE_EXTENSION": 7,
+              "P3_EFFECT_RECHECK": 14,
+              "P4_SMALL_SAMPLE": 4,
+              "P5_DIRECTION_CONFLICT": 31,
+              "P6_NO_REPLICATED_EFFECT": 152,
+          }
+
+          actual_tiers = dict(Counter(
+              r["frozen_priority_tier"] for r in rows
+          ))
+
+          if actual_tiers != expected_tiers:
+              raise SystemExit("Frozen tier mismatch")
+
+          strict = [
+              r["market"]
+              for r in rows
+              if r["frozen_strict_candidate"] == "True"
+          ]
+
+          if strict != ["KRW-DKA"]:
+              raise SystemExit("Strict candidate mismatch")
+
+          primary = [
+              r["market"]
+              for r in rows
+              if r["eligible_for_primary_replication"] == "True"
+          ]
+
+          if primary != ["KRW-DKA"]:
+              raise SystemExit("Primary replication mismatch")
+
+          if any(
+              r["approved_for_live_trading"] != "False"
+              for r in rows
+          ):
+              raise SystemExit("Unsafe trading flag")
+
+          print("[PASS] Clean V003-16")
+          print("[PASS] 209 frozen markets")
+          print("[PASS] Prospective protocol")
+          print("[PASS] Input and output SHA256")
+          print("[DECISION] HOLD")
+          '@ | py -
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Freeze integrity verification failed"
+          }
+
+      - name: Upload frozen protocol
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-prospective-freeze-v003-16
+          path: |
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_prospective_freeze/frozen_candidates.csv
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_prospective_freeze/prospective_protocol.json
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_prospective_freeze/freeze_result.json
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_prospective_freeze/freeze_manifest.json
+          if-no-files-found: error
+          retention-days: 90
