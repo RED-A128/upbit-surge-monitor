@@ -1,0 +1,251 @@
+
+name: evaluate_pattern_256_signal_source_audit.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evaluate-pattern-256-signal-source-audit
+  cancel-in-progress: false
+
+jobs:
+  signal-source-audit:
+    name: signal-source-audit
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 60
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PROJECT_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+      SCRIPT_NAME: evaluate_pattern_256_signal_source_audit.py
+      EXPECTED_VERSION: Clean V003-19
+      OUTPUT_RELATIVE: data/reports/pattern_256_signal_source_audit
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Python and script
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Audit script missing: $script"
+          }
+
+          Write-Host "[PASS] Python and script"
+
+      - name: Verify persistent source files
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $paths = @(
+            "data/reports/pattern_256_prospective_freeze/freeze_manifest.json",
+            "data/reports/pattern_256_prospective_freeze/freeze_result.json",
+            "data/reports/pattern_256_prospective_freeze/frozen_candidates.csv",
+            "data/reports/pattern_256_prospective_freeze/prospective_protocol.json",
+            "data/reports/pattern_256_prospective_registry/registry_manifest.json",
+            "data/reports/pattern_256_prospective_registry/registry_result.json",
+            "data/reports/pattern_256_prospective_registry/prospective_events.csv",
+            "data/reports/pattern_256_prospective_source_readiness/source_readiness_manifest.json",
+            "data/reports/pattern_256_prospective_source_readiness/source_readiness_result.json",
+            "data/reports/pattern_256_prospective_source_readiness/prospective_event_input_template.csv"
+          )
+
+          foreach ($relative in $paths) {
+            $path = Join-Path `
+              $env:PROJECT_ROOT `
+              $relative
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Required input missing: $path"
+            }
+          }
+
+          Write-Host "[PASS] Persistent inputs located"
+
+      - name: Run signal source audit
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
+
+          py -u $script --root $env:PROJECT_ROOT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Signal source audit failed"
+          }
+
+      - name: Verify output integrity
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          @'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["PROJECT_ROOT"])
+          output = root / os.environ["OUTPUT_RELATIVE"]
+
+          def digest(path):
+              h = hashlib.sha256()
+              with path.open("rb") as f:
+                  for chunk in iter(
+                      lambda: f.read(1024 * 1024),
+                      b"",
+                  ):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          def load(path):
+              return json.loads(
+                  path.read_text(encoding="utf-8")
+              )
+
+          result_path = (
+              output / "signal_source_audit_result.json"
+          )
+          implementation_path = (
+              output / "signal_implementation_candidates.csv"
+          )
+          inventory_path = (
+              output / "ohlcv_source_inventory.csv"
+          )
+          manifest_path = (
+              output / "signal_source_audit_manifest.json"
+          )
+
+          paths = (
+              result_path,
+              implementation_path,
+              inventory_path,
+              manifest_path,
+          )
+
+          for path in paths:
+              if not path.is_file():
+                  raise SystemExit(
+                      "Missing output: " + str(path)
+                  )
+
+          result = load(result_path)
+          manifest = load(manifest_path)
+
+          expected_version = os.environ["EXPECTED_VERSION"]
+
+          if result.get("version") != expected_version:
+              raise SystemExit("Version mismatch")
+
+          if manifest.get("version") != expected_version:
+              raise SystemExit("Manifest version mismatch")
+
+          if result.get("execution_status") != "PASS":
+              raise SystemExit("Execution status mismatch")
+
+          if result.get("overall_decision") != "HOLD":
+              raise SystemExit("Decision mismatch")
+
+          if result.get("frozen_market_count") != 209:
+              raise SystemExit("Frozen market mismatch")
+
+          if result.get("primary_market") != "KRW-DKA":
+              raise SystemExit("Primary market mismatch")
+
+          if result.get("freeze_cutoff_utc") != (
+              "2026-10-24T00:00:00+00:00"
+          ):
+              raise SystemExit("Cutoff mismatch")
+
+          for key in (
+              "signal_definition_mathematically_verified",
+              "ohlcv_candle_integrity_verified",
+              "signal_generation_implemented",
+              "prospective_source_verified",
+              "independent_oos_proven",
+              "profitability_proven",
+              "approved_for_live_trading",
+          ):
+              if result.get(key) is not False:
+                  raise SystemExit(
+                      "Unsafe or unexpected flag: " + key
+                  )
+
+          if result.get("new_prospective_events_created") != 0:
+              raise SystemExit("Unexpected event generation")
+
+          expected_hashes = {
+              "result_sha256": result_path,
+              "implementation_sha256": implementation_path,
+              "inventory_sha256": inventory_path,
+          }
+
+          for field, path in expected_hashes.items():
+              if manifest.get(field) != digest(path):
+                  raise SystemExit(
+                      "Output SHA256 mismatch: " + field
+                  )
+
+          input_hashes = manifest.get("input_sha256")
+
+          if not isinstance(input_hashes, dict):
+              raise SystemExit("Input hash manifest invalid")
+
+          for relative, expected_hash in input_hashes.items():
+              path = root / relative
+
+              if not path.is_file():
+                  raise SystemExit(
+                      "Input missing: " + relative
+                  )
+
+              if digest(path) != expected_hash:
+                  raise SystemExit(
+                      "Input SHA256 mismatch: " + relative
+                  )
+
+          print("[PASS] Clean V003-19")
+          print("[PASS] Input and output SHA256")
+          print("[PASS] No signals generated")
+          print("[DECISION] HOLD")
+          '@ | py -
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Audit output verification failed"
+          }
+
+      - name: Upload audit results
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-signal-source-audit-v003-19
+          path: |
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_signal_source_audit/signal_source_audit_result.json
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_signal_source_audit/signal_implementation_candidates.csv
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_signal_source_audit/ohlcv_source_inventory.csv
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_signal_source_audit/signal_source_audit_manifest.json
+          if-no-files-found: error
+          retention-days: 90
