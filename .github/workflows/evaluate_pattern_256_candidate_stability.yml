@@ -1,0 +1,327 @@
+
+name: evaluate_pattern_256_candidate_stability.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evaluate-pattern-256-candidate-stability
+  cancel-in-progress: false
+
+jobs:
+  candidate-stability:
+    name: candidate-stability
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 60
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PROJECT_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+      SCRIPT_NAME: evaluate_pattern_256_candidate_stability.py
+      INPUT_RELATIVE: data/reports/pattern_256_threshold_sensitivity
+      OUTPUT_RELATIVE: data/reports/pattern_256_candidate_stability
+      EXPECTED_VERSION: Clean V003-14
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Python and input files
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python is unavailable"
+          }
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Missing script: $script"
+          }
+
+          $inputDir = Join-Path `
+            $env:PROJECT_ROOT `
+            $env:INPUT_RELATIVE
+
+          $files = @(
+            "threshold_sensitivity_grid.csv",
+            "threshold_sensitivity_markets.csv",
+            "threshold_sensitivity_result.json",
+            "threshold_sensitivity_manifest.json"
+          )
+
+          foreach ($filename in $files) {
+            $path = Join-Path $inputDir $filename
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing input: $path"
+            }
+          }
+
+          Write-Host "[PASS] Python and input files"
+
+      - name: Run candidate stability audit
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
+
+          py -u $script --root $env:PROJECT_ROOT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Candidate stability audit failed"
+          }
+
+      - name: Verify output and SHA256 integrity
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          @'
+          import csv
+          import hashlib
+          import json
+          import os
+
+          from collections import Counter
+          from pathlib import Path
+
+          root = Path(os.environ["PROJECT_ROOT"])
+
+          input_dir = root / os.environ["INPUT_RELATIVE"]
+          output_dir = root / os.environ["OUTPUT_RELATIVE"]
+
+          expected_version = os.environ["EXPECTED_VERSION"]
+
+          def sha256(path):
+              digest = hashlib.sha256()
+
+              with path.open("rb") as handle:
+                  for chunk in iter(
+                      lambda: handle.read(1024 * 1024),
+                      b"",
+                  ):
+                      digest.update(chunk)
+
+              return digest.hexdigest()
+
+          def load_json(path):
+              with path.open(
+                  "r",
+                  encoding="utf-8",
+              ) as handle:
+                  return json.load(handle)
+
+          def load_csv(path):
+              with path.open(
+                  "r",
+                  encoding="utf-8-sig",
+                  newline="",
+              ) as handle:
+                  return list(csv.DictReader(handle))
+
+          result = load_json(
+              output_dir / "candidate_stability_result.json"
+          )
+
+          manifest = load_json(
+              output_dir / "candidate_stability_manifest.json"
+          )
+
+          if result.get("version") != expected_version:
+              raise SystemExit("Result version mismatch")
+
+          if manifest.get("version") != expected_version:
+              raise SystemExit("Manifest version mismatch")
+
+          if result.get("execution_status") != "PASS":
+              raise SystemExit("Execution status mismatch")
+
+          if result.get("overall_decision") != "HOLD":
+              raise SystemExit("Decision mismatch")
+
+          if result.get("market_count") != 209:
+              raise SystemExit("Market count mismatch")
+
+          if result.get("original_candidate_count") != 22:
+              raise SystemExit("Original candidate mismatch")
+
+          if result.get("strict_candidate_count") != 1:
+              raise SystemExit("Strict candidate mismatch")
+
+          for flag in (
+              "independent_oos_proven",
+              "statistical_independence_proven",
+              "causal_improvement_proven",
+              "profitability_proven",
+              "approved_for_live_trading",
+          ):
+              if result.get(flag) is not False:
+                  raise SystemExit(
+                      "Unsafe approval flag: " + flag
+                  )
+
+          expected_output = {
+              "candidate_stability_markets.csv",
+              "candidate_stability_summary.csv",
+              "candidate_stability_result.json",
+          }
+
+          output_hashes = manifest.get("output_sha256")
+
+          if not isinstance(output_hashes, dict):
+              raise SystemExit("Missing output hashes")
+
+          if set(output_hashes) != expected_output:
+              raise SystemExit("Unexpected output files")
+
+          for filename in sorted(expected_output):
+              path = output_dir / filename
+
+              if not path.is_file():
+                  raise SystemExit(
+                      "Missing output: " + filename
+                  )
+
+              if sha256(path) != output_hashes[filename]:
+                  raise SystemExit(
+                      "Output SHA256 mismatch: " + filename
+                  )
+
+              print("[PASS] SHA256:", filename)
+
+          input_hashes = manifest.get("input_sha256")
+
+          if not isinstance(input_hashes, dict):
+              raise SystemExit("Missing input hashes")
+
+          for filename, expected in input_hashes.items():
+              path = input_dir / filename
+
+              if not path.is_file():
+                  raise SystemExit(
+                      "Missing input: " + filename
+                  )
+
+              if sha256(path) != expected:
+                  raise SystemExit(
+                      "Input SHA256 mismatch: " + filename
+                  )
+
+          markets = load_csv(
+              output_dir / "candidate_stability_markets.csv"
+          )
+
+          summary = load_csv(
+              output_dir / "candidate_stability_summary.csv"
+          )
+
+          if len(markets) != 209:
+              raise SystemExit("Market row count mismatch")
+
+          if len(summary) != 8:
+              raise SystemExit("Summary row count mismatch")
+
+          if len({
+              row["market"] for row in markets
+          }) != 209:
+              raise SystemExit("Duplicate market")
+
+          original = [
+              row for row in markets
+              if row["original_candidate"].lower() == "true"
+          ]
+
+          if len(original) != 22:
+              raise SystemExit("Original candidate count mismatch")
+
+          strict = [
+              row for row in markets
+              if row["passes_strict_200_05"].lower() == "true"
+          ]
+
+          if len(strict) != 1:
+              raise SystemExit("Strict candidate count mismatch")
+
+          if result.get("strict_candidate_markets") != [
+              row["market"] for row in strict
+          ]:
+              raise SystemExit("Strict market identity mismatch")
+
+          reasons = Counter(
+              row["strict_failure_reason"]
+              for row in original
+          )
+
+          if dict(sorted(reasons.items())) != result.get(
+              "original_candidate_failure_reasons"
+          ):
+              raise SystemExit("Failure reason mismatch")
+
+          if any(
+              row["approved_for_live_trading"].lower()
+              != "false"
+              for row in markets
+          ):
+              raise SystemExit("Unsafe market approval")
+
+          if any(
+              row["decision"] != "HOLD"
+              for row in summary
+          ):
+              raise SystemExit("Unsafe summary decision")
+
+          expected_groups = {
+              "ALL_MARKETS",
+              "ORIGINAL_CANDIDATES",
+              "POSITIVE_BOTH_YEARS",
+              "SAMPLE_BELOW_200",
+              "SAMPLE_AT_LEAST_200",
+              "EFFECT_AT_MOST_05",
+              "EFFECT_ABOVE_05",
+              "STRICT_PASS",
+          }
+
+          if {
+              row["group"] for row in summary
+          } != expected_groups:
+              raise SystemExit("Summary groups mismatch")
+
+          print("[PASS] Clean V003-14")
+          print("[PASS] Candidate stability diagnostics")
+          print("[PASS] SHA256 integrity")
+          print("[DECISION] HOLD")
+          '@ | py -
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Output integrity verification failed"
+          }
+
+      - name: Upload candidate stability results
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-candidate-stability-v003-14
+          path: |
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_candidate_stability/candidate_stability_markets.csv
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_candidate_stability/candidate_stability_summary.csv
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_candidate_stability/candidate_stability_result.json
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_candidate_stability/candidate_stability_manifest.json
+          if-no-files-found: error
+          retention-days: 14
