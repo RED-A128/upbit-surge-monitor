@@ -1,4 +1,3 @@
-
 name: evaluate_pattern_256_event_overlap_audit.yml
 
 on:
@@ -21,6 +20,11 @@ jobs:
       run:
         shell: powershell
 
+    env:
+      SOURCE_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+      SOURCE_RELATIVE: 'data/reports/pattern_256_accumulation_candidate_independent_backtest/backtest_trades.csv'
+      OUTPUT_RELATIVE: 'data/reports/pattern_256_event_overlap_audit'
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -31,7 +35,9 @@ jobs:
       - name: Validate Python
         run: |
           $ErrorActionPreference = "Stop"
+
           py --version
+
           if ($LASTEXITCODE -ne 0) {
             throw "Python unavailable"
           }
@@ -39,37 +45,51 @@ jobs:
       - name: Validate audit script
         run: |
           $ErrorActionPreference = "Stop"
-          if (-not (Test-Path "audit_pattern_256_event_overlap.py")) {
+
+          if (-not (Test-Path -LiteralPath "audit_pattern_256_event_overlap.py" -PathType Leaf)) {
             throw "Audit script missing"
           }
 
           py -m py_compile audit_pattern_256_event_overlap.py
+
           if ($LASTEXITCODE -ne 0) {
             throw "Python syntax validation failed"
           }
 
-      - name: Validate source data
+      - name: Validate original source CSV
         run: |
           $ErrorActionPreference = "Stop"
 
-          $source = "data/reports/pattern_256_accumulation_candidate_independent_backtest/backtest_trades.csv"
+          $source = Join-Path $env:SOURCE_ROOT $env:SOURCE_RELATIVE
+
+          Write-Host "Checking original source CSV:"
+          Write-Host $source
 
           if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
             throw "Source CSV missing: $source"
           }
 
-          $size = (Get-Item -LiteralPath $source).Length
-          Write-Host "Source size: $size bytes"
+          $file = Get-Item -LiteralPath $source
 
-          if ($size -le 0) {
+          if ($file.Length -le 0) {
             throw "Source CSV is empty"
           }
+
+          Write-Host "Source CSV found"
+          Write-Host "Source size: $($file.Length) bytes"
 
       - name: Run event overlap audit
         run: |
           $ErrorActionPreference = "Stop"
 
-          py audit_pattern_256_event_overlap.py --root .
+          $source = Join-Path $env:SOURCE_ROOT $env:SOURCE_RELATIVE
+
+          # Keep output inside the Actions workspace.
+          # Read the original CSV directly without copying or modifying it.
+          py audit_pattern_256_event_overlap.py `
+            --root "." `
+            --source "$source" `
+            --output "$env:OUTPUT_RELATIVE"
 
           if ($LASTEXITCODE -ne 0) {
             throw "Event overlap audit failed"
@@ -79,12 +99,17 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          $dir = "data/reports/pattern_256_event_overlap_audit"
+          $dir = $env:OUTPUT_RELATIVE
+
           $manifestPath = Join-Path $dir "event_overlap_manifest.json"
           $resultPath = Join-Path $dir "event_overlap_result.json"
           $comparisonPath = Join-Path $dir "event_overlap_comparison.csv"
 
-          foreach ($file in @($manifestPath, $resultPath, $comparisonPath)) {
+          foreach ($file in @(
+            $manifestPath,
+            $resultPath,
+            $comparisonPath
+          )) {
             if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
               throw "Missing result file: $file"
             }
@@ -104,16 +129,26 @@ jobs:
             throw "Result version mismatch"
           }
 
-          $source = "data/reports/pattern_256_accumulation_candidate_independent_backtest/backtest_trades.csv"
-          $sourceHash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
+          $source = Join-Path $env:SOURCE_ROOT $env:SOURCE_RELATIVE
+
+          $sourceHash = (
+            Get-FileHash -LiteralPath $source -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
 
           if ($sourceHash -ne $manifest.source_sha256) {
             throw "Source SHA256 mismatch"
           }
 
-          foreach ($name in @("event_overlap_result.json", "event_overlap_comparison.csv")) {
+          foreach ($name in @(
+            "event_overlap_result.json",
+            "event_overlap_comparison.csv"
+          )) {
             $file = Join-Path $dir $name
-            $actual = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
+
+            $actual = (
+              Get-FileHash -LiteralPath $file -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
             $expected = $manifest.output_sha256.$name
 
             if ($actual -ne $expected) {
@@ -133,16 +168,21 @@ jobs:
             throw "Unexpected research decision"
           }
 
-          Write-Host "SHA256 verification PASS"
+          Write-Host "=================================="
+          Write-Host "EVENT OVERLAP AUDIT VERIFIED"
+          Write-Host "=================================="
+          Write-Host "Source rows: $($result.source_rows)"
           Write-Host "Unique signals: $($result.unique_signal_events)"
           Write-Host "Duplicate rows: $($result.duplicate_horizon_rows)"
+          Write-Host "Invalid rows: $($result.invalid_rows)"
           Write-Host "Research decision: $($result.research_decision)"
+          Write-Host "=================================="
 
       - name: Upload audit reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pattern-256-event-overlap-audit-v001
+          name: pattern-256-event-overlap-audit-v002
           path: |
             data/reports/pattern_256_event_overlap_audit/event_overlap_comparison.csv
             data/reports/pattern_256_event_overlap_audit/event_overlap_result.json
