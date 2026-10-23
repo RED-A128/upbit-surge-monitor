@@ -1,0 +1,307 @@
+
+name: evaluate_pattern_256_signal_integrity_gate.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evaluate-pattern-256-signal-integrity-gate
+  cancel-in-progress: false
+
+jobs:
+  signal-integrity-gate:
+    name: signal-integrity-gate
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 60
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PROJECT_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+      SCRIPT_NAME: evaluate_pattern_256_signal_integrity_gate.py
+      OUTPUT_RELATIVE: data/reports/pattern_256_signal_integrity_gate
+      EXPECTED_VERSION: Clean V003-20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Python and script
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Missing script: $script"
+          }
+
+          Write-Host "[PASS] Python and script"
+
+      - name: Verify source paths
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $files = @(
+            "build_features.py",
+            "detect_256.py",
+            "validate_256.py",
+            "data/ohlcv/h1/KRW-DKA.csv",
+            "data/ohlcv/h4/KRW-DKA.csv",
+            "data/ohlcv/d1/KRW-DKA.csv",
+            "data/reports/pattern_256_signal_source_audit/signal_source_audit_result.json",
+            "data/reports/pattern_256_signal_source_audit/signal_source_audit_manifest.json",
+            "data/reports/pattern_256_signal_source_audit/signal_implementation_candidates.csv",
+            "data/reports/pattern_256_signal_source_audit/ohlcv_source_inventory.csv"
+          )
+
+          foreach ($relative in $files) {
+            $path = Join-Path `
+              $env:PROJECT_ROOT `
+              $relative
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing source: $path"
+            }
+          }
+
+          Write-Host "[PASS] Required source paths"
+
+      - name: Run signal integrity gate
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
+
+          py -u $script --root $env:PROJECT_ROOT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Signal integrity gate failed"
+          }
+
+      - name: Verify outputs and SHA256
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          @'
+          import csv
+          import hashlib
+          import json
+          import os
+
+          from pathlib import Path
+
+          root = Path(os.environ["PROJECT_ROOT"])
+          output = root / os.environ["OUTPUT_RELATIVE"]
+
+          def digest(path):
+              h = hashlib.sha256()
+
+              with path.open("rb") as f:
+                  for chunk in iter(
+                      lambda: f.read(1024 * 1024),
+                      b"",
+                  ):
+                      h.update(chunk)
+
+              return h.hexdigest()
+
+          def load(path):
+              return json.loads(
+                  path.read_text(encoding="utf-8")
+              )
+
+          result_path = (
+              output / "signal_integrity_result.json"
+          )
+
+          details_path = (
+              output / "ohlcv_integrity_details.csv"
+          )
+
+          implementation_path = (
+              output / "signal_implementation_integrity.csv"
+          )
+
+          manifest_path = (
+              output / "signal_integrity_manifest.json"
+          )
+
+          for path in (
+              result_path,
+              details_path,
+              implementation_path,
+              manifest_path,
+          ):
+              if not path.is_file():
+                  raise SystemExit(
+                      "Missing output: " + str(path)
+                  )
+
+          result = load(result_path)
+          manifest = load(manifest_path)
+
+          version = os.environ["EXPECTED_VERSION"]
+
+          if result.get("version") != version:
+              raise SystemExit("Version mismatch")
+
+          if manifest.get("version") != version:
+              raise SystemExit("Manifest version mismatch")
+
+          if result.get("execution_status") != "PASS":
+              raise SystemExit("Execution status mismatch")
+
+          if result.get("overall_decision") != "HOLD":
+              raise SystemExit("Decision mismatch")
+
+          if result.get("primary_market") != "KRW-DKA":
+              raise SystemExit("Market mismatch")
+
+          if result.get("freeze_cutoff_utc") != (
+              "2026-10-24T00:00:00+00:00"
+          ):
+              raise SystemExit("Cutoff mismatch")
+
+          if result.get("implementation_files_verified") != 3:
+              raise SystemExit("Implementation count mismatch")
+
+          if result.get("ohlcv_files_verified") != 3:
+              raise SystemExit("OHLCV count mismatch")
+
+          if (
+              result.get("ohlcv_structural_integrity_verified")
+              is not True
+          ):
+              raise SystemExit("Structural integrity failed")
+
+          if (
+              result.get("implementation_source_hashes_verified")
+              is not True
+          ):
+              raise SystemExit("Source integrity failed")
+
+          for key in (
+              "signal_definition_mathematically_verified",
+              "signal_generation_implemented",
+              "prospective_source_verified",
+              "independent_oos_proven",
+              "profitability_proven",
+              "approved_for_live_trading",
+          ):
+              if result.get(key) is not False:
+                  raise SystemExit("Unsafe flag: " + key)
+
+          if result.get("new_prospective_events_created") != 0:
+              raise SystemExit("Unexpected events generated")
+
+          output_hashes = manifest.get("output_sha256")
+
+          if not isinstance(output_hashes, dict):
+              raise SystemExit("Output manifest missing")
+
+          for filename, expected_hash in output_hashes.items():
+              path = output / filename
+
+              if digest(path) != expected_hash:
+                  raise SystemExit(
+                      "Output SHA256 mismatch: " + filename
+                  )
+
+          inputs = manifest.get("input_sha256")
+
+          if not isinstance(inputs, dict):
+              raise SystemExit("Input manifest missing")
+
+          previous_manifest = (
+              root
+              / "data/reports/pattern_256_signal_source_audit"
+              / "signal_source_audit_manifest.json"
+          )
+
+          if (
+              digest(previous_manifest)
+              != inputs.get("previous_audit_manifest")
+          ):
+              raise SystemExit("Previous audit hash mismatch")
+
+          for name, expected_hash in (
+              inputs.get("implementation_files", {}).items()
+          ):
+              if digest(root / name) != expected_hash:
+                  raise SystemExit(
+                      "Implementation hash mismatch: " + name
+                  )
+
+          for name, expected_hash in (
+              inputs.get("ohlcv_files", {}).items()
+          ):
+              if digest(root / name) != expected_hash:
+                  raise SystemExit(
+                      "OHLCV hash mismatch: " + name
+                  )
+
+          with details_path.open(
+              encoding="utf-8-sig",
+              newline="",
+          ) as f:
+              details = list(csv.DictReader(f))
+
+          if len(details) != 3:
+              raise SystemExit("OHLCV details count mismatch")
+
+          expected_timeframes = {"h1", "h4", "d1"}
+
+          if {
+              row["timeframe"] for row in details
+          } != expected_timeframes:
+              raise SystemExit("Timeframe mismatch")
+
+          for row in details:
+              if row["status"] not in (
+                  "PASS",
+                  "PASS_WITH_GAPS",
+              ):
+                  raise SystemExit("Invalid OHLCV status")
+
+          print("[PASS] Clean V003-20")
+          print("[PASS] Input and output SHA256")
+          print("[PASS] OHLCV integrity gate")
+          print("[DECISION] HOLD")
+          '@ | py -
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Output verification failed"
+          }
+
+      - name: Upload gate results
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-signal-integrity-gate-v003-20
+          path: |
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_signal_integrity_gate/signal_integrity_result.json
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_signal_integrity_gate/ohlcv_integrity_details.csv
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_signal_integrity_gate/signal_implementation_integrity.csv
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_signal_integrity_gate/signal_integrity_manifest.json
+          if-no-files-found: error
+          retention-days: 90
