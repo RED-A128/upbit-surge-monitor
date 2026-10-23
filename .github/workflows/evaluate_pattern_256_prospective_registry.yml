@@ -1,0 +1,272 @@
+
+name: evaluate_pattern_256_prospective_registry.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evaluate-pattern-256-prospective-registry
+  cancel-in-progress: false
+
+jobs:
+  prospective-registry:
+    name: prospective-registry
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PROJECT_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+      SCRIPT_NAME: evaluate_pattern_256_prospective_registry.py
+      OUTPUT_RELATIVE: data/reports/pattern_256_prospective_registry
+      EXPECTED_VERSION: Clean V003-17
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Python and script
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Python script not found: $script"
+          }
+
+          Write-Host "[PASS] Python script located"
+
+      - name: Verify frozen input
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $source = Join-Path `
+            $env:PROJECT_ROOT `
+            "data/reports/pattern_256_prospective_freeze"
+
+          $required = @(
+            "frozen_candidates.csv",
+            "prospective_protocol.json",
+            "freeze_result.json",
+            "freeze_manifest.json"
+          )
+
+          foreach ($name in $required) {
+            $path = Join-Path $source $name
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Frozen input missing: $path"
+            }
+          }
+
+          Write-Host "[PASS] Frozen input files found"
+
+      - name: Initialize or verify prospective registry
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
+
+          py -u $script --root $env:PROJECT_ROOT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Prospective registry failed"
+          }
+
+      - name: Verify registry outputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          @'
+          import csv
+          import hashlib
+          import json
+          import os
+
+          from pathlib import Path
+
+          root = Path(os.environ["PROJECT_ROOT"])
+          directory = root / os.environ["OUTPUT_RELATIVE"]
+          expected_version = os.environ["EXPECTED_VERSION"]
+
+          def read_json(path):
+              return json.loads(
+                  path.read_text(encoding="utf-8")
+              )
+
+          def sha256(path):
+              h = hashlib.sha256()
+
+              with path.open("rb") as stream:
+                  for chunk in iter(
+                      lambda: stream.read(1024 * 1024),
+                      b"",
+                  ):
+                      h.update(chunk)
+
+              return h.hexdigest()
+
+          events_path = (
+              directory / "prospective_events.csv"
+          )
+
+          result_path = (
+              directory / "registry_result.json"
+          )
+
+          manifest_path = (
+              directory / "registry_manifest.json"
+          )
+
+          for path in (
+              events_path,
+              result_path,
+              manifest_path,
+          ):
+              if not path.is_file():
+                  raise SystemExit(
+                      "Missing output: " + str(path)
+                  )
+
+          result = read_json(result_path)
+          manifest = read_json(manifest_path)
+
+          if result.get("version") != expected_version:
+              raise SystemExit("Version mismatch")
+
+          if manifest.get("version") != expected_version:
+              raise SystemExit("Manifest version mismatch")
+
+          if result.get("execution_status") != "PASS":
+              raise SystemExit("Execution not PASS")
+
+          if result.get("overall_decision") != "HOLD":
+              raise SystemExit("Unexpected decision")
+
+          if result.get("frozen_market_count") != 209:
+              raise SystemExit("Frozen market count mismatch")
+
+          if result.get("primary_market") != "KRW-DKA":
+              raise SystemExit("Primary market mismatch")
+
+          cutoff = "2026-10-24T00:00:00+00:00"
+
+          if result.get("freeze_cutoff_utc") != cutoff:
+              raise SystemExit("Cutoff mismatch")
+
+          if manifest.get("freeze_cutoff_utc") != cutoff:
+              raise SystemExit("Manifest cutoff mismatch")
+
+          for key in (
+              "independent_oos_proven",
+              "profitability_proven",
+              "statistical_independence_proven",
+              "approved_for_live_trading",
+          ):
+              if result.get(key) is not False:
+                  raise SystemExit("Unsafe flag: " + key)
+
+          if (
+              sha256(events_path)
+              != manifest.get("events_sha256")
+          ):
+              raise SystemExit("Event SHA256 mismatch")
+
+          if (
+              sha256(result_path)
+              != manifest.get("result_sha256")
+          ):
+              raise SystemExit("Result SHA256 mismatch")
+
+          frozen_manifest_path = (
+              root
+              / "data/reports/pattern_256_prospective_freeze"
+              / "freeze_manifest.json"
+          )
+
+          if (
+              sha256(frozen_manifest_path)
+              != manifest.get("freeze_manifest_sha256")
+          ):
+              raise SystemExit("Frozen source SHA256 mismatch")
+
+          with events_path.open(
+              "r",
+              encoding="utf-8-sig",
+              newline="",
+          ) as stream:
+              reader = csv.DictReader(stream)
+              rows = list(reader)
+
+          expected_fields = [
+              "event_id",
+              "market",
+              "timeframe",
+              "classification",
+              "horizon",
+              "signal_timestamp",
+              "registered_at_utc",
+              "status",
+              "source_sha256",
+          ]
+
+          if reader.fieldnames != expected_fields:
+              raise SystemExit("Event schema mismatch")
+
+          if len(rows) != manifest.get("event_count"):
+              raise SystemExit("Manifest count mismatch")
+
+          if len(rows) != result.get("registered_event_count"):
+              raise SystemExit("Result count mismatch")
+
+          ids = [r["event_id"] for r in rows]
+
+          if len(ids) != len(set(ids)):
+              raise SystemExit("Duplicate event IDs")
+
+          if any(r["status"] != "PENDING" for r in rows):
+              raise SystemExit("Unexpected outcome status")
+
+          print("[PASS] Clean V003-17")
+          print("[PASS] Frozen input SHA256")
+          print("[PASS] Registry SHA256")
+          print("[PASS] Event count:", len(rows))
+          print("[DECISION] HOLD")
+          '@ | py -
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Registry verification failed"
+          }
+
+      - name: Upload registry results
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-prospective-registry-v003-17
+          path: |
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_prospective_registry/prospective_events.csv
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_prospective_registry/registry_result.json
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_prospective_registry/registry_manifest.json
+          if-no-files-found: error
+          retention-days: 90
