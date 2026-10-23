@@ -1,0 +1,219 @@
+
+name: evaluate_pattern_256_recomputation_coverage.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern-256-recomputation-coverage
+  cancel-in-progress: false
+
+jobs:
+  recomputation-coverage:
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 360
+
+    defaults:
+      run:
+        shell: powershell
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check Python
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          py -c "import numpy, pandas; print('Dependencies OK')"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Dependencies unavailable"
+          }
+
+      - name: Validate scripts
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $scripts = @(
+            "audit_256_independent_recomputation.py",
+            "verify_256_recomputation_coverage.py"
+          )
+
+          foreach ($script in $scripts) {
+            if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+              throw "Missing script: $script"
+            }
+
+            py -m py_compile $script
+
+            if ($LASTEXITCODE -ne 0) {
+              throw "Syntax validation failed: $script"
+            }
+          }
+
+      - name: Locate source data
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $repo = (Get-Location).Path
+
+          $roots = @(
+            $repo,
+            (Split-Path $repo -Parent),
+            "C:\Users\USER\Documents\upbit-surge-monitor"
+          ) | Select-Object -Unique
+
+          $selected = $null
+
+          foreach ($root in $roots) {
+            $featurePath = Join-Path $root "data\features\h1"
+            $signalPath = Join-Path $root "data\signals\256\h1"
+
+            if (
+              (Test-Path -LiteralPath $featurePath -PathType Container) -and
+              (Test-Path -LiteralPath $signalPath -PathType Container)
+            ) {
+              $selected = (Resolve-Path -LiteralPath $root).Path
+              break
+            }
+          }
+
+          if (-not $selected) {
+            throw "Feature and signal source directories not found"
+          }
+
+          Write-Host "Source root: $selected"
+
+          "SOURCE_ROOT=$selected" |
+            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Prepare isolated workspace
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $workspace = Join-Path `
+            $env:RUNNER_TEMP `
+            "pattern256_recomputation_coverage"
+
+          if (Test-Path -LiteralPath $workspace) {
+            Remove-Item -LiteralPath $workspace -Recurse -Force
+          }
+
+          $dataDir = Join-Path $workspace "data"
+
+          New-Item `
+            -ItemType Directory `
+            -Path $dataDir `
+            -Force | Out-Null
+
+          foreach ($folder in @("features", "signals")) {
+            $source = Join-Path $env:SOURCE_ROOT "data\$folder"
+            $destination = Join-Path $dataDir $folder
+
+            if (-not (Test-Path -LiteralPath $source -PathType Container)) {
+              throw "Missing source: $source"
+            }
+
+            Copy-Item `
+              -LiteralPath $source `
+              -Destination $destination `
+              -Recurse `
+              -Force
+          }
+
+          "AUDIT_WORKSPACE=$workspace" |
+            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Run independent recomputation
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py audit_256_independent_recomputation.py `
+            --root "$env:AUDIT_WORKSPACE"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Independent recomputation failed"
+          }
+
+      - name: Verify recomputation coverage
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py verify_256_recomputation_coverage.py `
+            --root "$env:AUDIT_WORKSPACE"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Recomputation coverage verification failed"
+          }
+
+      - name: Validate coverage result
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $path = Join-Path `
+            $env:AUDIT_WORKSPACE `
+            "data\reports\pattern_256_recomputation_coverage\coverage_result.json"
+
+          if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            throw "Coverage result missing"
+          }
+
+          $result = Get-Content -LiteralPath $path -Raw |
+            ConvertFrom-Json
+
+          if ($result.version -ne "Clean V001") {
+            throw "Coverage version mismatch"
+          }
+
+          if ($result.status -ne "PASS") {
+            throw "Coverage status is not PASS"
+          }
+
+          if ([int]$result.failed_job_count -ne 0) {
+            throw "Failed coverage jobs detected"
+          }
+
+          if ([int]$result.source_jobs -ne [int]$result.verified_jobs) {
+            throw "Incomplete job coverage"
+          }
+
+          if ([int64]$result.verified_rows -le 0) {
+            throw "No verified rows"
+          }
+
+          if ($result.independent_oos_proven -ne $false) {
+            throw "Unexpected OOS approval"
+          }
+
+          if ($result.approved_for_live_trading -ne $false) {
+            throw "Unexpected trading approval"
+          }
+
+          Write-Host "COVERAGE PASS"
+          Write-Host "Jobs: $($result.verified_jobs)"
+          Write-Host "Rows: $($result.verified_rows)"
+
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-recomputation-coverage-v001
+          path: |
+            ${{ runner.temp }}/pattern256_recomputation_coverage/data/reports/pattern_256_recomputation_coverage/
+            ${{ runner.temp }}/pattern256_recomputation_coverage/data/reports/pattern_256_independent_recomputation/audit_result.json
+            ${{ runner.temp }}/pattern256_recomputation_coverage/data/reports/pattern_256_independent_recomputation/audit_summary.csv
+          if-no-files-found: warn
+          retention-days: 14
