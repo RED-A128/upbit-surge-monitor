@@ -5,8 +5,9 @@ on:
   workflow_dispatch:
     inputs:
       holdout_run_id:
-        description: "Successful temporal holdout workflow Run ID"
+        description: "Successful Temporal Holdout Run ID"
         required: true
+        default: "39964542010"
         type: string
 
 permissions:
@@ -34,12 +35,13 @@ jobs:
     env:
       SCRIPT_NAME: evaluate_pattern_256_holdout_statistical_gate.py
       EXPECTED_VERSION: Clean V001
+      ARTIFACT_NAME: pattern-256-temporal-holdout-full-v001
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Validate Python and script
+      - name: Validate Python
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -49,21 +51,31 @@ jobs:
             throw "Python unavailable"
           }
 
+          py -c "import csv, json, hashlib, math"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python dependencies unavailable"
+          }
+
+      - name: Validate analysis script
+        run: |
+          $ErrorActionPreference = "Stop"
+
           $script = Join-Path `
             $env:GITHUB_WORKSPACE `
             $env:SCRIPT_NAME
 
           if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
-            throw "Analysis script missing"
+            throw "Analysis script missing: $script"
           }
 
           py -m py_compile "$script"
 
           if ($LASTEXITCODE -ne 0) {
-            throw "Python syntax check failed"
+            throw "Python syntax validation failed"
           }
 
-      - name: Download temporal holdout artifact
+      - name: Download Temporal Holdout artifact
         uses: actions/download-artifact@v4
         with:
           name: pattern-256-temporal-holdout-full-v001
@@ -83,35 +95,71 @@ jobs:
             throw "Workspace already exists"
           }
 
-          $target = Join-Path `
+          $sourceDir = Join-Path `
             $workspace `
             "data\reports\pattern_256_temporal_holdout"
 
           New-Item `
             -ItemType Directory `
-            -Path $target `
+            -Path $sourceDir `
             -Force | Out-Null
 
-          $files = @(
+          $inputDir = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "holdout_input"
+
+          if (-not (Test-Path -LiteralPath $inputDir)) {
+            throw "Downloaded artifact directory missing"
+          }
+
+          $comparisonFiles = @(
             Get-ChildItem `
-              -LiteralPath "holdout_input" `
+              -LiteralPath $inputDir `
               -Recurse `
               -File `
               -Filter "temporal_holdout_comparison.csv"
           )
 
-          if ($files.Count -ne 1) {
+          $resultFiles = @(
+            Get-ChildItem `
+              -LiteralPath $inputDir `
+              -Recurse `
+              -File `
+              -Filter "temporal_holdout_result.json"
+          )
+
+          $manifestFiles = @(
+            Get-ChildItem `
+              -LiteralPath $inputDir `
+              -Recurse `
+              -File `
+              -Filter "temporal_holdout_manifest.json"
+          )
+
+          if ($comparisonFiles.Count -ne 1) {
             throw "Expected exactly one comparison CSV"
           }
 
-          Copy-Item `
-            -LiteralPath $files[0].FullName `
-            -Destination (
-              Join-Path `
-                $target `
-                "temporal_holdout_comparison.csv"
-            ) `
-            -ErrorAction Stop
+          if ($resultFiles.Count -ne 1) {
+            throw "Expected exactly one result JSON"
+          }
+
+          if ($manifestFiles.Count -ne 1) {
+            throw "Expected exactly one manifest JSON"
+          }
+
+          foreach ($file in @(
+            $comparisonFiles[0],
+            $resultFiles[0],
+            $manifestFiles[0]
+          )) {
+            Copy-Item `
+              -LiteralPath $file.FullName `
+              -Destination (
+                Join-Path $sourceDir $file.Name
+              ) `
+              -ErrorAction Stop
+          }
 
           "STATISTICAL_WORKSPACE=$workspace" |
             Out-File `
@@ -119,7 +167,72 @@ jobs:
               -Append `
               -Encoding utf8
 
-          Write-Host "WORKSPACE READY"
+          Write-Host "ISOLATED WORKSPACE READY"
+
+      - name: Verify source SHA256
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $sourceDir = Join-Path `
+            $env:STATISTICAL_WORKSPACE `
+            "data\reports\pattern_256_temporal_holdout"
+
+          $manifest = Get-Content `
+            -LiteralPath (
+              Join-Path $sourceDir "temporal_holdout_manifest.json"
+            ) `
+            -Raw `
+            -Encoding UTF8 |
+            ConvertFrom-Json
+
+          $result = Get-Content `
+            -LiteralPath (
+              Join-Path $sourceDir "temporal_holdout_result.json"
+            ) `
+            -Raw `
+            -Encoding UTF8 |
+            ConvertFrom-Json
+
+          if ($result.execution_status -ne "PASS") {
+            throw "Temporal Holdout execution was not PASS"
+          }
+
+          if ($result.approved_for_live_trading -ne $false) {
+            throw "Unexpected trading approval"
+          }
+
+          if ($result.comparison_rows -ne 18) {
+            throw "Unexpected comparison count"
+          }
+
+          $filenames = @(
+            "temporal_holdout_comparison.csv",
+            "temporal_holdout_result.json"
+          )
+
+          foreach ($filename in $filenames) {
+            $expected = [string](
+              $manifest.output_sha256.$filename
+            )
+
+            if ($expected -notmatch '^[0-9a-fA-F]{64}$') {
+              throw "Invalid source SHA256: $filename"
+            }
+
+            $filePath = Join-Path $sourceDir $filename
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $filePath `
+                -Algorithm SHA256
+            ).Hash
+
+            if ($actual -ne $expected) {
+              throw "Source SHA256 mismatch: $filename"
+            }
+
+            Write-Host "SOURCE SHA256 PASS: $filename"
+          }
 
       - name: Run statistical gate
         run: |
@@ -135,28 +248,34 @@ jobs:
             throw "Statistical gate execution failed"
           }
 
-      - name: Validate result and SHA256
+      - name: Validate statistical result
         run: |
           $ErrorActionPreference = "Stop"
 
-          $output = Join-Path `
+          $outputDir = Join-Path `
             $env:STATISTICAL_WORKSPACE `
             "data\reports\pattern_256_holdout_statistical_gate"
 
           $resultPath = Join-Path `
-            $output `
+            $outputDir `
             "statistical_gate_result.json"
 
           $manifestPath = Join-Path `
-            $output `
+            $outputDir `
             "statistical_gate_manifest.json"
 
-          if (-not (Test-Path -LiteralPath $resultPath)) {
-            throw "Result JSON missing"
-          }
+          $comparisonPath = Join-Path `
+            $outputDir `
+            "statistical_gate_comparison.csv"
 
-          if (-not (Test-Path -LiteralPath $manifestPath)) {
-            throw "Manifest JSON missing"
+          foreach ($path in @(
+            $resultPath,
+            $manifestPath,
+            $comparisonPath
+          )) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing output: $path"
+            }
           }
 
           $result = Get-Content `
@@ -175,6 +294,10 @@ jobs:
             throw "Result version mismatch"
           }
 
+          if ($manifest.version -ne $env:EXPECTED_VERSION) {
+            throw "Manifest version mismatch"
+          }
+
           if ($result.execution_status -ne "PASS") {
             throw "Execution status is not PASS"
           }
@@ -184,19 +307,23 @@ jobs:
           }
 
           if ($result.approved_for_live_trading -ne $false) {
-            throw "Unexpected trading approval"
+            throw "Unexpected live trading approval"
+          }
+
+          if ($result.independent_oos_proven -ne $false) {
+            throw "Unexpected OOS proof claim"
           }
 
           if ($result.statistical_independence_proven -ne $false) {
-            throw "Unexpected independence claim"
+            throw "Unexpected independence proof claim"
           }
 
           if ($result.comparison_rows -ne 18) {
-            throw "Unexpected comparison row count"
+            throw "Expected 18 comparison rows"
           }
 
-          if ($manifest.version -ne $env:EXPECTED_VERSION) {
-            throw "Manifest version mismatch"
+          if ($result.test_comparisons -ne 9) {
+            throw "Expected 9 TEST comparisons"
           }
 
           $hashes = @(
@@ -204,7 +331,7 @@ jobs:
           )
 
           if ($hashes.Count -ne 2) {
-            throw "Unexpected output hash count"
+            throw "Expected exactly two output hashes"
           }
 
           foreach ($entry in $hashes) {
@@ -216,13 +343,13 @@ jobs:
             }
 
             if ($expected -notmatch '^[0-9a-fA-F]{64}$') {
-              throw "Invalid SHA256"
+              throw "Invalid output SHA256"
             }
 
-            $path = Join-Path $output $filename
+            $path = Join-Path $outputDir $filename
 
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-              throw "Output missing: $filename"
+              throw "Missing output: $filename"
             }
 
             $actual = (
@@ -232,33 +359,34 @@ jobs:
             ).Hash
 
             if ($actual -ne $expected) {
-              throw "SHA256 mismatch: $filename"
+              throw "Output SHA256 mismatch: $filename"
             }
 
-            Write-Host "SHA256 PASS: $filename"
+            Write-Host "OUTPUT SHA256 PASS: $filename"
           }
 
-          Write-Host "VALIDATION PASS"
-
           @(
-            "## Pattern 256 Statistical Gate",
+            "## Pattern 256 Holdout Statistical Gate",
             "",
-            "| Metric | Result |",
+            "| Check | Result |",
             "|---|---|",
             "| Execution | PASS |",
             "| Research decision | HOLD |",
+            "| TEST comparisons | $($result.test_comparisons) |",
             "| TEST improvements | $($result.test_observed_improvements) |",
             "| TEST deteriorations | $($result.test_observed_deteriorations) |",
             "| TEST small samples | $($result.test_small_samples) |",
             "| Independent OOS proven | False |",
             "| Live trading approved | False |",
             "",
-            "The exploratory statistics do not prove independent observations."
+            "Exploratory statistics do not prove independence."
           ) |
             Out-File `
               -FilePath $env:GITHUB_STEP_SUMMARY `
               -Append `
               -Encoding utf8
+
+          Write-Host "STATISTICAL GATE VALIDATION PASS"
 
       - name: Upload statistical reports
         if: always()
