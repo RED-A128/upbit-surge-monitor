@@ -1,0 +1,296 @@
+
+name: evaluate_pattern_256_validation_priority.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evaluate-pattern-256-validation-priority
+  cancel-in-progress: false
+
+jobs:
+  validation-priority:
+    name: validation-priority
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 60
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PROJECT_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+      SCRIPT_NAME: evaluate_pattern_256_validation_priority.py
+      INPUT_RELATIVE: data/reports/pattern_256_candidate_stability
+      OUTPUT_RELATIVE: data/reports/pattern_256_validation_priority
+      EXPECTED_VERSION: Clean V003-15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Python and source
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Missing Python script: $script"
+          }
+
+          $inputDir = Join-Path `
+            $env:PROJECT_ROOT `
+            $env:INPUT_RELATIVE
+
+          $files = @(
+            "candidate_stability_markets.csv",
+            "candidate_stability_summary.csv",
+            "candidate_stability_result.json",
+            "candidate_stability_manifest.json"
+          )
+
+          foreach ($name in $files) {
+            $path = Join-Path $inputDir $name
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing source: $path"
+            }
+          }
+
+          Write-Host "[PASS] Script and source found"
+
+      - name: Run validation priority audit
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
+
+          py -u $script --root $env:PROJECT_ROOT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Validation priority audit failed"
+          }
+
+      - name: Verify output and SHA256
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          @'
+          import csv
+          import hashlib
+          import json
+          import os
+
+          from collections import Counter
+          from pathlib import Path
+
+          root = Path(os.environ["PROJECT_ROOT"])
+          source = root / os.environ["INPUT_RELATIVE"]
+          output = root / os.environ["OUTPUT_RELATIVE"]
+          version = os.environ["EXPECTED_VERSION"]
+
+          def sha256(path):
+              h = hashlib.sha256()
+              with path.open("rb") as f:
+                  for chunk in iter(
+                      lambda: f.read(1024 * 1024),
+                      b"",
+                  ):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          def read_json(path):
+              return json.loads(
+                  path.read_text(encoding="utf-8")
+              )
+
+          def read_csv(path):
+              with path.open(
+                  encoding="utf-8-sig",
+                  newline="",
+              ) as f:
+                  return list(csv.DictReader(f))
+
+          result = read_json(
+              output / "validation_priority_result.json"
+          )
+          manifest = read_json(
+              output / "validation_priority_manifest.json"
+          )
+
+          if result.get("version") != version:
+              raise SystemExit("Version mismatch")
+
+          if manifest.get("version") != version:
+              raise SystemExit("Manifest version mismatch")
+
+          if result.get("execution_status") != "PASS":
+              raise SystemExit("Not PASS")
+
+          if result.get("overall_decision") != "HOLD":
+              raise SystemExit("Not HOLD")
+
+          if result.get("market_count") != 209:
+              raise SystemExit("Market count mismatch")
+
+          if result.get("original_candidate_count") != 22:
+              raise SystemExit("Candidate count mismatch")
+
+          if result.get("strict_candidate_markets") != [
+              "KRW-DKA"
+          ]:
+              raise SystemExit("Strict market mismatch")
+
+          for flag in (
+              "independent_oos_proven",
+              "statistical_independence_proven",
+              "profitability_proven",
+              "approved_for_live_trading",
+          ):
+              if result.get(flag) is not False:
+                  raise SystemExit(
+                      "Unsafe result flag: " + flag
+                  )
+
+          expected_files = {
+              "validation_priority_markets.csv",
+              "validation_priority_summary.csv",
+              "validation_priority_result.json",
+          }
+
+          hashes = manifest.get("output_sha256")
+          if not isinstance(hashes, dict):
+              raise SystemExit("Missing hashes")
+
+          if set(hashes) != expected_files:
+              raise SystemExit("Unexpected output set")
+
+          for name in sorted(expected_files):
+              path = output / name
+              if not path.is_file():
+                  raise SystemExit("Missing: " + name)
+              if sha256(path) != hashes[name]:
+                  raise SystemExit(
+                      "SHA256 mismatch: " + name
+                  )
+              print("[PASS] SHA256:", name)
+
+          for name, expected in manifest[
+              "input_sha256"
+          ].items():
+              path = source / name
+              if not path.is_file():
+                  raise SystemExit(
+                      "Missing input: " + name
+                  )
+              if sha256(path) != expected:
+                  raise SystemExit(
+                      "Input SHA256 mismatch: " + name
+                  )
+
+          markets = read_csv(
+              output / "validation_priority_markets.csv"
+          )
+          summary = read_csv(
+              output / "validation_priority_summary.csv"
+          )
+
+          if len(markets) != 209:
+              raise SystemExit("Market row mismatch")
+
+          if len(summary) != 6:
+              raise SystemExit("Summary row mismatch")
+
+          if len({
+              r["market"] for r in markets
+          }) != 209:
+              raise SystemExit("Duplicate market")
+
+          counts = Counter(
+              r["priority_tier"] for r in markets
+          )
+
+          if dict(counts) != result.get(
+              "priority_counts"
+          ):
+              raise SystemExit("Priority counts mismatch")
+
+          if sum(
+              r["original_candidate"] == "True"
+              for r in markets
+          ) != 22:
+              raise SystemExit("Original count mismatch")
+
+          if [
+              r["market"] for r in markets
+              if r["passes_strict_200_05"] == "True"
+          ] != ["KRW-DKA"]:
+              raise SystemExit("Strict market mismatch")
+
+          for r in markets:
+              if r["approved_for_live_trading"] != "False":
+                  raise SystemExit("Unsafe trading flag")
+              if r["independent_oos_proven"] != "False":
+                  raise SystemExit("Unsafe OOS flag")
+              if r[
+                  "requires_new_independent_data"
+              ] != "True":
+                  raise SystemExit("Missing OOS requirement")
+
+          if any(
+              r["decision"] != "HOLD"
+              for r in summary
+          ):
+              raise SystemExit("Unsafe summary decision")
+
+          if {
+              r["priority_tier"] for r in summary
+          } != set(counts):
+              raise SystemExit("Summary tiers mismatch")
+
+          for r in summary:
+              if int(r["market_count"]) != counts[
+                  r["priority_tier"]
+              ]:
+                  raise SystemExit(
+                      "Summary count mismatch"
+                  )
+
+          print("[PASS] Clean V003-15")
+          print("[PASS] Validation priority")
+          print("[PASS] SHA256 integrity")
+          print("[DECISION] HOLD")
+          '@ | py -
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Integrity verification failed"
+          }
+
+      - name: Upload validation priority results
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-validation-priority-v003-15
+          path: |
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_validation_priority/validation_priority_markets.csv
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_validation_priority/validation_priority_summary.csv
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_validation_priority/validation_priority_result.json
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_validation_priority/validation_priority_manifest.json
+          if-no-files-found: error
+          retention-days: 14
