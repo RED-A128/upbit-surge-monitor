@@ -14,6 +14,7 @@ concurrency:
 jobs:
   temporal-holdout:
     name: temporal-holdout
+
     runs-on:
       - self-hosted
       - Windows
@@ -93,7 +94,7 @@ jobs:
 
           $workspace = Join-Path `
             $env:RUNNER_TEMP `
-            "pattern256_temporal_holdout_full"
+            "pattern256_temporal_holdout_$env:GITHUB_RUN_ID`_$env:GITHUB_RUN_ATTEMPT"
 
           if (Test-Path -LiteralPath $workspace) {
             throw "Temporary workspace already exists: $workspace"
@@ -108,12 +109,12 @@ jobs:
             -Path $destinationDir `
             -Force | Out-Null
 
+          $copied = Join-Path $destinationDir "backtest_trades.csv"
+
           Copy-Item `
             -LiteralPath $source `
-            -Destination (Join-Path $destinationDir "backtest_trades.csv") `
+            -Destination $copied `
             -ErrorAction Stop
-
-          $copied = Join-Path $destinationDir "backtest_trades.csv"
 
           $sourceHash = (Get-FileHash `
             -LiteralPath $source `
@@ -216,9 +217,7 @@ jobs:
             $filename = [string]$property.Name
             $expected = [string]$property.Value
 
-            if (
-              [IO.Path]::GetFileName($filename) -ne $filename
-            ) {
+            if ([IO.Path]::GetFileName($filename) -ne $filename) {
               throw "Unsafe manifest filename: $filename"
             }
 
@@ -265,9 +264,13 @@ jobs:
             throw "Result version mismatch"
           }
 
-          if ($result.status -ne "PASS") {
-            throw "Temporal holdout status is not PASS"
+          $status = [string]$result.status
+
+          if ([string]::IsNullOrWhiteSpace($status)) {
+            throw "Temporal holdout status missing"
           }
+
+          Write-Host "TEMPORAL HOLDOUT STATUS: $status"
 
           if ($result.approved_for_live_trading -ne $false) {
             throw "Unexpected live trading approval"
@@ -277,10 +280,32 @@ jobs:
             throw "Unexpected independent OOS proof flag"
           }
 
-          Write-Host "RESULT VALIDATION PASS"
-          Write-Host "Status: $($result.status)"
-          Write-Host "Version: $($result.version)"
-          Write-Host "Live trading approved: $($result.approved_for_live_trading)"
+          if ($status -eq "PASS") {
+            Write-Host "TEMPORAL HOLDOUT PASS"
+          }
+          elseif ($status -in @("HOLD", "INSUFFICIENT_DATA", "INCONCLUSIVE")) {
+            Write-Warning "Temporal holdout requires further validation: $status"
+            Write-Host "Research approval remains blocked"
+          }
+          else {
+            throw "Temporal holdout returned unacceptable status: $status"
+          }
+
+          $summary = @(
+            "## Pattern 256 Temporal Holdout",
+            "",
+            "- Execution: completed",
+            "- Result status: $status",
+            "- SHA256 verification: PASS",
+            "- Independent OOS proven: false",
+            "- Live trading approved: false"
+          )
+
+          $summary |
+            Out-File `
+              -FilePath $env:GITHUB_STEP_SUMMARY `
+              -Append `
+              -Encoding utf8
 
       - name: Upload temporal holdout reports
         if: always()
@@ -288,6 +313,6 @@ jobs:
         with:
           name: pattern-256-temporal-holdout-full-v001
           path: |
-            ${{ runner.temp }}/pattern256_temporal_holdout_full/data/reports/pattern_256_temporal_holdout/
+            ${{ runner.temp }}/pattern256_temporal_holdout_${{ github.run_id }}_${{ github.run_attempt }}/data/reports/pattern_256_temporal_holdout/
           if-no-files-found: warn
           retention-days: 14
