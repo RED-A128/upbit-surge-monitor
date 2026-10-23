@@ -1,0 +1,221 @@
+
+name: evaluate_pattern_256_cross_year_replication.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evaluate-pattern-256-cross-year-replication
+  cancel-in-progress: false
+
+jobs:
+  cross-year-replication:
+    name: cross-year-replication
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 60
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PROJECT_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+      SCRIPT_NAME: evaluate_pattern_256_cross_year_replication.py
+      OUTPUT_RELATIVE: data/reports/pattern_256_cross_year_replication
+      EXPECTED_VERSION: Clean V003-9
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify script and inputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          $script = Join-Path $env:GITHUB_WORKSPACE $env:SCRIPT_NAME
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Script not found: $script"
+          }
+
+          $v7 = Join-Path $env:PROJECT_ROOT "data/reports/pattern_256_stratified_comparison"
+          $v8 = Join-Path $env:PROJECT_ROOT "data/reports/pattern_256_stratified_robustness"
+
+          $required = @(
+            (Join-Path $v7 "stratified_detail.csv"),
+            (Join-Path $v7 "stratified_summary.csv"),
+            (Join-Path $v7 "stratified_result.json"),
+            (Join-Path $v7 "stratified_manifest.json"),
+            (Join-Path $v8 "stratified_robustness_detail.csv"),
+            (Join-Path $v8 "stratified_robustness_summary.csv"),
+            (Join-Path $v8 "stratified_robustness_result.json"),
+            (Join-Path $v8 "stratified_robustness_manifest.json")
+          )
+
+          foreach ($path in $required) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing input: $path"
+            }
+          }
+
+          Write-Host "[PASS] Script and inputs found"
+
+      - name: Run cross-year replication
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path $env:GITHUB_WORKSPACE $env:SCRIPT_NAME
+
+          py -u $script --root $env:PROJECT_ROOT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Cross-year replication failed"
+          }
+
+      - name: Verify result and SHA256
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          @'
+          import csv
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["PROJECT_ROOT"])
+          output = root / os.environ["OUTPUT_RELATIVE"]
+          version = os.environ["EXPECTED_VERSION"]
+
+          def sha256(path):
+              h = hashlib.sha256()
+              with path.open("rb") as f:
+                  for chunk in iter(
+                      lambda: f.read(4 * 1024 * 1024),
+                      b"",
+                  ):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          result = json.loads(
+              (output / "cross_year_result.json").read_text(
+                  encoding="utf-8"
+              )
+          )
+          manifest = json.loads(
+              (output / "cross_year_manifest.json").read_text(
+                  encoding="utf-8"
+              )
+          )
+
+          if result.get("version") != version:
+              raise SystemExit("Version mismatch")
+
+          if manifest.get("version") != version:
+              raise SystemExit("Manifest version mismatch")
+
+          if result.get("execution_status") != "PASS":
+              raise SystemExit("Execution not PASS")
+
+          if result.get("overall_decision") != "HOLD":
+              raise SystemExit("Decision not HOLD")
+
+          for field in (
+              "independent_oos_proven",
+              "causal_improvement_proven",
+              "profitability_proven",
+              "approved_for_live_trading",
+          ):
+              if result.get(field) is not False:
+                  raise SystemExit("Safety flag mismatch: " + field)
+
+          expected = {
+              "cross_year_markets.csv",
+              "cross_year_summary.csv",
+              "cross_year_result.json",
+          }
+
+          hashes = manifest.get("output_sha256")
+          if not isinstance(hashes, dict) or set(hashes) != expected:
+              raise SystemExit("Manifest file set mismatch")
+
+          for filename in sorted(expected):
+              path = output / filename
+              if not path.is_file():
+                  raise SystemExit("Missing output: " + filename)
+              if sha256(path) != hashes[filename]:
+                  raise SystemExit("SHA256 mismatch: " + filename)
+              print("[PASS] SHA256:", filename)
+
+          with (output / "cross_year_markets.csv").open(
+              encoding="utf-8-sig", newline=""
+          ) as f:
+              markets = list(csv.DictReader(f))
+
+          with (output / "cross_year_summary.csv").open(
+              encoding="utf-8-sig", newline=""
+          ) as f:
+              summaries = list(csv.DictReader(f))
+
+          if len(markets) == 0:
+              raise SystemExit("No common markets")
+
+          if len(markets) != result["common_market_count"]:
+              raise SystemExit("Market count mismatch")
+
+          if len(summaries) != 2:
+              raise SystemExit("Summary count mismatch")
+
+          if {row["year"] for row in summaries} != {"2025", "2026"}:
+              raise SystemExit("Year groups mismatch")
+
+          if len({row["market"] for row in markets}) != len(markets):
+              raise SystemExit("Duplicate market")
+
+          positive_both = sum(
+              row["positive_both_years"].lower() == "true"
+              for row in markets
+          )
+
+          if positive_both != result["markets_positive_both_years"]:
+              raise SystemExit("Positive-both count mismatch")
+
+          for row in summaries:
+              if int(row["common_markets"]) != len(markets):
+                  raise SystemExit("Summary market count mismatch")
+              if row["decision"] != "HOLD":
+                  raise SystemExit("Unexpected summary decision")
+
+          print("[PASS] Clean V003-9")
+          print("[PASS] Common-market replication")
+          print("[PASS] SHA256 integrity")
+          print("[DECISION] HOLD")
+          '@ | py -
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Result verification failed"
+          }
+
+      - name: Upload replication results
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-cross-year-replication-v003-9
+          path: |
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_cross_year_replication/cross_year_markets.csv
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_cross_year_replication/cross_year_summary.csv
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_cross_year_replication/cross_year_result.json
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_cross_year_replication/cross_year_manifest.json
+          if-no-files-found: error
+          retention-days: 14
