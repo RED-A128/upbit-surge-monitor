@@ -1,0 +1,249 @@
+
+name: evaluate_pattern_256_formula_audit.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evaluate-pattern-256-formula-audit
+  cancel-in-progress: false
+
+jobs:
+  formula-audit:
+    name: formula-audit
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PROJECT_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+      SCRIPT_NAME: evaluate_pattern_256_formula_audit.py
+      OUTPUT_RELATIVE: data/reports/pattern_256_formula_audit
+      EXPECTED_VERSION: Clean V003-21
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Python and script
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Missing audit script: $script"
+          }
+
+          Write-Host "[PASS] Python and audit script"
+
+      - name: Verify required inputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $files = @(
+            "build_features.py",
+            "detect_256.py",
+            "validate_256.py",
+            "data/reports/pattern_256_signal_integrity_gate/signal_integrity_result.json",
+            "data/reports/pattern_256_signal_integrity_gate/signal_integrity_manifest.json",
+            "data/reports/pattern_256_signal_integrity_gate/ohlcv_integrity_details.csv",
+            "data/reports/pattern_256_signal_integrity_gate/signal_implementation_integrity.csv"
+          )
+
+          foreach ($relative in $files) {
+            $path = Join-Path $env:PROJECT_ROOT $relative
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Required input missing: $path"
+            }
+          }
+
+          Write-Host "[PASS] Required inputs"
+
+      - name: Run formula audit
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
+
+          py -u $script --root $env:PROJECT_ROOT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Formula audit failed"
+          }
+
+      - name: Verify audit results
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          @'
+          import hashlib
+          import json
+          import os
+
+          from pathlib import Path
+
+          root = Path(os.environ["PROJECT_ROOT"])
+          output = root / os.environ["OUTPUT_RELATIVE"]
+
+          def digest(path):
+              h = hashlib.sha256()
+
+              with path.open("rb") as f:
+                  for chunk in iter(
+                      lambda: f.read(1024 * 1024),
+                      b"",
+                  ):
+                      h.update(chunk)
+
+              return h.hexdigest()
+
+          def read(path):
+              return json.loads(
+                  path.read_text(encoding="utf-8")
+              )
+
+          result = read(
+              output / "formula_audit_result.json"
+          )
+
+          manifest = read(
+              output / "formula_audit_manifest.json"
+          )
+
+          version = os.environ["EXPECTED_VERSION"]
+
+          if result.get("version") != version:
+              raise SystemExit("Result version mismatch")
+
+          if manifest.get("version") != version:
+              raise SystemExit("Manifest version mismatch")
+
+          if result.get("execution_status") != "PASS":
+              raise SystemExit("Audit execution failed")
+
+          if result.get("overall_decision") != "HOLD":
+              raise SystemExit("Decision mismatch")
+
+          if result.get("source_file_count") != 3:
+              raise SystemExit("Source count mismatch")
+
+          if result.get("source_hashes_verified") is not True:
+              raise SystemExit("Source verification failed")
+
+          if result.get("python_syntax_verified") is not True:
+              raise SystemExit("Syntax verification failed")
+
+          for key in (
+              "lookahead_absence_proven",
+              "signal_definition_mathematically_verified",
+              "candle_availability_at_signal_time_verified",
+              "signal_generation_implemented",
+              "independent_oos_proven",
+              "profitability_proven",
+              "approved_for_live_trading",
+          ):
+              if result.get(key) is not False:
+                  raise SystemExit("Unsafe result: " + key)
+
+          if result.get("new_prospective_events_created") != 0:
+              raise SystemExit("Unexpected signals generated")
+
+          expected_outputs = {
+              "formula_audit_result.json",
+              "formula_audit_findings.csv",
+              "formula_audit_functions.csv",
+          }
+
+          hashes = manifest.get("output_sha256", {})
+
+          if set(hashes) != expected_outputs:
+              raise SystemExit("Output manifest incomplete")
+
+          for name, expected in hashes.items():
+              path = output / name
+
+              if not path.is_file():
+                  raise SystemExit("Missing output: " + name)
+
+              if digest(path) != expected:
+                  raise SystemExit(
+                      "Output hash mismatch: " + name
+                  )
+
+          inputs = manifest.get("input_sha256", {})
+
+          previous_result = (
+              root
+              / "data/reports/pattern_256_signal_integrity_gate"
+              / "signal_integrity_result.json"
+          )
+
+          previous_manifest = (
+              root
+              / "data/reports/pattern_256_signal_integrity_gate"
+              / "signal_integrity_manifest.json"
+          )
+
+          if digest(previous_result) != inputs.get(
+              "previous_result"
+          ):
+              raise SystemExit("Previous result changed")
+
+          if digest(previous_manifest) != inputs.get(
+              "previous_manifest"
+          ):
+              raise SystemExit("Previous manifest changed")
+
+          for name, expected in inputs.get(
+              "implementation_files", {}
+          ).items():
+              if digest(root / name) != expected:
+                  raise SystemExit(
+                      "Source changed: " + name
+                  )
+
+          print("[PASS] Clean V003-21")
+          print("[PASS] SHA256")
+          print("[INFO] Findings:", result["finding_count"])
+          print("[INFO] Review:", result["review_required_count"])
+          print("[DECISION] HOLD")
+          '@ | py -
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Audit verification failed"
+          }
+
+      - name: Upload audit results
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-formula-audit-v003-21
+          path: |
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_formula_audit/formula_audit_result.json
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_formula_audit/formula_audit_findings.csv
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_formula_audit/formula_audit_functions.csv
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_formula_audit/formula_audit_manifest.json
+          if-no-files-found: error
+          retention-days: 90
