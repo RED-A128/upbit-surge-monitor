@@ -1,0 +1,293 @@
+
+name: evaluate_pattern_256_temporal_holdout_full.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern-256-temporal-holdout-full
+  cancel-in-progress: false
+
+jobs:
+  temporal-holdout:
+    name: temporal-holdout
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 360
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      SCRIPT_NAME: evaluate_pattern_256_temporal_holdout.py
+      EXPECTED_VERSION: Clean V001
+      LOCAL_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+      INPUT_RELATIVE: data\reports\pattern_256_accumulation_candidate_independent_backtest\backtest_trades.csv
+      OUTPUT_RELATIVE: data\reports\pattern_256_temporal_holdout
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate Python
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python is unavailable"
+          }
+
+      - name: Validate analysis script
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path $env:GITHUB_WORKSPACE $env:SCRIPT_NAME
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Analysis script not found: $script"
+          }
+
+          py -m py_compile "$script"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax validation failed"
+          }
+
+          Write-Host "SCRIPT VALIDATION PASS"
+
+      - name: Validate source workspace
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if (-not (Test-Path -LiteralPath $env:LOCAL_ROOT -PathType Container)) {
+            throw "Local project root not found: $env:LOCAL_ROOT"
+          }
+
+          $inputFile = Join-Path $env:LOCAL_ROOT $env:INPUT_RELATIVE
+
+          if (-not (Test-Path -LiteralPath $inputFile -PathType Leaf)) {
+            throw "Backtest source file not found: $inputFile"
+          }
+
+          $file = Get-Item -LiteralPath $inputFile
+
+          if ($file.Length -le 0) {
+            throw "Backtest source file is empty"
+          }
+
+          Write-Host "SOURCE VALIDATION PASS"
+          Write-Host "Source: $inputFile"
+          Write-Host "Size: $($file.Length) bytes"
+
+      - name: Prepare isolated holdout workspace
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $workspace = Join-Path `
+            $env:RUNNER_TEMP `
+            "pattern256_temporal_holdout_full"
+
+          if (Test-Path -LiteralPath $workspace) {
+            throw "Temporary workspace already exists: $workspace"
+          }
+
+          $relativeParent = Split-Path $env:INPUT_RELATIVE -Parent
+          $source = Join-Path $env:LOCAL_ROOT $env:INPUT_RELATIVE
+          $destinationDir = Join-Path $workspace $relativeParent
+
+          New-Item `
+            -ItemType Directory `
+            -Path $destinationDir `
+            -Force | Out-Null
+
+          Copy-Item `
+            -LiteralPath $source `
+            -Destination (Join-Path $destinationDir "backtest_trades.csv") `
+            -ErrorAction Stop
+
+          $copied = Join-Path $destinationDir "backtest_trades.csv"
+
+          $sourceHash = (Get-FileHash `
+            -LiteralPath $source `
+            -Algorithm SHA256).Hash
+
+          $copiedHash = (Get-FileHash `
+            -LiteralPath $copied `
+            -Algorithm SHA256).Hash
+
+          if ($sourceHash -ne $copiedHash) {
+            throw "Input copy SHA256 mismatch"
+          }
+
+          "HOLDOUT_WORKSPACE=$workspace" |
+            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+          "HOLDOUT_INPUT_SHA256=$sourceHash" |
+            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+          Write-Host "ISOLATED WORKSPACE READY"
+          Write-Host "Input SHA256: $sourceHash"
+
+      - name: Run temporal holdout
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path $env:GITHUB_WORKSPACE $env:SCRIPT_NAME
+
+          py "$script" --root "$env:HOLDOUT_WORKSPACE"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Temporal holdout execution failed"
+          }
+
+          Write-Host "TEMPORAL HOLDOUT EXECUTION COMPLETED"
+
+      - name: Validate output files
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $outputDir = Join-Path `
+            $env:HOLDOUT_WORKSPACE `
+            $env:OUTPUT_RELATIVE
+
+          $requiredFiles = @(
+            "temporal_holdout_comparison.csv",
+            "temporal_holdout_result.json",
+            "temporal_holdout_manifest.json"
+          )
+
+          foreach ($filename in $requiredFiles) {
+            $path = Join-Path $outputDir $filename
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Required output missing: $filename"
+            }
+
+            if ((Get-Item -LiteralPath $path).Length -le 0) {
+              throw "Required output empty: $filename"
+            }
+
+            Write-Host "OUTPUT FOUND: $filename"
+          }
+
+      - name: Verify output SHA256
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $outputDir = Join-Path `
+            $env:HOLDOUT_WORKSPACE `
+            $env:OUTPUT_RELATIVE
+
+          $manifestPath = Join-Path `
+            $outputDir `
+            "temporal_holdout_manifest.json"
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw `
+            -Encoding UTF8 |
+            ConvertFrom-Json
+
+          if ($manifest.version -ne $env:EXPECTED_VERSION) {
+            throw "Manifest version mismatch"
+          }
+
+          if (-not $manifest.output_sha256) {
+            throw "Output SHA256 manifest missing"
+          }
+
+          $hashProperties = @(
+            $manifest.output_sha256.PSObject.Properties
+          )
+
+          if ($hashProperties.Count -eq 0) {
+            throw "Output SHA256 manifest is empty"
+          }
+
+          foreach ($property in $hashProperties) {
+            $filename = [string]$property.Name
+            $expected = [string]$property.Value
+
+            if (
+              [IO.Path]::GetFileName($filename) -ne $filename
+            ) {
+              throw "Unsafe manifest filename: $filename"
+            }
+
+            if ($expected -notmatch '^[0-9a-fA-F]{64}$') {
+              throw "Invalid expected SHA256: $filename"
+            }
+
+            $path = Join-Path $outputDir $filename
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Manifest output missing: $filename"
+            }
+
+            $actual = (Get-FileHash `
+              -LiteralPath $path `
+              -Algorithm SHA256).Hash
+
+            if ($actual -ne $expected) {
+              throw "Output SHA256 mismatch: $filename"
+            }
+
+            Write-Host "SHA256 PASS: $filename"
+          }
+
+      - name: Validate result safety
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $outputDir = Join-Path `
+            $env:HOLDOUT_WORKSPACE `
+            $env:OUTPUT_RELATIVE
+
+          $resultPath = Join-Path `
+            $outputDir `
+            "temporal_holdout_result.json"
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw `
+            -Encoding UTF8 |
+            ConvertFrom-Json
+
+          if ($result.version -ne $env:EXPECTED_VERSION) {
+            throw "Result version mismatch"
+          }
+
+          if ($result.status -ne "PASS") {
+            throw "Temporal holdout status is not PASS"
+          }
+
+          if ($result.approved_for_live_trading -ne $false) {
+            throw "Unexpected live trading approval"
+          }
+
+          if ($result.independent_oos_proven -eq $true) {
+            throw "Unexpected independent OOS proof flag"
+          }
+
+          Write-Host "RESULT VALIDATION PASS"
+          Write-Host "Status: $($result.status)"
+          Write-Host "Version: $($result.version)"
+          Write-Host "Live trading approved: $($result.approved_for_live_trading)"
+
+      - name: Upload temporal holdout reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-temporal-holdout-full-v001
+          path: |
+            ${{ runner.temp }}/pattern256_temporal_holdout_full/data/reports/pattern_256_temporal_holdout/
+          if-no-files-found: warn
+          retention-days: 14
