@@ -21,7 +21,7 @@ jobs:
 
     defaults:
       run:
-        shell: pwsh
+        shell: powershell
 
     steps:
       - name: Checkout repository
@@ -30,18 +30,30 @@ jobs:
       - name: Check Python and dependencies
         run: |
           py --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python launcher is unavailable"
+          }
+
           py -c "import numpy, pandas; print('Dependencies OK')"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Required Python dependencies are unavailable"
+          }
 
       - name: Check audit script
         run: |
           if (-not (Test-Path "audit_256_independent_recomputation.py")) {
             throw "Audit script missing"
           }
+
           py -m py_compile audit_256_independent_recomputation.py
+          if ($LASTEXITCODE -ne 0) {
+            throw "Audit script syntax validation failed"
+          }
 
       - name: Run independent recomputation audit
         run: |
           py audit_256_independent_recomputation.py --root .
+
           if ($LASTEXITCODE -ne 0) {
             throw "Independent recomputation audit failed"
           }
@@ -56,10 +68,13 @@ jobs:
           path = Path(
               "data/reports/pattern_256_independent_recomputation/audit_result.json"
           )
+
           if not path.is_file():
               raise SystemExit("Missing audit_result.json")
 
-          result = json.loads(path.read_text(encoding="utf-8"))
+          result = json.loads(
+              path.read_text(encoding="utf-8")
+          )
 
           if result.get("version") != "Clean V003-26":
               raise SystemExit("Unexpected audit version")
