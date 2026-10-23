@@ -1,0 +1,323 @@
+
+name: evaluate_pattern_256_stratified_robustness.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evaluate-pattern-256-stratified-robustness
+  cancel-in-progress: false
+
+jobs:
+  stratified-robustness:
+    name: stratified-robustness
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 60
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PROJECT_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+      SCRIPT_NAME: evaluate_pattern_256_stratified_robustness.py
+      OUTPUT_RELATIVE: data/reports/pattern_256_stratified_robustness
+      EXPECTED_VERSION: Clean V003-8
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Python and input files
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Python script not found: $script"
+          }
+
+          $inputDir = Join-Path `
+            $env:PROJECT_ROOT `
+            "data/reports/pattern_256_stratified_comparison"
+
+          $files = @(
+            "stratified_detail.csv",
+            "stratified_summary.csv",
+            "stratified_result.json",
+            "stratified_manifest.json"
+          )
+
+          foreach ($file in $files) {
+            $path = Join-Path $inputDir $file
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing input: $path"
+            }
+          }
+
+          Write-Host "[PASS] Python and input files found"
+
+      - name: Run stratified robustness evaluation
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
+
+          py -u $script --root $env:PROJECT_ROOT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Stratified robustness evaluation failed"
+          }
+
+      - name: Verify results and SHA256
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          @'
+          import csv
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["PROJECT_ROOT"])
+          output = root / os.environ["OUTPUT_RELATIVE"]
+          version = os.environ["EXPECTED_VERSION"]
+
+          def sha256(path):
+              h = hashlib.sha256()
+
+              with path.open("rb") as f:
+                  for chunk in iter(
+                      lambda: f.read(4 * 1024 * 1024),
+                      b"",
+                  ):
+                      h.update(chunk)
+
+              return h.hexdigest()
+
+          result_path = (
+              output / "stratified_robustness_result.json"
+          )
+
+          manifest_path = (
+              output / "stratified_robustness_manifest.json"
+          )
+
+          detail_path = (
+              output / "stratified_robustness_detail.csv"
+          )
+
+          summary_path = (
+              output / "stratified_robustness_summary.csv"
+          )
+
+          result = json.loads(
+              result_path.read_text(encoding="utf-8")
+          )
+
+          manifest = json.loads(
+              manifest_path.read_text(encoding="utf-8")
+          )
+
+          if result.get("version") != version:
+              raise SystemExit("Result version mismatch")
+
+          if manifest.get("version") != version:
+              raise SystemExit("Manifest version mismatch")
+
+          if result.get("execution_status") != "PASS":
+              raise SystemExit("Execution status mismatch")
+
+          if result.get("source_rows") != 7949826:
+              raise SystemExit("Source row count mismatch")
+
+          if result.get("input_detail_rows") != 6726:
+              raise SystemExit("Input detail count mismatch")
+
+          if result.get("detail_rows") != 28:
+              raise SystemExit("Detail count mismatch")
+
+          if result.get("summary_rows") != 4:
+              raise SystemExit("Summary count mismatch")
+
+          if result.get("bootstrap_repetitions") != 1000:
+              raise SystemExit("Bootstrap count mismatch")
+
+          if result.get("overall_decision") != "HOLD":
+              raise SystemExit("Unexpected decision")
+
+          for flag in (
+              "independent_oos_proven",
+              "statistical_independence_proven",
+              "causal_improvement_proven",
+              "profitability_proven",
+              "approved_for_live_trading",
+          ):
+              if result.get(flag) is not False:
+                  raise SystemExit(
+                      "Unsafe approval flag: " + flag
+                  )
+
+          expected_files = {
+              "stratified_robustness_detail.csv",
+              "stratified_robustness_summary.csv",
+              "stratified_robustness_result.json",
+          }
+
+          hashes = manifest.get("output_sha256")
+
+          if not isinstance(hashes, dict):
+              raise SystemExit("Missing SHA256 manifest")
+
+          if set(hashes) != expected_files:
+              raise SystemExit("Output file set mismatch")
+
+          for filename in sorted(expected_files):
+              path = output / filename
+
+              if not path.is_file():
+                  raise SystemExit(
+                      "Missing output: " + filename
+                  )
+
+              if sha256(path) != hashes[filename]:
+                  raise SystemExit(
+                      "SHA256 mismatch: " + filename
+                  )
+
+              print("[PASS] SHA256:", filename)
+
+          with detail_path.open(
+              encoding="utf-8-sig",
+              newline="",
+          ) as f:
+              details = list(csv.DictReader(f))
+
+          with summary_path.open(
+              encoding="utf-8-sig",
+              newline="",
+          ) as f:
+              summaries = list(csv.DictReader(f))
+
+          if len(details) != 28:
+              raise SystemExit("Detail CSV count mismatch")
+
+          if len(summaries) != 4:
+              raise SystemExit("Summary CSV count mismatch")
+
+          expected_groups = {
+              ("h1", "2025"),
+              ("h1", "2026"),
+              ("h4", "2025"),
+              ("h4", "2026"),
+          }
+
+          expected_thresholds = {
+              "1", "3", "5", "10", "20", "30", "50"
+          }
+
+          actual_groups = {
+              (r["timeframe"], r["test_year"])
+              for r in summaries
+          }
+
+          if actual_groups != expected_groups:
+              raise SystemExit("Summary groups mismatch")
+
+          for tf, year in expected_groups:
+              selected = [
+                  r for r in details
+                  if (
+                      r["timeframe"] == tf
+                      and r["test_year"] == year
+                  )
+              ]
+
+              if len(selected) != 7:
+                  raise SystemExit(
+                      "Threshold group count mismatch"
+                  )
+
+              actual_thresholds = {
+                  r["minimum_per_cohort"]
+                  for r in selected
+              }
+
+              if actual_thresholds != expected_thresholds:
+                  raise SystemExit(
+                      "Threshold set mismatch"
+                  )
+
+              for row in selected:
+                  total = int(row["total_strata"])
+                  eligible = int(row["eligible_strata"])
+                  excluded = int(row["excluded_strata"])
+
+                  if total != eligible + excluded:
+                      raise SystemExit(
+                          "Stratum count mismatch"
+                      )
+
+                  repetitions = int(
+                      row["bootstrap_valid_repetitions"]
+                  )
+
+                  if not 0 <= repetitions <= 1000:
+                      raise SystemExit(
+                          "Invalid bootstrap repetitions"
+                      )
+
+                  if row["decision"] != "HOLD":
+                      raise SystemExit(
+                          "Unexpected detail decision"
+                      )
+
+          for row in summaries:
+              if row["decision"] != "HOLD":
+                  raise SystemExit(
+                      "Unexpected summary decision"
+                  )
+
+          print("[PASS] Clean V003-8")
+          print("[PASS] 28 threshold comparisons")
+          print("[PASS] Four summary groups")
+          print("[PASS] SHA256 integrity")
+          print("[DECISION] HOLD")
+          '@ | py -
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Output verification failed"
+          }
+
+      - name: Upload robustness results
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-stratified-robustness-v003-8
+          path: |
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_stratified_robustness/stratified_robustness_detail.csv
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_stratified_robustness/stratified_robustness_summary.csv
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_stratified_robustness/stratified_robustness_result.json
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_stratified_robustness/stratified_robustness_manifest.json
+          if-no-files-found: error
+          retention-days: 14
