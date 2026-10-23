@@ -29,79 +29,188 @@ jobs:
 
       - name: Check Python and dependencies
         run: |
+          $ErrorActionPreference = "Stop"
+
           py --version
           if ($LASTEXITCODE -ne 0) {
-            throw "Python launcher is unavailable"
+            throw "Python launcher unavailable"
           }
 
           py -c "import numpy, pandas; print('Dependencies OK')"
           if ($LASTEXITCODE -ne 0) {
-            throw "Required Python dependencies are unavailable"
+            throw "Python dependencies unavailable"
           }
 
       - name: Check audit script
         run: |
-          if (-not (Test-Path "audit_256_independent_recomputation.py")) {
-            throw "Audit script missing"
+          $ErrorActionPreference = "Stop"
+
+          $script = "audit_256_independent_recomputation.py"
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Missing audit script: $script"
           }
 
-          py -m py_compile audit_256_independent_recomputation.py
+          py -m py_compile $script
           if ($LASTEXITCODE -ne 0) {
             throw "Audit script syntax validation failed"
           }
 
+      - name: Locate required source directories
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $repo = (Get-Location).Path
+          $parent = Split-Path $repo -Parent
+          $grandparent = Split-Path $parent -Parent
+
+          $roots = @(
+            $repo,
+            $parent,
+            $grandparent,
+            "C:\Users\USER\Documents\upbit-surge-monitor"
+          ) | Select-Object -Unique
+
+          $required = @(
+            "data\features\h1",
+            "data\signals\256\h1"
+          )
+
+          $selected = $null
+
+          foreach ($root in $roots) {
+            if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+              continue
+            }
+
+            $valid = $true
+
+            foreach ($relative in $required) {
+              $candidate = Join-Path $root $relative
+
+              if (-not (Test-Path -LiteralPath $candidate -PathType Container)) {
+                $valid = $false
+                break
+              }
+            }
+
+            if ($valid) {
+              $selected = (Resolve-Path -LiteralPath $root).Path
+              break
+            }
+          }
+
+          if (-not $selected) {
+            Write-Host "Required source directories not found."
+            Write-Host "Checked locations:"
+
+            foreach ($root in $roots) {
+              Write-Host " - $root"
+            }
+
+            throw "Missing independent recomputation source data. Run the feature and 256 signal generation workflows first."
+          }
+
+          Write-Host "Selected source root: $selected"
+
+          "AUDIT_SOURCE_ROOT=$selected" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Prepare isolated audit workspace
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $sourceRoot = $env:AUDIT_SOURCE_ROOT
+          $repo = (Get-Location).Path
+
+          $workspace = Join-Path $env:RUNNER_TEMP "pattern256_independent_recomputation"
+
+          if (Test-Path -LiteralPath $workspace) {
+            Remove-Item -LiteralPath $workspace -Recurse -Force
+          }
+
+          New-Item -ItemType Directory -Path $workspace -Force | Out-Null
+
+          $workspaceData = Join-Path $workspace "data"
+
+          New-Item -ItemType Directory -Path $workspaceData -Force | Out-Null
+
+          $folders = @(
+            "features",
+            "signals"
+          )
+
+          foreach ($folder in $folders) {
+            $source = Join-Path $sourceRoot "data\$folder"
+            $destination = Join-Path $workspaceData $folder
+
+            if (-not (Test-Path -LiteralPath $source -PathType Container)) {
+              throw "Missing source folder: $source"
+            }
+
+            Copy-Item -LiteralPath $source `
+              -Destination $destination `
+              -Recurse -Force
+          }
+
+          Write-Host "Audit workspace prepared: $workspace"
+
+          "AUDIT_WORKSPACE=$workspace" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: Run independent recomputation audit
         run: |
-          py audit_256_independent_recomputation.py --root .
+          $ErrorActionPreference = "Stop"
+
+          py audit_256_independent_recomputation.py `
+            --root "$env:AUDIT_WORKSPACE"
 
           if ($LASTEXITCODE -ne 0) {
             throw "Independent recomputation audit failed"
           }
 
       - name: Validate audit result
-        if: success()
         run: |
-          @'
-          import json
-          from pathlib import Path
+          $ErrorActionPreference = "Stop"
 
-          path = Path(
-              "data/reports/pattern_256_independent_recomputation/audit_result.json"
-          )
+          $resultPath = Join-Path `
+            $env:AUDIT_WORKSPACE `
+            "data\reports\pattern_256_independent_recomputation\audit_result.json"
 
-          if not path.is_file():
-              raise SystemExit("Missing audit_result.json")
-
-          result = json.loads(
-              path.read_text(encoding="utf-8")
-          )
-
-          if result.get("version") != "Clean V003-26":
-              raise SystemExit("Unexpected audit version")
-
-          if result.get("status") != "PASS":
-              raise SystemExit("Audit status is not PASS")
-
-          if result.get("failed_jobs") != 0:
-              raise SystemExit("Failed audit jobs detected")
-
-          if result.get("jobs", 0) <= 0:
-              raise SystemExit("No audited jobs")
-
-          if result.get("audited_rows", 0) <= 0:
-              raise SystemExit("No audited rows")
-
-          if result.get("approved_for_live_trading") is not False:
-              raise SystemExit("Unexpected trading approval")
-
-          print("AUDIT RESULT: PASS")
-          print("Jobs:", result["jobs"])
-          print("Rows:", result["audited_rows"])
-          '@ | py -
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "Audit result validation failed"
+          if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
+            throw "Audit result JSON missing"
           }
+
+          $result = Get-Content -LiteralPath $resultPath -Raw |
+            ConvertFrom-Json
+
+          if ($result.version -ne "Clean V003-26") {
+            throw "Unexpected audit version"
+          }
+
+          if ($result.status -ne "PASS") {
+            throw "Audit status is not PASS"
+          }
+
+          if ([int]$result.failed_jobs -ne 0) {
+            throw "Failed audit jobs detected"
+          }
+
+          if ([int]$result.jobs -le 0) {
+            throw "No audited jobs"
+          }
+
+          if ([int64]$result.audited_rows -le 0) {
+            throw "No audited rows"
+          }
+
+          if ($result.approved_for_live_trading -ne $false) {
+            throw "Unexpected live trading approval"
+          }
+
+          Write-Host "Independent recomputation audit PASS"
+          Write-Host "Audited jobs: $($result.jobs)"
+          Write-Host "Audited rows: $($result.audited_rows)"
 
       - name: Upload audit reports
         if: always()
@@ -109,7 +218,6 @@ jobs:
         with:
           name: pattern-256-independent-recomputation-v003-26
           path: |
-            data/reports/pattern_256_independent_recomputation/audit_result.json
-            data/reports/pattern_256_independent_recomputation/audit_summary.csv
+            ${{ runner.temp }}/pattern256_independent_recomputation/data/reports/pattern_256_independent_recomputation/
           if-no-files-found: warn
           retention-days: 14
