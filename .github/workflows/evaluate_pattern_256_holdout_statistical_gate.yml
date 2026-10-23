@@ -1,0 +1,271 @@
+
+name: evaluate_pattern_256_holdout_statistical_gate.yml
+
+on:
+  workflow_dispatch:
+    inputs:
+      holdout_run_id:
+        description: "Successful temporal holdout workflow Run ID"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: pattern-256-holdout-statistical-gate
+  cancel-in-progress: false
+
+jobs:
+  statistical-gate:
+    name: statistical-gate
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      SCRIPT_NAME: evaluate_pattern_256_holdout_statistical_gate.py
+      EXPECTED_VERSION: Clean V001
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate Python and script
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Analysis script missing"
+          }
+
+          py -m py_compile "$script"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax check failed"
+          }
+
+      - name: Download temporal holdout artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pattern-256-temporal-holdout-full-v001
+          run-id: ${{ inputs.holdout_run_id }}
+          github-token: ${{ github.token }}
+          path: holdout_input
+
+      - name: Prepare isolated workspace
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $workspace = Join-Path `
+            $env:RUNNER_TEMP `
+            "pattern256_statistical_${{ github.run_id }}_${{ github.run_attempt }}"
+
+          if (Test-Path -LiteralPath $workspace) {
+            throw "Workspace already exists"
+          }
+
+          $target = Join-Path `
+            $workspace `
+            "data\reports\pattern_256_temporal_holdout"
+
+          New-Item `
+            -ItemType Directory `
+            -Path $target `
+            -Force | Out-Null
+
+          $files = @(
+            Get-ChildItem `
+              -LiteralPath "holdout_input" `
+              -Recurse `
+              -File `
+              -Filter "temporal_holdout_comparison.csv"
+          )
+
+          if ($files.Count -ne 1) {
+            throw "Expected exactly one comparison CSV"
+          }
+
+          Copy-Item `
+            -LiteralPath $files[0].FullName `
+            -Destination (
+              Join-Path `
+                $target `
+                "temporal_holdout_comparison.csv"
+            ) `
+            -ErrorAction Stop
+
+          "STATISTICAL_WORKSPACE=$workspace" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Append `
+              -Encoding utf8
+
+          Write-Host "WORKSPACE READY"
+
+      - name: Run statistical gate
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
+
+          py "$script" --root "$env:STATISTICAL_WORKSPACE"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Statistical gate execution failed"
+          }
+
+      - name: Validate result and SHA256
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $output = Join-Path `
+            $env:STATISTICAL_WORKSPACE `
+            "data\reports\pattern_256_holdout_statistical_gate"
+
+          $resultPath = Join-Path `
+            $output `
+            "statistical_gate_result.json"
+
+          $manifestPath = Join-Path `
+            $output `
+            "statistical_gate_manifest.json"
+
+          if (-not (Test-Path -LiteralPath $resultPath)) {
+            throw "Result JSON missing"
+          }
+
+          if (-not (Test-Path -LiteralPath $manifestPath)) {
+            throw "Manifest JSON missing"
+          }
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw `
+            -Encoding UTF8 |
+            ConvertFrom-Json
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw `
+            -Encoding UTF8 |
+            ConvertFrom-Json
+
+          if ($result.version -ne $env:EXPECTED_VERSION) {
+            throw "Result version mismatch"
+          }
+
+          if ($result.execution_status -ne "PASS") {
+            throw "Execution status is not PASS"
+          }
+
+          if ($result.research_decision -ne "HOLD") {
+            throw "Unexpected research decision"
+          }
+
+          if ($result.approved_for_live_trading -ne $false) {
+            throw "Unexpected trading approval"
+          }
+
+          if ($result.statistical_independence_proven -ne $false) {
+            throw "Unexpected independence claim"
+          }
+
+          if ($result.comparison_rows -ne 18) {
+            throw "Unexpected comparison row count"
+          }
+
+          if ($manifest.version -ne $env:EXPECTED_VERSION) {
+            throw "Manifest version mismatch"
+          }
+
+          $hashes = @(
+            $manifest.output_sha256.PSObject.Properties
+          )
+
+          if ($hashes.Count -ne 2) {
+            throw "Unexpected output hash count"
+          }
+
+          foreach ($entry in $hashes) {
+            $filename = [string]$entry.Name
+            $expected = [string]$entry.Value
+
+            if ([IO.Path]::GetFileName($filename) -ne $filename) {
+              throw "Unsafe manifest filename"
+            }
+
+            if ($expected -notmatch '^[0-9a-fA-F]{64}$') {
+              throw "Invalid SHA256"
+            }
+
+            $path = Join-Path $output $filename
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Output missing: $filename"
+            }
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash
+
+            if ($actual -ne $expected) {
+              throw "SHA256 mismatch: $filename"
+            }
+
+            Write-Host "SHA256 PASS: $filename"
+          }
+
+          Write-Host "VALIDATION PASS"
+
+          @(
+            "## Pattern 256 Statistical Gate",
+            "",
+            "| Metric | Result |",
+            "|---|---|",
+            "| Execution | PASS |",
+            "| Research decision | HOLD |",
+            "| TEST improvements | $($result.test_observed_improvements) |",
+            "| TEST deteriorations | $($result.test_observed_deteriorations) |",
+            "| TEST small samples | $($result.test_small_samples) |",
+            "| Independent OOS proven | False |",
+            "| Live trading approved | False |",
+            "",
+            "The exploratory statistics do not prove independent observations."
+          ) |
+            Out-File `
+              -FilePath $env:GITHUB_STEP_SUMMARY `
+              -Append `
+              -Encoding utf8
+
+      - name: Upload statistical reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-holdout-statistical-gate-v001
+          path: |
+            ${{ runner.temp }}/pattern256_statistical_${{ github.run_id }}_${{ github.run_attempt }}/data/reports/pattern_256_holdout_statistical_gate/
+          if-no-files-found: warn
+          retention-days: 14
