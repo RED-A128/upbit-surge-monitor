@@ -1,0 +1,280 @@
+
+name: evaluate_pattern_256_candidate_reliability.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evaluate-pattern-256-candidate-reliability
+  cancel-in-progress: false
+
+jobs:
+  candidate-reliability:
+    name: candidate-reliability
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 60
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PROJECT_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+      SCRIPT_NAME: evaluate_pattern_256_candidate_reliability.py
+      OUTPUT_RELATIVE: data/reports/pattern_256_candidate_reliability
+      EXPECTED_VERSION: Clean V003-12
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Python and inputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Python script not found: $script"
+          }
+
+          $inputDir = Join-Path `
+            $env:PROJECT_ROOT `
+            "data/reports/pattern_256_concentration_audit"
+
+          $files = @(
+            "concentration_exclusion.csv",
+            "concentration_markets.csv",
+            "concentration_result.json",
+            "concentration_manifest.json"
+          )
+
+          foreach ($file in $files) {
+            $path = Join-Path $inputDir $file
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing input: $path"
+            }
+          }
+
+          Write-Host "[PASS] Script and inputs found"
+
+      - name: Run candidate reliability audit
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
+
+          py -u $script --root $env:PROJECT_ROOT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Candidate reliability audit failed"
+          }
+
+      - name: Verify output integrity
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          @'
+          import csv
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["PROJECT_ROOT"])
+          output = root / os.environ["OUTPUT_RELATIVE"]
+          version = os.environ["EXPECTED_VERSION"]
+
+          def sha256(path):
+              digest = hashlib.sha256()
+              with path.open("rb") as handle:
+                  for chunk in iter(
+                      lambda: handle.read(1024 * 1024),
+                      b"",
+                  ):
+                      digest.update(chunk)
+              return digest.hexdigest()
+
+          def read_csv(name):
+              with (output / name).open(
+                  encoding="utf-8-sig",
+                  newline="",
+              ) as handle:
+                  return list(csv.DictReader(handle))
+
+          result = json.loads(
+              (output / "candidate_reliability_result.json")
+              .read_text(encoding="utf-8")
+          )
+
+          manifest = json.loads(
+              (output / "candidate_reliability_manifest.json")
+              .read_text(encoding="utf-8")
+          )
+
+          if result.get("version") != version:
+              raise SystemExit("Result version mismatch")
+
+          if manifest.get("version") != version:
+              raise SystemExit("Manifest version mismatch")
+
+          if result.get("execution_status") != "PASS":
+              raise SystemExit("Execution not PASS")
+
+          if result.get("overall_decision") != "HOLD":
+              raise SystemExit("Decision mismatch")
+
+          if result.get("market_count") != 209:
+              raise SystemExit("Market count mismatch")
+
+          if result.get("positive_both_years") != 26:
+              raise SystemExit("Replication count mismatch")
+
+          for flag in (
+              "independent_oos_proven",
+              "statistical_independence_proven",
+              "causal_improvement_proven",
+              "profitability_proven",
+              "approved_for_live_trading",
+          ):
+              if result.get(flag) is not False:
+                  raise SystemExit(
+                      "Unsafe approval flag: " + flag
+                  )
+
+          expected_files = {
+              "candidate_reliability_markets.csv",
+              "candidate_reliability_summary.csv",
+              "candidate_reliability_result.json",
+          }
+
+          hashes = manifest.get("output_sha256")
+
+          if not isinstance(hashes, dict):
+              raise SystemExit("Missing output SHA256")
+
+          if set(hashes) != expected_files:
+              raise SystemExit("Output file set mismatch")
+
+          for filename in sorted(expected_files):
+              path = output / filename
+
+              if not path.is_file():
+                  raise SystemExit(
+                      "Missing output: " + filename
+                  )
+
+              if sha256(path) != hashes[filename]:
+                  raise SystemExit(
+                      "SHA256 mismatch: " + filename
+                  )
+
+              print("[PASS] SHA256:", filename)
+
+          markets = read_csv(
+              "candidate_reliability_markets.csv"
+          )
+
+          summary = read_csv(
+              "candidate_reliability_summary.csv"
+          )
+
+          if len(markets) != 209:
+              raise SystemExit("Market rows mismatch")
+
+          if len(summary) != 4:
+              raise SystemExit("Summary rows mismatch")
+
+          if len({
+              row["market"] for row in markets
+          }) != 209:
+              raise SystemExit("Duplicate market")
+
+          if sum(
+              int(row["market_count"])
+              for row in summary
+          ) != 209:
+              raise SystemExit("Summary total mismatch")
+
+          if sum(
+              row["positive_both_years"].lower() == "true"
+              for row in markets
+          ) != 26:
+              raise SystemExit("Positive-both mismatch")
+
+          candidate_count = sum(
+              row["classification"] == "RESEARCH_CANDIDATE"
+              for row in markets
+          )
+
+          insufficient_count = sum(
+              row["classification"] == "INSUFFICIENT_SAMPLE"
+              for row in markets
+          )
+
+          if candidate_count + insufficient_count != 26:
+              raise SystemExit("Candidate partition mismatch")
+
+          if candidate_count != result.get(
+              "research_candidate_count"
+          ):
+              raise SystemExit("Candidate count mismatch")
+
+          if insufficient_count != result.get(
+              "insufficient_sample_count"
+          ):
+              raise SystemExit("Insufficient count mismatch")
+
+          if any(
+              row["approved_for_live_trading"].lower()
+              != "false"
+              for row in markets
+          ):
+              raise SystemExit("Unsafe market approval")
+
+          if any(
+              row["decision"] != "HOLD"
+              for row in summary
+          ):
+              raise SystemExit("Unsafe summary decision")
+
+          print("[PASS] Clean V003-12")
+          print("[PASS] Candidate reliability")
+          print("[PASS] SHA256 integrity")
+          print("[DECISION] HOLD")
+          '@ | py -
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Output verification failed"
+          }
+
+      - name: Upload candidate reliability results
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-candidate-reliability-v003-12
+          path: |
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_candidate_reliability/candidate_reliability_markets.csv
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_candidate_reliability/candidate_reliability_summary.csv
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_candidate_reliability/candidate_reliability_result.json
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_candidate_reliability/candidate_reliability_manifest.json
+          if-no-files-found: error
+          retention-days: 14
