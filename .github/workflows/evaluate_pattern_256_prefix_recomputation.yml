@@ -1,0 +1,1156 @@
+
+name: evaluate_pattern_256_prefix_recomputation.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evaluate-pattern-256-prefix-recomputation
+  cancel-in-progress: false
+
+jobs:
+  prefix-recomputation:
+    name: prefix-recomputation
+    runs-on: [self-hosted, Windows]
+    timeout-minutes: 45
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PROJECT_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+      AUDIT_VERSION: Clean V003-25
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Python
+        run: |
+          $ErrorActionPreference = "Stop"
+          py --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+      - name: Run historical prefix audit
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          @'
+          import ast
+          import csv
+          import hashlib
+          import io
+          import json
+          import os
+          import re
+          import sys
+          import tempfile
+
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+
+          VERSION = "Clean V003-25"
+
+          ROOT = Path(
+              os.environ["PROJECT_ROOT"]
+          ).resolve()
+
+          PREVIOUS = (
+              ROOT / "data" / "reports"
+              / "pattern_256_pit_findings_review"
+          )
+
+          OUTPUT = (
+              ROOT / "data" / "reports"
+              / "pattern_256_prefix_recomputation"
+          )
+
+          SOURCES = (
+              "build_features.py",
+              "detect_256.py",
+              "validate_256.py",
+          )
+
+          OUTPUT_NAMES = (
+              "prefix_recomputation_findings.csv",
+              "prefix_recomputation_result.json",
+          )
+
+
+          def sha256(path):
+              h = hashlib.sha256()
+
+              with path.open("rb") as stream:
+                  while True:
+                      chunk = stream.read(
+                          1024 * 1024
+                      )
+
+                      if not chunk:
+                          break
+
+                      h.update(chunk)
+
+              return h.hexdigest()
+
+
+          def load_json(path):
+              return json.loads(
+                  path.read_text(
+                      encoding="utf-8-sig"
+                  )
+              )
+
+
+          def require(condition, message):
+              if not condition:
+                  raise RuntimeError(message)
+
+
+          def save_atomic(path, content):
+              path.parent.mkdir(
+                  parents=True,
+                  exist_ok=True,
+              )
+
+              fd, temporary = tempfile.mkstemp(
+                  prefix=".prefix_",
+                  suffix=".tmp",
+                  dir=str(path.parent),
+              )
+
+              temporary = Path(temporary)
+
+              try:
+                  with os.fdopen(
+                      fd,
+                      "w",
+                      encoding="utf-8",
+                      newline="",
+                  ) as stream:
+                      stream.write(content)
+                      stream.flush()
+                      os.fsync(stream.fileno())
+
+                  os.replace(
+                      temporary,
+                      path,
+                  )
+
+              finally:
+                  if temporary.exists():
+                      temporary.unlink()
+
+
+          def csv_text(header, rows):
+              buffer = io.StringIO(
+                  newline=""
+              )
+
+              writer = csv.writer(
+                  buffer,
+                  lineterminator="\n",
+              )
+
+              writer.writerow(header)
+              writer.writerows(rows)
+
+              return buffer.getvalue()
+
+
+          def json_text(value):
+              return json.dumps(
+                  value,
+                  indent=2,
+                  sort_keys=True,
+                  ensure_ascii=False,
+                  allow_nan=False,
+              ) + "\n"
+
+
+          def verify_previous():
+              manifest_path = (
+                  PREVIOUS
+                  / "pit_findings_review_manifest.json"
+              )
+
+              manifest = load_json(
+                  manifest_path
+              )
+
+              result = load_json(
+                  PREVIOUS
+                  / "pit_findings_review_result.json"
+              )
+
+              require(
+                  manifest.get("version")
+                  == "Clean V003-24",
+                  "Previous manifest version mismatch",
+              )
+
+              require(
+                  result.get("version")
+                  == "Clean V003-24",
+                  "Previous result version mismatch",
+              )
+
+              require(
+                  result.get("execution_status")
+                  == "PASS",
+                  "Previous audit not PASS",
+              )
+
+              require(
+                  result.get("overall_decision")
+                  == "HOLD",
+                  "Previous HOLD missing",
+              )
+
+              require(
+                  result.get(
+                      "approved_for_live_trading"
+                  ) is False,
+                  "Unsafe previous approval",
+              )
+
+              hashes = manifest.get(
+                  "output_sha256", {}
+              )
+
+              require(
+                  set(hashes)
+                  == {
+                      "pit_findings_review.csv",
+                      "pit_findings_review_result.json",
+                  },
+                  "Previous output list mismatch",
+              )
+
+              for name, expected in hashes.items():
+                  require(
+                      sha256(
+                          PREVIOUS / name
+                      ) == expected,
+                      "Previous output changed: "
+                      + name,
+                  )
+
+              source_hashes = (
+                  manifest.get(
+                      "input_sha256", {}
+                  ).get(
+                      "implementation_files", {}
+                  )
+              )
+
+              require(
+                  set(source_hashes)
+                  == set(SOURCES),
+                  "Source list mismatch",
+              )
+
+              for name, expected in (
+                  source_hashes.items()
+              ):
+                  require(
+                      sha256(
+                          ROOT / name
+                      ) == expected,
+                      "Source changed: " + name,
+                  )
+
+              with (
+                  PREVIOUS
+                  / "pit_findings_review.csv"
+              ).open(
+                  "r",
+                  encoding="utf-8-sig",
+                  newline="",
+              ) as stream:
+                  findings = list(
+                      csv.DictReader(stream)
+                  )
+
+              require(
+                  len(findings) == 2,
+                  "Expected two findings",
+              )
+
+              expected = {
+                  (
+                      "build_features.py",
+                      "DYNAMIC_SHIFT",
+                  ),
+                  (
+                      "validate_256.py",
+                      "NEGATIVE_ILOC",
+                  ),
+              }
+
+              actual = {
+                  (
+                      item["source_file"],
+                      item["original_category"],
+                  )
+                  for item in findings
+              }
+
+              require(
+                  actual == expected,
+                  "Unexpected findings",
+              )
+
+              return findings, {
+                  "previous_manifest":
+                      sha256(manifest_path),
+                  "previous_outputs": hashes,
+                  "implementation_files":
+                      source_hashes,
+              }
+
+
+          def ancestors(tree):
+              parents = {}
+
+              for parent in ast.walk(tree):
+                  for child in ast.iter_child_nodes(
+                      parent
+                  ):
+                      parents[id(child)] = parent
+
+              return parents
+
+
+          def enclosing_function(node, parents):
+              current = node
+
+              while id(current) in parents:
+                  current = parents[id(current)]
+
+                  if isinstance(
+                      current,
+                      (
+                          ast.FunctionDef,
+                          ast.AsyncFunctionDef,
+                      ),
+                  ):
+                      return current
+
+              return None
+
+
+          def shift_audit(tree, finding):
+              line = int(
+                  finding["line"]
+              )
+
+              parents = ancestors(tree)
+
+              matches = [
+                  node
+                  for node in ast.walk(tree)
+                  if isinstance(node, ast.Call)
+                  and node.lineno == line
+                  and isinstance(
+                      node.func,
+                      ast.Attribute,
+                  )
+                  and node.func.attr == "shift"
+              ]
+
+              if len(matches) != 1:
+                  return (
+                      "UNRESOLVED",
+                      "Shift call not uniquely found",
+                  )
+
+              call = matches[0]
+
+              function = enclosing_function(
+                  call,
+                  parents,
+              )
+
+              if (
+                  function is None
+                  or function.name
+                  != finding["function"]
+              ):
+                  return (
+                      "UNRESOLVED",
+                      "Function mismatch",
+                  )
+
+              if (
+                  len(call.args) != 1
+                  or not isinstance(
+                      call.args[0],
+                      ast.Name,
+                  )
+              ):
+                  return (
+                      "UNRESOLVED",
+                      "Dynamic shift argument mismatch",
+                  )
+
+              variable = call.args[0].id
+
+              parameters = [
+                  arg.arg
+                  for arg in (
+                      function.args.posonlyargs
+                      + function.args.args
+                      + function.args.kwonlyargs
+                  )
+              ]
+
+              if variable not in parameters:
+                  return (
+                      "UNRESOLVED",
+                      "Lookback is not a direct parameter",
+                  )
+
+              index = parameters.index(
+                  variable
+              )
+
+              positional = (
+                  function.args.posonlyargs
+                  + function.args.args
+              )
+
+              default_map = {}
+
+              if function.args.defaults:
+                  start = (
+                      len(positional)
+                      - len(function.args.defaults)
+                  )
+
+                  for i, default in enumerate(
+                      function.args.defaults
+                  ):
+                      default_map[
+                          positional[start + i].arg
+                      ] = default
+
+              for arg, default in zip(
+                  function.args.kwonlyargs,
+                  function.args.kw_defaults,
+              ):
+                  if default is not None:
+                      default_map[
+                          arg.arg
+                      ] = default
+
+              default = default_map.get(
+                  variable
+              )
+
+              default_text = (
+                  ast.unparse(default)
+                  if default is not None
+                  else "required"
+              )
+
+              calls = []
+
+              for node in ast.walk(tree):
+                  if not isinstance(
+                      node,
+                      ast.Call,
+                  ):
+                      continue
+
+                  if isinstance(
+                      node.func,
+                      ast.Name,
+                  ):
+                      if node.func.id == function.name:
+                          calls.append(node)
+
+              inspected = 0
+              unknown = 0
+              negative = 0
+
+              for invocation in calls:
+                  value = None
+
+                  if index < len(
+                      invocation.args
+                  ):
+                      value = invocation.args[
+                          index
+                      ]
+
+                  for keyword in (
+                      invocation.keywords
+                  ):
+                      if keyword.arg == variable:
+                          value = keyword.value
+
+                  if value is None:
+                      value = default
+
+                  inspected += 1
+
+                  if value is None:
+                      unknown += 1
+                      continue
+
+                  try:
+                      literal = ast.literal_eval(
+                          value
+                      )
+
+                  except (
+                      ValueError,
+                      TypeError,
+                      SyntaxError,
+                      MemoryError,
+                      RecursionError,
+                  ):
+                      unknown += 1
+                      continue
+
+                  if (
+                      not isinstance(
+                          literal, int
+                      )
+                      or isinstance(
+                          literal, bool
+                      )
+                  ):
+                      unknown += 1
+
+                  elif literal < 0:
+                      negative += 1
+
+              details = (
+                  "parameter="
+                  + variable
+                  + "; default="
+                  + default_text
+                  + "; direct_calls="
+                  + str(inspected)
+                  + "; unknown_calls="
+                  + str(unknown)
+                  + "; negative_calls="
+                  + str(negative)
+              )
+
+              if negative:
+                  return (
+                      "CONFIRMED_RISK",
+                      details,
+                  )
+
+              if (
+                  inspected == 0
+                  or unknown > 0
+              ):
+                  return (
+                      "UNRESOLVED",
+                      details
+                      + "; external callers "
+                      "not exhaustively proven",
+                  )
+
+              return (
+                  "STATIC_CALLS_NONNEGATIVE",
+                  details
+                  + "; runtime values "
+                  "not exhaustively proven",
+              )
+
+
+          def iloc_audit(tree, finding):
+              line = int(
+                  finding["line"]
+              )
+
+              parents = ancestors(tree)
+
+              matches = [
+                  node
+                  for node in ast.walk(tree)
+                  if isinstance(
+                      node,
+                      ast.Subscript,
+                  )
+                  and node.lineno == line
+                  and isinstance(
+                      node.value,
+                      ast.Attribute,
+                  )
+                  and node.value.attr == "iloc"
+              ]
+
+              matches = [
+                  node
+                  for node in matches
+                  if isinstance(
+                      node.slice,
+                      ast.UnaryOp,
+                  )
+                  and isinstance(
+                      node.slice.op,
+                      ast.USub,
+                  )
+                  and isinstance(
+                      node.slice.operand,
+                      ast.Constant,
+                  )
+                  and node.slice.operand.value == 1
+              ]
+
+              if len(matches) != 1:
+                  return (
+                      "UNRESOLVED",
+                      "iloc[-1] not uniquely resolved",
+                  )
+
+              node = matches[0]
+
+              function = enclosing_function(
+                  node,
+                  parents,
+              )
+
+              if (
+                  function is None
+                  or function.name
+                  != finding["function"]
+              ):
+                  return (
+                      "UNRESOLVED",
+                      "Function mismatch",
+                  )
+
+              receiver = node.value.value
+
+              receiver_text = ast.unparse(
+                  receiver
+              )
+
+              context = ast.get_source_segment(
+                  (
+                      ROOT / "validate_256.py"
+                  ).read_text(
+                      encoding="utf-8-sig"
+                  ),
+                  function,
+              ) or ""
+
+              details = (
+                  "receiver="
+                  + receiver_text
+                  + "; function="
+                  + function.name
+                  + "; function_lines="
+                  + str(
+                      function.end_lineno
+                      - function.lineno
+                      + 1
+                  )
+              )
+
+              # This inspection identifies the exact
+              # use but does not prove closed-candle
+              # semantics or future-data isolation.
+              return (
+                  "CONTEXT_IDENTIFIED",
+                  details
+                  + "; prefix-only data flow "
+                  "still requires runtime testing",
+              )
+
+
+          def verify_existing(inputs):
+              manifest_path = (
+                  OUTPUT
+                  / "prefix_recomputation_manifest.json"
+              )
+
+              if not manifest_path.is_file():
+                  return False
+
+              try:
+                  manifest = load_json(
+                      manifest_path
+                  )
+
+                  result = load_json(
+                      OUTPUT
+                      / "prefix_recomputation_result.json"
+                  )
+
+                  if (
+                      manifest.get("version")
+                      != VERSION
+                  ):
+                      return False
+
+                  if (
+                      manifest.get("input_sha256")
+                      != inputs
+                  ):
+                      return False
+
+                  if (
+                      result.get("version")
+                      != VERSION
+                  ):
+                      return False
+
+                  if (
+                      result.get("execution_status")
+                      != "PASS"
+                  ):
+                      return False
+
+                  if (
+                      result.get("overall_decision")
+                      != "HOLD"
+                  ):
+                      return False
+
+                  if (
+                      result.get(
+                          "approved_for_live_trading"
+                      ) is not False
+                  ):
+                      return False
+
+                  hashes = manifest.get(
+                      "output_sha256", {}
+                  )
+
+                  if set(hashes) != set(
+                      OUTPUT_NAMES
+                  ):
+                      return False
+
+                  for name, expected in (
+                      hashes.items()
+                  ):
+                      if sha256(
+                          OUTPUT / name
+                      ) != expected:
+                          return False
+
+                  return True
+
+              except (
+                  OSError,
+                  ValueError,
+                  KeyError,
+                  TypeError,
+              ):
+                  return False
+
+
+          def main():
+              findings, inputs = (
+                  verify_previous()
+              )
+
+              if verify_existing(inputs):
+                  print(
+                      "[SKIP] Verified completed audit"
+                  )
+                  print("[DECISION] HOLD")
+                  return 0
+
+              if OUTPUT.exists():
+                  require(
+                      not any(OUTPUT.iterdir()),
+                      "Existing incomplete output "
+                      "must be inspected; "
+                      "no automatic overwrite",
+                  )
+
+              trees = {}
+
+              for name in SOURCES:
+                  trees[name] = ast.parse(
+                      (
+                          ROOT / name
+                      ).read_text(
+                          encoding="utf-8-sig"
+                      ),
+                      filename=name,
+                  )
+
+              rows = []
+
+              for finding in findings:
+                  category = finding[
+                      "original_category"
+                  ]
+
+                  filename = finding[
+                      "source_file"
+                  ]
+
+                  if category == "DYNAMIC_SHIFT":
+                      status, details = shift_audit(
+                          trees[filename],
+                          finding,
+                      )
+
+                  elif category == "NEGATIVE_ILOC":
+                      status, details = iloc_audit(
+                          trees[filename],
+                          finding,
+                      )
+
+                  else:
+                      status = "UNRESOLVED"
+                      details = (
+                          "Unknown category"
+                      )
+
+                  rows.append([
+                      filename,
+                      finding["line"],
+                      finding["function"],
+                      category,
+                      status,
+                      details,
+                  ])
+
+              confirmed = sum(
+                  row[4] == "CONFIRMED_RISK"
+                  for row in rows
+              )
+
+              unresolved = sum(
+                  row[4] == "UNRESOLVED"
+                  for row in rows
+              )
+
+              result = {
+                  "version": VERSION,
+                  "execution_status": "PASS",
+                  "checked_at_utc":
+                      datetime.now(
+                          timezone.utc
+                      ).isoformat(
+                          timespec="seconds"
+                      ),
+                  "previous_evidence_verified":
+                      True,
+                  "source_hashes_verified":
+                      True,
+                  "finding_count":
+                      len(rows),
+                  "confirmed_static_risk_count":
+                      confirmed,
+                  "unresolved_static_count":
+                      unresolved,
+                  "dynamic_shift_call_review_completed":
+                      True,
+                  "negative_iloc_context_review_completed":
+                      True,
+                  "historical_prefix_recomputation_completed":
+                      False,
+                  "closed_candle_semantics_proven":
+                      False,
+                  "lookahead_absence_proven":
+                      False,
+                  "signal_definition_mathematically_verified":
+                      False,
+                  "ohlcv_continuity_verified":
+                      False,
+                  "independent_oos_proven":
+                      False,
+                  "profitability_proven":
+                      False,
+                  "new_prospective_events_created":
+                      0,
+                  "approved_for_live_trading":
+                      False,
+                  "overall_decision":
+                      "HOLD",
+                  "next_required_validation":
+                      "Execute actual full-history "
+                      "versus prefix-only recomputation "
+                      "on frozen historical OHLCV and "
+                      "compare signal values at identical "
+                      "closed-candle timestamps.",
+              }
+
+              OUTPUT.mkdir(
+                  parents=True,
+                  exist_ok=True,
+              )
+
+              save_atomic(
+                  OUTPUT
+                  / "prefix_recomputation_findings.csv",
+                  csv_text(
+                      (
+                          "source_file",
+                          "line",
+                          "function",
+                          "category",
+                          "review_status",
+                          "details",
+                      ),
+                      rows,
+                  ),
+              )
+
+              save_atomic(
+                  OUTPUT
+                  / "prefix_recomputation_result.json",
+                  json_text(result),
+              )
+
+              manifest = {
+                  "version": VERSION,
+                  "input_sha256": inputs,
+                  "output_sha256": {
+                      name: sha256(
+                          OUTPUT / name
+                      )
+                      for name in OUTPUT_NAMES
+                  },
+              }
+
+              save_atomic(
+                  OUTPUT
+                  / "prefix_recomputation_manifest.json",
+                  json_text(manifest),
+              )
+
+              require(
+                  verify_existing(inputs),
+                  "Final SHA256 verification failed",
+              )
+
+              print(
+                  "[PASS]", VERSION
+              )
+
+              print(
+                  "[FINDINGS]", len(rows)
+              )
+
+              print(
+                  "[CONFIRMED STATIC RISK]",
+                  confirmed,
+              )
+
+              print(
+                  "[UNRESOLVED]",
+                  unresolved,
+              )
+
+              print(
+                  "[RUNTIME PREFIX TEST] PENDING"
+              )
+
+              print(
+                  "[DECISION] HOLD"
+              )
+
+              return 0
+
+
+          if __name__ == "__main__":
+              try:
+                  sys.exit(main())
+
+              except KeyboardInterrupt:
+                  print(
+                      "[INTERRUPTED]",
+                      file=sys.stderr,
+                  )
+                  sys.exit(130)
+
+              except Exception as exc:
+                  print(
+                      "[FAIL]", str(exc),
+                      file=sys.stderr,
+                  )
+                  sys.exit(1)
+          '@ | py -
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Prefix audit failed"
+          }
+
+      - name: Verify output integrity
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          @'
+          import hashlib
+          import json
+          import os
+
+          from pathlib import Path
+
+
+          root = Path(
+              os.environ["PROJECT_ROOT"]
+          )
+
+          folder = (
+              root / "data" / "reports"
+              / "pattern_256_prefix_recomputation"
+          )
+
+          manifest = json.loads(
+              (
+                  folder
+                  / "prefix_recomputation_manifest.json"
+              ).read_text(
+                  encoding="utf-8"
+              )
+          )
+
+          result = json.loads(
+              (
+                  folder
+                  / "prefix_recomputation_result.json"
+              ).read_text(
+                  encoding="utf-8"
+              )
+          )
+
+          def digest(path):
+              h = hashlib.sha256()
+
+              with path.open("rb") as f:
+                  for chunk in iter(
+                      lambda: f.read(1024 * 1024),
+                      b"",
+                  ):
+                      h.update(chunk)
+
+              return h.hexdigest()
+
+
+          version = "Clean V003-25"
+
+          if manifest.get("version") != version:
+              raise SystemExit(
+                  "Manifest version mismatch"
+              )
+
+          if result.get("version") != version:
+              raise SystemExit(
+                  "Result version mismatch"
+              )
+
+          if result.get(
+              "execution_status"
+          ) != "PASS":
+              raise SystemExit(
+                  "Execution not PASS"
+              )
+
+          if result.get(
+              "overall_decision"
+          ) != "HOLD":
+              raise SystemExit(
+                  "HOLD decision missing"
+              )
+
+          if result.get(
+              "approved_for_live_trading"
+          ) is not False:
+              raise SystemExit(
+                  "Unsafe trading approval"
+              )
+
+          hashes = manifest[
+              "output_sha256"
+          ]
+
+          expected = {
+              "prefix_recomputation_findings.csv",
+              "prefix_recomputation_result.json",
+          }
+
+          if set(hashes) != expected:
+              raise SystemExit(
+                  "Unexpected output files"
+              )
+
+          for name, value in hashes.items():
+              if digest(
+                  folder / name
+              ) != value:
+                  raise SystemExit(
+                      "SHA256 mismatch: " + name
+                  )
+
+          inputs = manifest[
+              "input_sha256"
+          ]
+
+          previous = (
+              root / "data" / "reports"
+              / "pattern_256_pit_findings_review"
+          )
+
+          if digest(
+              previous
+              / "pit_findings_review_manifest.json"
+          ) != inputs["previous_manifest"]:
+              raise SystemExit(
+                  "Previous manifest changed"
+              )
+
+          for name, expected_hash in inputs[
+              "previous_outputs"
+          ].items():
+              if digest(
+                  previous / name
+              ) != expected_hash:
+                  raise SystemExit(
+                      "Previous output changed: " + name
+                  )
+
+          for name, expected_hash in inputs[
+              "implementation_files"
+          ].items():
+              if digest(
+                  root / name
+              ) != expected_hash:
+                  raise SystemExit(
+                      "Source changed: " + name
+                  )
+
+          print("[PASS] Clean V003-25")
+          print("[PASS] SHA256 integrity")
+          print("[DECISION] HOLD")
+          '@ | py -
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Output verification failed"
+          }
+
+      - name: Upload audit results
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-prefix-recomputation-v003-25
+          path: |
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_prefix_recomputation/prefix_recomputation_findings.csv
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_prefix_recomputation/prefix_recomputation_result.json
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_prefix_recomputation/prefix_recomputation_manifest.json
+          if-no-files-found: error
+          retention-days: 90
