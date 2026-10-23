@@ -1,0 +1,215 @@
+name: evaluate_pattern_256_market_regime.yml
+
+on:
+  workflow_dispatch:
+    inputs:
+      ohlcv_root:
+        description: "OHLCV directory relative to data root"
+        required: true
+        default: "data/ohlcv"
+        type: string
+
+jobs:
+  market-regime:
+    name: market-regime
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 180
+
+    defaults:
+      run:
+        shell: pwsh
+
+    env:
+      DATA_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+      SCRIPT_NAME: evaluate_pattern_256_market_regime.py
+      REPORT_DIR: data\reports\pattern_256_market_regime
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate Python
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python validation failed"
+          }
+
+      - name: Validate analysis script
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
+
+          if (-not (Test-Path -LiteralPath $script)) {
+            throw "Analysis script missing: $script"
+          }
+
+          py -m py_compile $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax validation failed"
+          }
+
+      - name: Validate source data
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $source = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_accumulation_candidate_independent_backtest\backtest_trades.csv"
+
+          if (-not (Test-Path -LiteralPath $source)) {
+            throw "Source CSV missing: $source"
+          }
+
+          $item = Get-Item -LiteralPath $source
+
+          if ($item.Length -le 0) {
+            throw "Source CSV is empty"
+          }
+
+          Write-Host "Source CSV confirmed"
+          Write-Host "Size: $($item.Length) bytes"
+
+      - name: Validate OHLCV directory
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $ohlcv = Join-Path `
+            $env:DATA_ROOT `
+            "${{ inputs.ohlcv_root }}"
+
+          if (-not (Test-Path -LiteralPath $ohlcv -PathType Container)) {
+            throw "OHLCV directory missing: $ohlcv"
+          }
+
+          Write-Host "OHLCV directory confirmed: $ohlcv"
+
+      - name: Run market regime validation
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
+
+          py $script `
+            --root $env:DATA_ROOT `
+            --ohlcv-root "${{ inputs.ohlcv_root }}" `
+            --lookback 60 `
+            --up-threshold 0.10 `
+            --down-threshold 0.08 `
+            --cutoff "2025-01-01T00:00:00+00:00" `
+            --test-end "2026-09-01T00:00:00+00:00"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Market regime validation failed"
+          }
+
+      - name: Verify result and SHA256
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $report = Join-Path `
+            $env:DATA_ROOT `
+            $env:REPORT_DIR
+
+          $resultPath = Join-Path `
+            $report `
+            "market_regime_result.json"
+
+          $csvPath = Join-Path `
+            $report `
+            "market_regime_comparison.csv"
+
+          $manifestPath = Join-Path `
+            $report `
+            "market_regime_manifest.json"
+
+          foreach ($path in @(
+            $resultPath,
+            $csvPath,
+            $manifestPath
+          )) {
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Missing output: $path"
+            }
+          }
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw | ConvertFrom-Json
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw | ConvertFrom-Json
+
+          if ($result.execution_status -ne "PASS") {
+            throw "Execution status is not PASS"
+          }
+
+          if ($result.research_decision -ne "HOLD") {
+            throw "Unexpected research decision"
+          }
+
+          if ($result.approved_for_live_trading -ne $false) {
+            throw "Live trading must remain disabled"
+          }
+
+          $source = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_accumulation_candidate_independent_backtest\backtest_trades.csv"
+
+          $sourceHash = (
+            Get-FileHash `
+              -LiteralPath $source `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if ($sourceHash -ne $manifest.source_sha256) {
+            throw "Source SHA256 mismatch"
+          }
+
+          foreach ($entry in $manifest.output_sha256.PSObject.Properties) {
+            $filePath = Join-Path $report $entry.Name
+
+            if (-not (Test-Path -LiteralPath $filePath)) {
+              throw "Missing manifest output: $filePath"
+            }
+
+            $actualHash = (
+              Get-FileHash `
+                -LiteralPath $filePath `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($actualHash -ne $entry.Value) {
+              throw "SHA256 mismatch: $($entry.Name)"
+            }
+          }
+
+          Write-Host "Execution: PASS"
+          Write-Host "SHA256: VERIFIED"
+          Write-Host "Research decision: HOLD"
+          Write-Host "Live trading: DISABLED"
+
+      - name: Upload market regime reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-market-regime-v001
+          path: |
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_market_regime\market_regime_comparison.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_market_regime\market_regime_result.json
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_market_regime\market_regime_manifest.json
+          if-no-files-found: warn
+          retention-days: 30
