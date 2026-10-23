@@ -1,0 +1,1076 @@
+
+name: evaluate_pattern_256_point_in_time_audit.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evaluate-pattern-256-point-in-time-audit
+  cancel-in-progress: false
+
+jobs:
+  point-in-time-audit:
+    name: point-in-time-audit
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PROJECT_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+      AUDIT_VERSION: Clean V003-23
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check Python
+        run: |
+          $ErrorActionPreference = "Stop"
+          py --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+      - name: Run point-in-time source audit
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          @'
+          import ast
+          import csv
+          import hashlib
+          import io
+          import json
+          import os
+          import sys
+          import tempfile
+
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+
+          VERSION = os.environ["AUDIT_VERSION"]
+
+          ROOT = Path(
+              os.environ["PROJECT_ROOT"]
+          ).resolve()
+
+          PREVIOUS = (
+              ROOT
+              / "data"
+              / "reports"
+              / "pattern_256_formula_evidence"
+          )
+
+          OUTPUT = (
+              ROOT
+              / "data"
+              / "reports"
+              / "pattern_256_point_in_time_audit"
+          )
+
+          SOURCES = (
+              "build_features.py",
+              "detect_256.py",
+              "validate_256.py",
+          )
+
+          REQUIRED_PREVIOUS = (
+              "formula_evidence_result.json",
+              "formula_evidence_lines.csv",
+              "formula_evidence_functions.csv",
+          )
+
+
+          def sha256(path):
+              value = hashlib.sha256()
+
+              with path.open("rb") as stream:
+                  while True:
+                      chunk = stream.read(1024 * 1024)
+
+                      if not chunk:
+                          break
+
+                      value.update(chunk)
+
+              return value.hexdigest()
+
+
+          def read_json(path):
+              return json.loads(
+                  path.read_text(
+                      encoding="utf-8-sig"
+                  )
+              )
+
+
+          def json_text(data):
+              return json.dumps(
+                  data,
+                  ensure_ascii=False,
+                  indent=2,
+                  sort_keys=True,
+                  allow_nan=False,
+              ) + "\n"
+
+
+          def csv_text(columns, rows):
+              buffer = io.StringIO(newline="")
+
+              writer = csv.writer(
+                  buffer,
+                  lineterminator="\n",
+              )
+
+              writer.writerow(columns)
+              writer.writerows(rows)
+
+              return buffer.getvalue()
+
+
+          def atomic_write(path, content):
+              path.parent.mkdir(
+                  parents=True,
+                  exist_ok=True,
+              )
+
+              fd, temporary_name = tempfile.mkstemp(
+                  prefix=".pit_",
+                  suffix=".tmp",
+                  dir=str(path.parent),
+              )
+
+              temporary = Path(temporary_name)
+
+              try:
+                  with os.fdopen(
+                      fd,
+                      "w",
+                      encoding="utf-8",
+                      newline="",
+                  ) as stream:
+                      stream.write(content)
+                      stream.flush()
+                      os.fsync(stream.fileno())
+
+                  os.replace(temporary, path)
+
+              finally:
+                  if temporary.exists():
+                      temporary.unlink()
+
+
+          def verify_inputs():
+              manifest_path = (
+                  PREVIOUS
+                  / "formula_evidence_manifest.json"
+              )
+
+              manifest = read_json(manifest_path)
+
+              result = read_json(
+                  PREVIOUS
+                  / "formula_evidence_result.json"
+              )
+
+              if manifest.get("version") != (
+                  "Clean V003-22"
+              ):
+                  raise ValueError(
+                      "Previous manifest version mismatch"
+                  )
+
+              if result.get("version") != (
+                  "Clean V003-22"
+              ):
+                  raise ValueError(
+                      "Previous result version mismatch"
+                  )
+
+              if result.get(
+                  "execution_status"
+              ) != "PASS":
+                  raise ValueError(
+                      "Previous audit not PASS"
+                  )
+
+              if result.get(
+                  "overall_decision"
+              ) != "HOLD":
+                  raise ValueError(
+                      "Previous decision mismatch"
+                  )
+
+              if result.get(
+                  "approved_for_live_trading"
+              ) is not False:
+                  raise ValueError(
+                      "Unsafe prior approval"
+                  )
+
+              expected_outputs = manifest.get(
+                  "output_sha256", {}
+              )
+
+              if set(expected_outputs) != set(
+                  REQUIRED_PREVIOUS
+              ):
+                  raise ValueError(
+                      "Previous output list mismatch"
+                  )
+
+              for name, expected in (
+                  expected_outputs.items()
+              ):
+                  path = PREVIOUS / name
+
+                  if not path.is_file():
+                      raise ValueError(
+                          "Missing prior output: " + name
+                      )
+
+                  if sha256(path) != expected:
+                      raise ValueError(
+                          "Previous SHA256 mismatch: "
+                          + name
+                      )
+
+              expected_sources = (
+                  manifest.get(
+                      "input_sha256", {}
+                  ).get(
+                      "implementation_files", {}
+                  )
+              )
+
+              if set(expected_sources) != set(
+                  SOURCES
+              ):
+                  raise ValueError(
+                      "Source list mismatch"
+                  )
+
+              for name, expected in (
+                  expected_sources.items()
+              ):
+                  path = ROOT / name
+
+                  if not path.is_file():
+                      raise ValueError(
+                          "Source missing: " + name
+                      )
+
+                  if sha256(path) != expected:
+                      raise ValueError(
+                          "Source SHA256 mismatch: "
+                          + name
+                      )
+
+              return {
+                  "previous_manifest": sha256(
+                      manifest_path
+                  ),
+                  "previous_outputs":
+                      expected_outputs,
+                  "implementation_files":
+                      expected_sources,
+              }
+
+
+          def numeric_constant(node):
+              if isinstance(node, ast.Constant):
+                  value = node.value
+
+                  if (
+                      isinstance(value, (int, float))
+                      and not isinstance(value, bool)
+                  ):
+                      return value
+
+              if isinstance(node, ast.UnaryOp):
+                  number = numeric_constant(
+                      node.operand
+                  )
+
+                  if number is None:
+                      return None
+
+                  if isinstance(
+                      node.op,
+                      ast.USub,
+                  ):
+                      return -number
+
+                  if isinstance(
+                      node.op,
+                      ast.UAdd,
+                  ):
+                      return number
+
+              return None
+
+
+          def function_name(node):
+              if isinstance(node, ast.Name):
+                  return node.id
+
+              if isinstance(node, ast.Attribute):
+                  return node.attr
+
+              return ""
+
+
+          def function_spans(tree):
+              spans = []
+
+              for node in ast.walk(tree):
+                  if isinstance(
+                      node,
+                      (
+                          ast.FunctionDef,
+                          ast.AsyncFunctionDef,
+                      ),
+                  ):
+                      spans.append((
+                          node.lineno,
+                          getattr(
+                              node,
+                              "end_lineno",
+                              node.lineno,
+                          ),
+                          node.name,
+                      ))
+
+              return spans
+
+
+          def owner(spans, line):
+              matches = [
+                  item
+                  for item in spans
+                  if item[0] <= line <= item[1]
+              ]
+
+              if not matches:
+                  return "<module>"
+
+              matches.sort(
+                  key=lambda item: (
+                      item[1] - item[0],
+                      item[0],
+                  )
+              )
+
+              return matches[0][2]
+
+
+          def source_excerpt(lines, line):
+              start = max(1, line - 2)
+              end = min(
+                  len(lines),
+                  line + 2,
+              )
+
+              return "\n".join(
+                  f"{number:05d}: "
+                  f"{lines[number - 1]}"
+                  for number in range(
+                      start,
+                      end + 1,
+                  )
+              )
+
+
+          def inspect_call(node):
+              findings = []
+
+              name = function_name(
+                  node.func
+              ).lower()
+
+              if name == "shift":
+                  value = None
+
+                  if node.args:
+                      value = numeric_constant(
+                          node.args[0]
+                      )
+
+                  for keyword in node.keywords:
+                      if keyword.arg == "periods":
+                          value = numeric_constant(
+                              keyword.value
+                          )
+
+                  if value is not None and value < 0:
+                      findings.append((
+                          "NEGATIVE_SHIFT",
+                          "HIGH",
+                          "Negative shift may access future rows",
+                      ))
+
+                  elif value is None:
+                      findings.append((
+                          "DYNAMIC_SHIFT",
+                          "REVIEW",
+                          "Shift offset requires runtime review",
+                      ))
+
+              if name in (
+                  "bfill",
+                  "backfill",
+              ):
+                  findings.append((
+                      "BACKWARD_FILL",
+                      "HIGH",
+                      "Backward fill may use future observations",
+                  ))
+
+              if name == "fillna":
+                  for keyword in node.keywords:
+                      if keyword.arg == "method":
+                          if isinstance(
+                              keyword.value,
+                              ast.Constant,
+                          ):
+                              if keyword.value.value in (
+                                  "bfill",
+                                  "backfill",
+                              ):
+                                  findings.append((
+                                      "BACKWARD_FILL",
+                                      "HIGH",
+                                      "Backward fill requested",
+                                  ))
+
+              if name == "rolling":
+                  for keyword in node.keywords:
+                      if keyword.arg == "center":
+                          if isinstance(
+                              keyword.value,
+                              ast.Constant,
+                          ):
+                              if keyword.value.value is True:
+                                  findings.append((
+                                      "CENTERED_ROLLING",
+                                      "HIGH",
+                                      "Centered window may use future rows",
+                                  ))
+
+                          else:
+                              findings.append((
+                                  "DYNAMIC_ROLLING_CENTER",
+                                  "REVIEW",
+                                  "Rolling center is dynamic",
+                              ))
+
+              if name in (
+                  "merge_asof",
+                  "resample",
+                  "interpolate",
+              ):
+                  findings.append((
+                      "TIME_ALIGNMENT_OPERATION",
+                      "REVIEW",
+                      "Verify point-in-time availability",
+                  ))
+
+              return findings
+
+
+          def inspect_subscript(node):
+              findings = []
+
+              if not isinstance(
+                  node.value,
+                  ast.Attribute,
+              ):
+                  return findings
+
+              attribute = node.value.attr
+
+              if attribute not in (
+                  "iloc",
+                  "loc",
+              ):
+                  return findings
+
+              if attribute == "iloc":
+                  index = node.slice
+
+                  if isinstance(
+                      index,
+                      ast.Tuple,
+                  ) and index.elts:
+                      index = index.elts[0]
+
+                  if isinstance(
+                      index,
+                      ast.Slice,
+                  ):
+                      return findings
+
+                  number = numeric_constant(
+                      index
+                  )
+
+                  if number is not None and number < 0:
+                      findings.append((
+                          "NEGATIVE_ILOC",
+                          "REVIEW",
+                          "Relative last-row access; verify input cutoff",
+                      ))
+
+              return findings
+
+
+          def analyze():
+              rows = []
+              counters = {}
+
+              for filename in SOURCES:
+                  path = ROOT / filename
+
+                  content = path.read_text(
+                      encoding="utf-8-sig"
+                  )
+
+                  tree = ast.parse(
+                      content,
+                      filename=filename,
+                  )
+
+                  lines = content.splitlines()
+                  spans = function_spans(tree)
+
+                  for node in ast.walk(tree):
+                      found = []
+
+                      if isinstance(
+                          node,
+                          ast.Call,
+                      ):
+                          found = inspect_call(node)
+
+                      elif isinstance(
+                          node,
+                          ast.Subscript,
+                      ):
+                          found = inspect_subscript(node)
+
+                      if not found:
+                          continue
+
+                      line = node.lineno
+
+                      try:
+                          expression = ast.unparse(
+                              node
+                          )
+                      except Exception:
+                          expression = ""
+
+                      for (
+                          category,
+                          severity,
+                          reason,
+                      ) in found:
+                          counters[category] = (
+                              counters.get(
+                                  category,
+                                  0,
+                              ) + 1
+                          )
+
+                          rows.append([
+                              filename,
+                              line,
+                              owner(
+                                  spans,
+                                  line,
+                              ),
+                              category,
+                              severity,
+                              reason,
+                              expression[:1000],
+                              source_excerpt(
+                                  lines,
+                                  line,
+                              ),
+                          ])
+
+                  print(
+                      "[SOURCE] "
+                      + filename
+                      + " parsed",
+                      flush=True,
+                  )
+
+              rows.sort(
+                  key=lambda row: (
+                      row[0],
+                      int(row[1]),
+                      row[3],
+                  )
+              )
+
+              return rows, counters
+
+
+          def output_valid(inputs):
+              manifest_path = (
+                  OUTPUT
+                  / "point_in_time_manifest.json"
+              )
+
+              if not manifest_path.is_file():
+                  return False
+
+              try:
+                  manifest = read_json(
+                      manifest_path
+                  )
+
+                  if manifest.get(
+                      "version"
+                  ) != VERSION:
+                      return False
+
+                  if manifest.get(
+                      "input_sha256"
+                  ) != inputs:
+                      return False
+
+                  expected = {
+                      "point_in_time_result.json",
+                      "point_in_time_findings.csv",
+                  }
+
+                  hashes = manifest.get(
+                      "output_sha256", {}
+                  )
+
+                  if set(hashes) != expected:
+                      return False
+
+                  for name, value in hashes.items():
+                      if sha256(
+                          OUTPUT / name
+                      ) != value:
+                          return False
+
+                  result = read_json(
+                      OUTPUT
+                      / "point_in_time_result.json"
+                  )
+
+                  return (
+                      result.get(
+                          "version"
+                      ) == VERSION
+                      and result.get(
+                          "execution_status"
+                      ) == "PASS"
+                      and result.get(
+                          "overall_decision"
+                      ) == "HOLD"
+                      and result.get(
+                          "approved_for_live_trading"
+                      ) is False
+                  )
+
+              except (
+                  OSError,
+                  ValueError,
+                  TypeError,
+                  KeyError,
+              ):
+                  return False
+
+
+          def main():
+              inputs = verify_inputs()
+
+              if output_valid(inputs):
+                  print(
+                      "[SKIP] Verified existing result"
+                  )
+                  print("[DECISION] HOLD")
+                  return 0
+
+              if OUTPUT.exists():
+                  existing = list(
+                      OUTPUT.iterdir()
+                  )
+
+                  if existing:
+                      raise ValueError(
+                          "Existing output incomplete "
+                          "or modified. Preserve it "
+                          "for manual inspection."
+                      )
+
+              rows, counters = analyze()
+
+              high_count = sum(
+                  row[4] == "HIGH"
+                  for row in rows
+              )
+
+              review_count = sum(
+                  row[4] == "REVIEW"
+                  for row in rows
+              )
+
+              result = {
+                  "version": VERSION,
+                  "execution_status": "PASS",
+                  "checked_at_utc":
+                      datetime.now(
+                          timezone.utc
+                      ).isoformat(
+                          timespec="seconds"
+                      ),
+                  "source_file_count": len(
+                      SOURCES
+                  ),
+                  "finding_count": len(
+                      rows
+                  ),
+                  "high_risk_pattern_count":
+                      high_count,
+                  "review_pattern_count":
+                      review_count,
+                  "finding_categories":
+                      counters,
+                  "source_hashes_verified":
+                      True,
+                  "previous_evidence_verified":
+                      True,
+                  "ast_source_audit_completed":
+                      True,
+                  "dynamic_point_in_time_test_completed":
+                      False,
+                  "lookahead_absence_proven":
+                      False,
+                  "closed_candle_semantics_proven":
+                      False,
+                  "ohlcv_continuity_verified":
+                      False,
+                  "signal_definition_mathematically_verified":
+                      False,
+                  "new_prospective_events_created":
+                      0,
+                  "independent_oos_proven":
+                      False,
+                  "profitability_proven":
+                      False,
+                  "approved_for_live_trading":
+                      False,
+                  "overall_decision": "HOLD",
+                  "next_required_validation": (
+                      "Review AST findings and "
+                      "run historical prefix-only "
+                      "recomputation against the "
+                      "same signal timestamp."
+                  ),
+              }
+
+              OUTPUT.mkdir(
+                  parents=True,
+                  exist_ok=True,
+              )
+
+              atomic_write(
+                  OUTPUT
+                  / "point_in_time_findings.csv",
+                  csv_text(
+                      (
+                          "source_file",
+                          "line",
+                          "function",
+                          "category",
+                          "severity",
+                          "reason",
+                          "expression",
+                          "source_context",
+                      ),
+                      rows,
+                  ),
+              )
+
+              atomic_write(
+                  OUTPUT
+                  / "point_in_time_result.json",
+                  json_text(result),
+              )
+
+              names = (
+                  "point_in_time_result.json",
+                  "point_in_time_findings.csv",
+              )
+
+              manifest = {
+                  "version": VERSION,
+                  "input_sha256": inputs,
+                  "output_sha256": {
+                      name: sha256(
+                          OUTPUT / name
+                      )
+                      for name in names
+                  },
+              }
+
+              atomic_write(
+                  OUTPUT
+                  / "point_in_time_manifest.json",
+                  json_text(manifest),
+              )
+
+              if not output_valid(inputs):
+                  raise ValueError(
+                      "Final SHA256 validation failed"
+                  )
+
+              print(
+                  "[PASS] " + VERSION
+              )
+              print(
+                  "[INFO] Findings:",
+                  len(rows),
+              )
+              print(
+                  "[INFO] High-risk patterns:",
+                  high_count,
+              )
+              print(
+                  "[INFO] Review patterns:",
+                  review_count,
+              )
+              print(
+                  "[DECISION] HOLD"
+              )
+
+              return 0
+
+
+          if __name__ == "__main__":
+              try:
+                  sys.exit(main())
+
+              except KeyboardInterrupt:
+                  print(
+                      "[INTERRUPTED]",
+                      file=sys.stderr,
+                  )
+                  sys.exit(130)
+
+              except Exception as error:
+                  print(
+                      "[FAIL]",
+                      str(error),
+                      file=sys.stderr,
+                  )
+                  sys.exit(1)
+          '@ | py -
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Point-in-time audit failed"
+          }
+
+      - name: Verify result integrity
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          @'
+          import hashlib
+          import json
+          import os
+
+          from pathlib import Path
+
+
+          root = Path(
+              os.environ["PROJECT_ROOT"]
+          )
+
+          folder = (
+              root
+              / "data"
+              / "reports"
+              / "pattern_256_point_in_time_audit"
+          )
+
+          def digest(path):
+              h = hashlib.sha256()
+
+              with path.open("rb") as stream:
+                  while True:
+                      data = stream.read(
+                          1024 * 1024
+                      )
+
+                      if not data:
+                          break
+
+                      h.update(data)
+
+              return h.hexdigest()
+
+
+          result = json.loads(
+              (
+                  folder
+                  / "point_in_time_result.json"
+              ).read_text(
+                  encoding="utf-8"
+              )
+          )
+
+          manifest = json.loads(
+              (
+                  folder
+                  / "point_in_time_manifest.json"
+              ).read_text(
+                  encoding="utf-8"
+              )
+          )
+
+          version = os.environ[
+              "AUDIT_VERSION"
+          ]
+
+          if result["version"] != version:
+              raise SystemExit(
+                  "Result version mismatch"
+              )
+
+          if manifest["version"] != version:
+              raise SystemExit(
+                  "Manifest version mismatch"
+              )
+
+          if result["execution_status"] != "PASS":
+              raise SystemExit(
+                  "Audit status mismatch"
+              )
+
+          if result["overall_decision"] != "HOLD":
+              raise SystemExit(
+                  "Decision mismatch"
+              )
+
+          if result["approved_for_live_trading"] is not False:
+              raise SystemExit(
+                  "Unsafe approval"
+              )
+
+          if result["new_prospective_events_created"] != 0:
+              raise SystemExit(
+                  "Unexpected signal generation"
+              )
+
+          hashes = manifest[
+              "output_sha256"
+          ]
+
+          expected = {
+              "point_in_time_result.json",
+              "point_in_time_findings.csv",
+          }
+
+          if set(hashes) != expected:
+              raise SystemExit(
+                  "Output set mismatch"
+              )
+
+          for name, expected_hash in hashes.items():
+              actual = digest(
+                  folder / name
+              )
+
+              if actual != expected_hash:
+                  raise SystemExit(
+                      "SHA256 mismatch: " + name
+                  )
+
+          inputs = manifest[
+              "input_sha256"
+          ]
+
+          previous = (
+              root
+              / "data"
+              / "reports"
+              / "pattern_256_formula_evidence"
+          )
+
+          previous_manifest = (
+              previous
+              / "formula_evidence_manifest.json"
+          )
+
+          if digest(previous_manifest) != inputs[
+              "previous_manifest"
+          ]:
+              raise SystemExit(
+                  "Previous manifest changed"
+              )
+
+          for name, expected_hash in inputs[
+              "previous_outputs"
+          ].items():
+              if digest(
+                  previous / name
+              ) != expected_hash:
+                  raise SystemExit(
+                      "Previous output changed: "
+                      + name
+                  )
+
+          for name, expected_hash in inputs[
+              "implementation_files"
+          ].items():
+              if digest(
+                  root / name
+              ) != expected_hash:
+                  raise SystemExit(
+                      "Source changed: " + name
+                  )
+
+          print(
+              "[PASS] Clean V003-23"
+          )
+          print(
+              "[PASS] Input/output SHA256"
+          )
+          print(
+              "[DECISION] HOLD"
+          )
+          '@ | py -
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Integrity verification failed"
+          }
+
+      - name: Upload audit results
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-point-in-time-audit-v003-23
+          path: |
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_point_in_time_audit/point_in_time_result.json
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_point_in_time_audit/point_in_time_findings.csv
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_point_in_time_audit/point_in_time_manifest.json
+          if-no-files-found: error
+          retention-days: 90
