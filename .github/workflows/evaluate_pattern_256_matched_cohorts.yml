@@ -1,0 +1,227 @@
+
+name: evaluate_pattern_256_matched_cohorts.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evaluate-pattern-256-matched-cohorts
+  cancel-in-progress: false
+
+jobs:
+  matched-cohorts:
+    name: matched-cohorts
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 180
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PROJECT_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+      SCRIPT_NAME: evaluate_pattern_256_matched_cohorts.py
+      OUTPUT_RELATIVE: data/reports/pattern_256_matched_cohorts
+      EXPECTED_VERSION: Clean V003-6
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Python and source
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Python script not found: $script"
+          }
+
+          $source = Join-Path `
+            $env:PROJECT_ROOT `
+            "data/reports/pattern_256_accumulation_candidate_independent_backtest/backtest_trades.csv"
+
+          if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+            throw "Source CSV not found: $source"
+          }
+
+          Write-Host "[PASS] Python script and source found"
+
+      - name: Run exact matched-cohort diagnostic
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
+
+          py -u $script --root $env:PROJECT_ROOT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Matched-cohort diagnostic failed"
+          }
+
+      - name: Verify results and SHA256
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          @'
+          import csv
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["PROJECT_ROOT"])
+          output = root / os.environ["OUTPUT_RELATIVE"]
+          version = os.environ["EXPECTED_VERSION"]
+
+          def digest(path):
+              h = hashlib.sha256()
+              with path.open("rb") as f:
+                  for chunk in iter(
+                      lambda: f.read(4 * 1024 * 1024),
+                      b"",
+                  ):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          result_path = output / "matched_cohorts_result.json"
+          manifest_path = output / "matched_cohorts_manifest.json"
+          summary_path = output / "matched_cohorts_summary.csv"
+
+          result = json.loads(
+              result_path.read_text(encoding="utf-8")
+          )
+          manifest = json.loads(
+              manifest_path.read_text(encoding="utf-8")
+          )
+
+          if result.get("version") != version:
+              raise SystemExit("Result version mismatch")
+
+          if manifest.get("version") != version:
+              raise SystemExit("Manifest version mismatch")
+
+          if result.get("execution_status") != "PASS":
+              raise SystemExit("Execution did not PASS")
+
+          if result.get("overall_decision") != "HOLD":
+              raise SystemExit("Unexpected decision")
+
+          if result.get("summary_rows") != 4:
+              raise SystemExit("Unexpected summary count")
+
+          for key in (
+              "independent_oos_proven",
+              "causal_improvement_proven",
+              "profitability_proven",
+              "approved_for_live_trading",
+          ):
+              if result.get(key) is not False:
+                  raise SystemExit("Unsafe flag: " + key)
+
+          expected_files = {
+              "matched_cohorts_summary.csv",
+              "matched_cohorts_result.json",
+          }
+
+          hashes = manifest.get("output_sha256")
+
+          if not isinstance(hashes, dict):
+              raise SystemExit("Missing output hashes")
+
+          if set(hashes) != expected_files:
+              raise SystemExit("Output file set mismatch")
+
+          for filename in sorted(expected_files):
+              path = output / filename
+
+              if digest(path) != hashes[filename]:
+                  raise SystemExit("SHA256 mismatch: " + filename)
+
+              print("[PASS] SHA256:", filename)
+
+          with summary_path.open(
+              encoding="utf-8-sig",
+              newline="",
+          ) as f:
+              rows = list(csv.DictReader(f))
+
+          if len(rows) != 4:
+              raise SystemExit("Summary CSV row count mismatch")
+
+          expected_groups = {
+              ("h1", "2025"),
+              ("h1", "2026"),
+              ("h4", "2025"),
+              ("h4", "2026"),
+          }
+
+          actual_groups = {
+              (r["timeframe"], r["test_year"])
+              for r in rows
+          }
+
+          if actual_groups != expected_groups:
+              raise SystemExit("Group mismatch")
+
+          for row in rows:
+              baseline = int(row["baseline_events"])
+              combined = int(row["combined_events"])
+              matched = int(row["matched_pairs"])
+
+              if matched > min(baseline, combined):
+                  raise SystemExit("Impossible matched count")
+
+              if (
+                  int(row["baseline_only_events"])
+                  != baseline - matched
+              ):
+                  raise SystemExit("Baseline count mismatch")
+
+              if (
+                  int(row["combined_only_events"])
+                  != combined - matched
+              ):
+                  raise SystemExit("Combined count mismatch")
+
+              if row["decision"] != "HOLD":
+                  raise SystemExit("Unexpected row decision")
+
+          print("[PASS] Clean V003-6")
+          print("[PASS] Four matched-cohort summaries")
+          print("[DECISION] HOLD")
+          '@ | py -
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Output verification failed"
+          }
+
+      - name: Upload diagnostic results
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-matched-cohorts-v003-6
+          path: |
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_matched_cohorts/matched_cohorts_summary.csv
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_matched_cohorts/matched_cohorts_result.json
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_matched_cohorts/matched_cohorts_manifest.json
+          if-no-files-found: error
+          retention-days: 14
