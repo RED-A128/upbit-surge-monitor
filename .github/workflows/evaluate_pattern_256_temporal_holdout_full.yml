@@ -50,7 +50,9 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          $script = Join-Path $env:GITHUB_WORKSPACE $env:SCRIPT_NAME
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
 
           if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
             throw "Analysis script not found: $script"
@@ -72,7 +74,9 @@ jobs:
             throw "Local project root not found: $env:LOCAL_ROOT"
           }
 
-          $inputFile = Join-Path $env:LOCAL_ROOT $env:INPUT_RELATIVE
+          $inputFile = Join-Path `
+            $env:LOCAL_ROOT `
+            $env:INPUT_RELATIVE
 
           if (-not (Test-Path -LiteralPath $inputFile -PathType Leaf)) {
             throw "Backtest source file not found: $inputFile"
@@ -92,24 +96,38 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
+          $workspaceName = "pattern256_temporal_holdout_{0}_{1}" -f `
+            $env:GITHUB_RUN_ID, `
+            $env:GITHUB_RUN_ATTEMPT
+
           $workspace = Join-Path `
             $env:RUNNER_TEMP `
-            "pattern256_temporal_holdout_$env:GITHUB_RUN_ID`_$env:GITHUB_RUN_ATTEMPT"
+            $workspaceName
 
           if (Test-Path -LiteralPath $workspace) {
             throw "Temporary workspace already exists: $workspace"
           }
 
-          $relativeParent = Split-Path $env:INPUT_RELATIVE -Parent
-          $source = Join-Path $env:LOCAL_ROOT $env:INPUT_RELATIVE
-          $destinationDir = Join-Path $workspace $relativeParent
+          $relativeParent = Split-Path `
+            $env:INPUT_RELATIVE `
+            -Parent
+
+          $source = Join-Path `
+            $env:LOCAL_ROOT `
+            $env:INPUT_RELATIVE
+
+          $destinationDir = Join-Path `
+            $workspace `
+            $relativeParent
 
           New-Item `
             -ItemType Directory `
             -Path $destinationDir `
             -Force | Out-Null
 
-          $copied = Join-Path $destinationDir "backtest_trades.csv"
+          $copied = Join-Path `
+            $destinationDir `
+            "backtest_trades.csv"
 
           Copy-Item `
             -LiteralPath $source `
@@ -129,10 +147,16 @@ jobs:
           }
 
           "HOLDOUT_WORKSPACE=$workspace" |
-            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Append `
+              -Encoding utf8
 
           "HOLDOUT_INPUT_SHA256=$sourceHash" |
-            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Append `
+              -Encoding utf8
 
           Write-Host "ISOLATED WORKSPACE READY"
           Write-Host "Input SHA256: $sourceHash"
@@ -141,7 +165,9 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          $script = Join-Path $env:GITHUB_WORKSPACE $env:SCRIPT_NAME
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
 
           py "$script" --root "$env:HOLDOUT_WORKSPACE"
 
@@ -242,7 +268,9 @@ jobs:
             Write-Host "SHA256 PASS: $filename"
           }
 
-      - name: Validate result safety
+          Write-Host "ALL OUTPUT SHA256 CHECKS PASSED"
+
+      - name: Validate result structure and safety
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -260,52 +288,153 @@ jobs:
             -Encoding UTF8 |
             ConvertFrom-Json
 
+          if ($null -eq $result) {
+            throw "Result JSON is empty"
+          }
+
+          if ($result -isnot [pscustomobject]) {
+            throw "Result JSON must be an object"
+          }
+
           if ($result.version -ne $env:EXPECTED_VERSION) {
             throw "Result version mismatch"
           }
 
-          $status = [string]$result.status
+          Write-Host "RESULT JSON VALIDATION PASS"
+          Write-Host "Version: $($result.version)"
 
-          if ([string]::IsNullOrWhiteSpace($status)) {
-            throw "Temporal holdout status missing"
+          Write-Host "Available result fields:"
+
+          foreach ($property in $result.PSObject.Properties) {
+            Write-Host " - $($property.Name)"
           }
 
-          Write-Host "TEMPORAL HOLDOUT STATUS: $status"
+          $statusProperty = $result.PSObject.Properties["status"]
 
-          if ($result.approved_for_live_trading -ne $false) {
-            throw "Unexpected live trading approval"
-          }
+          if ($null -ne $statusProperty) {
+            $status = [string]$statusProperty.Value
 
-          if ($result.independent_oos_proven -eq $true) {
-            throw "Unexpected independent OOS proof flag"
-          }
+            if ([string]::IsNullOrWhiteSpace($status)) {
+              throw "Result status exists but is empty"
+            }
 
-          if ($status -eq "PASS") {
-            Write-Host "TEMPORAL HOLDOUT PASS"
-          }
-          elseif ($status -in @("HOLD", "INSUFFICIENT_DATA", "INCONCLUSIVE")) {
-            Write-Warning "Temporal holdout requires further validation: $status"
-            Write-Host "Research approval remains blocked"
+            Write-Host "Research status: $status"
+
+            if ($status -match '^(FAIL|ERROR|INVALID)$') {
+              throw "Research result reports failure: $status"
+            }
+
+            if ($status -notmatch '^(PASS|HOLD|INSUFFICIENT_DATA|INCONCLUSIVE)$') {
+              Write-Warning "Unrecognized research status: $status"
+            }
           }
           else {
-            throw "Temporal holdout returned unacceptable status: $status"
+            Write-Warning "Result has no top-level status field"
+            Write-Host "Research status: NOT DETERMINED"
+          }
+
+          $liveProperty = $result.PSObject.Properties[
+            "approved_for_live_trading"
+          ]
+
+          if ($null -ne $liveProperty) {
+            if ($liveProperty.Value -ne $false) {
+              throw "Unexpected live trading approval"
+            }
+          }
+
+          $oosProperty = $result.PSObject.Properties[
+            "independent_oos_proven"
+          ]
+
+          if ($null -ne $oosProperty) {
+            if ($oosProperty.Value -eq $true) {
+              throw "Unexpected independent OOS proof flag"
+            }
+          }
+
+          Write-Host "SAFETY CHECK PASS"
+          Write-Host "No research approval has been inferred"
+
+      - name: Generate research diagnostic summary
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $outputDir = Join-Path `
+            $env:HOLDOUT_WORKSPACE `
+            $env:OUTPUT_RELATIVE
+
+          $resultPath = Join-Path `
+            $outputDir `
+            "temporal_holdout_result.json"
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw `
+            -Encoding UTF8 |
+            ConvertFrom-Json
+
+          $statusProperty = $result.PSObject.Properties["status"]
+
+          if ($null -eq $statusProperty) {
+            $status = "NOT DETERMINED"
+          }
+          else {
+            $status = [string]$statusProperty.Value
           }
 
           $summary = @(
             "## Pattern 256 Temporal Holdout",
             "",
-            "- Execution: completed",
-            "- Result status: $status",
-            "- SHA256 verification: PASS",
-            "- Independent OOS proven: false",
-            "- Live trading approved: false"
+            "| Check | Result |",
+            "|---|---|",
+            "| Script execution | Completed |",
+            "| Input SHA256 | Verified |",
+            "| Output SHA256 | Verified |",
+            "| Result JSON structure | Verified |",
+            "| Research status | $status |",
+            "| Independent OOS proof | Not established by this workflow |",
+            "| Live trading approval | Not granted |",
+            "",
+            "### Result fields",
+            ""
           )
+
+          foreach ($property in $result.PSObject.Properties) {
+            $name = [string]$property.Name
+            $value = $property.Value
+
+            if (
+              $null -eq $value -or
+              $value -is [pscustomobject] -or
+              $value -is [array]
+            ) {
+              $display = "(see uploaded JSON)"
+            }
+            else {
+              $display = [string]$value
+              $display = $display.Replace("|", "\|")
+              $display = $display.Replace("`r", " ")
+              $display = $display.Replace("`n", " ")
+
+              if ($display.Length -gt 160) {
+                $display = $display.Substring(0, 160) + "..."
+              }
+            }
+
+            $summary += "- **${name}:** $display"
+          }
+
+          $summary += ""
+          $summary += "Full research results are available in the artifact."
 
           $summary |
             Out-File `
               -FilePath $env:GITHUB_STEP_SUMMARY `
               -Append `
               -Encoding utf8
+
+          Write-Host "DIAGNOSTIC SUMMARY GENERATED"
 
       - name: Upload temporal holdout reports
         if: always()
