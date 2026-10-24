@@ -1,0 +1,377 @@
+name: build_pattern_256_feature_candidates.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-pattern-256-feature-candidates
+  cancel-in-progress: false
+
+jobs:
+  feature-candidates:
+    name: feature-candidates
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 360
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      DATA_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate Python
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python validation failed"
+          }
+
+          py -c "import pandas; import numpy"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Required Python libraries missing"
+          }
+
+      - name: Validate feature script
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "build_pattern_256_feature_candidates.py"
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Missing script: $script"
+          }
+
+          py -m py_compile $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax validation failed"
+          }
+
+      - name: Validate source data
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $planDir = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_feature_redesign"
+
+          foreach ($file in @(
+            "feature_redesign_plan.csv",
+            "feature_redesign_protocol.json",
+            "feature_redesign_result.json",
+            "feature_redesign_manifest.json"
+          )) {
+            $path = Join-Path $planDir $file
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing research plan: $path"
+            }
+
+            Write-Host "FOUND: $path"
+          }
+
+          foreach ($timeframe in @("h1", "h4", "d1")) {
+            $directory = Join-Path `
+              $env:DATA_ROOT `
+              "data\ohlcv\$timeframe"
+
+            if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+              throw "Missing OHLCV directory: $directory"
+            }
+
+            $files = @(
+              Get-ChildItem `
+                -LiteralPath $directory `
+                -Filter "KRW-*.csv" `
+                -File
+            )
+
+            if ($files.Count -eq 0) {
+              throw "No OHLCV files: $timeframe"
+            }
+
+            Write-Host "$timeframe markets: $($files.Count)"
+          }
+
+      - name: Run feature candidate engine
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "build_pattern_256_feature_candidates.py"
+
+          py $script --root "$env:DATA_ROOT"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Feature candidate engine failed"
+          }
+
+      - name: Verify output integrity
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $reportDir = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_feature_candidates"
+
+          $featureDir = Join-Path `
+            $env:DATA_ROOT `
+            "data\features\pattern_256_candidates"
+
+          $ohlcvDir = Join-Path `
+            $env:DATA_ROOT `
+            "data\ohlcv"
+
+          $resultPath = Join-Path `
+            $reportDir `
+            "feature_candidate_result.json"
+
+          $manifestPath = Join-Path `
+            $reportDir `
+            "feature_candidate_manifest.json"
+
+          foreach ($path in @($resultPath, $manifestPath)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing report: $path"
+            }
+          }
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw | ConvertFrom-Json
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw | ConvertFrom-Json
+
+          if ($result.version -ne "Clean V001") {
+            throw "Unexpected result version"
+          }
+
+          if ($manifest.version -ne "Clean V001") {
+            throw "Unexpected manifest version"
+          }
+
+          if ($result.execution_status -ne "PASS") {
+            throw "Execution not PASS"
+          }
+
+          if ($result.research_decision -ne "HOLD") {
+            throw "Unexpected research decision"
+          }
+
+          if ($result.feature_generation_completed -ne $true) {
+            throw "Feature generation incomplete"
+          }
+
+          if ($result.train_experiment_completed -ne $false) {
+            throw "Unexpected experiment completion"
+          }
+
+          foreach ($field in @(
+            "statistical_independence_proven",
+            "independent_oos_proven",
+            "profitability_proven",
+            "approved_for_live_trading",
+            "automated_trading_enabled"
+          )) {
+            if ($result.$field -ne $false) {
+              throw "Invalid safety field: $field"
+            }
+          }
+
+          $expectedResultHash = `
+            $manifest.output_sha256.'feature_candidate_result.json'
+
+          $actualResultHash = (
+            Get-FileHash `
+              -LiteralPath $resultPath `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if ($expectedResultHash -ne $actualResultHash) {
+            throw "Result SHA256 mismatch"
+          }
+
+          $records = @($manifest.records)
+
+          if ($records.Count -ne [int]$result.market_files) {
+            throw "Market file count mismatch"
+          }
+
+          if ($records.Count -ne [int]$manifest.market_files) {
+            throw "Manifest market count mismatch"
+          }
+
+          $totalRows = [long]0
+
+          foreach ($record in $records) {
+            $timeframe = [string]$record.timeframe
+            $market = [string]$record.market
+
+            if ($timeframe -notin @("h1", "h4", "d1")) {
+              throw "Invalid timeframe: $timeframe"
+            }
+
+            if ($market -notmatch '^KRW-[A-Za-z0-9_-]+$') {
+              throw "Invalid market: $market"
+            }
+
+            $sourcePath = Join-Path `
+              $ohlcvDir `
+              "$timeframe\$market.csv"
+
+            $outputPath = Join-Path `
+              $featureDir `
+              "$timeframe\$market.csv"
+
+            $checkpointPath = Join-Path `
+              $reportDir `
+              "checkpoints\$timeframe\$market.json"
+
+            foreach ($path in @(
+              $sourcePath,
+              $outputPath,
+              $checkpointPath
+            )) {
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                throw "Missing file: $path"
+              }
+            }
+
+            $checkpoint = Get-Content `
+              -LiteralPath $checkpointPath `
+              -Raw | ConvertFrom-Json
+
+            if ($checkpoint.version -ne "Clean V001") {
+              throw "Checkpoint version mismatch"
+            }
+
+            if ($checkpoint.timeframe -ne $timeframe) {
+              throw "Checkpoint timeframe mismatch"
+            }
+
+            if ($checkpoint.market -ne $market) {
+              throw "Checkpoint market mismatch"
+            }
+
+            $sourceHash = (
+              Get-FileHash `
+                -LiteralPath $sourcePath `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            $outputHash = (
+              Get-FileHash `
+                -LiteralPath $outputPath `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($sourceHash -ne $record.source_sha256) {
+              throw "Source SHA256 mismatch: $market"
+            }
+
+            if ($outputHash -ne $record.output_sha256) {
+              throw "Output SHA256 mismatch: $market"
+            }
+
+            if ($sourceHash -ne $checkpoint.source_sha256) {
+              throw "Checkpoint source mismatch: $market"
+            }
+
+            if ($outputHash -ne $checkpoint.output_sha256) {
+              throw "Checkpoint output mismatch: $market"
+            }
+
+            if ([long]$record.rows -ne [long]$checkpoint.rows) {
+              throw "Checkpoint row mismatch: $market"
+            }
+
+            $totalRows += [long]$record.rows
+          }
+
+          if ($totalRows -ne [long]$result.total_feature_rows) {
+            throw "Total feature row count mismatch"
+          }
+
+          Write-Host "PASS: execution"
+          Write-Host "PASS: source SHA256"
+          Write-Host "PASS: output SHA256"
+          Write-Host "PASS: checkpoints"
+          Write-Host "PASS: market counts"
+          Write-Host "PASS: research safety"
+
+      - name: Write job summary
+        if: success()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $resultPath = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_feature_candidates\feature_candidate_result.json"
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw | ConvertFrom-Json
+
+          @"
+          # Pattern 256 Feature Candidate Engine
+
+          | Check | Result |
+          |---|---|
+          | Execution | $($result.execution_status) |
+          | Version | $($result.version) |
+          | Market files | $($result.market_files) |
+          | Built files | $($result.built_files) |
+          | Resumed files | $($result.resumed_files) |
+          | Feature rows | $($result.total_feature_rows) |
+          | Feature generation completed | $($result.feature_generation_completed) |
+          | TRAIN experiment completed | $($result.train_experiment_completed) |
+          | Research decision | $($result.research_decision) |
+          | Statistical independence proven | $($result.statistical_independence_proven) |
+          | Independent OOS proven | $($result.independent_oos_proven) |
+          | Profitability proven | $($result.profitability_proven) |
+          | Live trading approved | $($result.approved_for_live_trading) |
+          | Input SHA256 | Verified |
+          | Output SHA256 | Verified |
+
+          ## Notes
+
+          - Features are derived from current and earlier closed candles.
+          - Feature generation is not a backtest.
+          - Missing OHLCV intervals are not filled.
+          - No independent OOS performance is claimed.
+          - No automated trading is enabled.
+
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Encoding utf8 `
+            -Append
+
+      - name: Upload feature candidate reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-feature-candidates-v001
+          path: 'C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_feature_candidates\feature_candidate_*.json'
+          if-no-files-found: warn
+          retention-days: 30
