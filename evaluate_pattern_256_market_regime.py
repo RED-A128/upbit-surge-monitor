@@ -1,10 +1,21 @@
 #!/usr/bin/env python3
 """
 Pattern 256 Market Regime Validation
-Version: Clean V001
+
+Version: Clean V002
 
 Research only.
-Historical regime uses only candles closed by signal time.
+No automated trading.
+
+Changes:
+- Correct Upbit OHLCV timestamp parsing.
+- Prefer candle_date_time_utc over numeric timestamp.
+- Support Unix timestamps in seconds, milliseconds,
+  microseconds, and nanoseconds.
+- Validate candle order and prices.
+- Preserve historical point-in-time safety.
+- Verify source and OHLCV SHA256 for resume.
+- Never modify source OHLCV or backtest files.
 """
 
 import argparse
@@ -21,7 +32,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
-VERSION = "Clean V001"
+VERSION = "Clean V002"
 
 SOURCE_REL = Path(
     "data/reports/"
@@ -55,6 +66,10 @@ FIELDS = [
     "hit_rate_pct",
 ]
 
+OUTPUT_CSV = "market_regime_comparison.csv"
+OUTPUT_JSON = "market_regime_result.json"
+OUTPUT_MANIFEST = "market_regime_manifest.json"
+
 
 def sha256(path):
     h = hashlib.sha256()
@@ -70,7 +85,16 @@ def sha256(path):
 
 
 def utc(value):
+    """
+    Parse ISO 8601 timestamps.
+
+    Naive timestamps are rejected.
+    """
+
     s = str(value).strip()
+
+    if not s:
+        raise ValueError("Empty datetime")
 
     if s.endswith("Z"):
         s = s[:-1] + "+00:00"
@@ -85,26 +109,118 @@ def utc(value):
     return d.astimezone(timezone.utc)
 
 
+def unix_timestamp(value):
+    """
+    Convert numeric Unix timestamp to UTC.
+
+    Supported units:
+    - seconds
+    - milliseconds
+    - microseconds
+    - nanoseconds
+    """
+
+    s = str(value).strip()
+
+    if not s:
+        raise ValueError("Empty Unix timestamp")
+
+    number = float(s)
+
+    if not math.isfinite(number):
+        raise ValueError(
+            "Non-finite Unix timestamp"
+        )
+
+    absolute = abs(number)
+
+    if absolute >= 1e17:
+        seconds = number / 1_000_000_000
+
+    elif absolute >= 1e14:
+        seconds = number / 1_000_000
+
+    elif absolute >= 1e11:
+        seconds = number / 1_000
+
+    else:
+        seconds = number
+
+    try:
+        return datetime.fromtimestamp(
+            seconds,
+            tz=timezone.utc,
+        )
+
+    except (
+        OverflowError,
+        OSError,
+        ValueError,
+    ) as e:
+        raise ValueError(
+            "Invalid Unix timestamp: " + s
+        ) from e
+
+
+def parse_candle_time(value, column):
+    """
+    Parse OHLCV candle OPEN timestamp.
+    """
+
+    name = str(column).strip().lower()
+
+    if name == "timestamp":
+        return unix_timestamp(value)
+
+    s = str(value).strip()
+
+    if not s:
+        raise ValueError(
+            "Empty candle timestamp"
+        )
+
+    try:
+        return utc(s)
+
+    except ValueError:
+        if name in (
+            "time",
+            "datetime",
+        ):
+            try:
+                return unix_timestamp(s)
+            except ValueError:
+                pass
+
+        raise
+
+
 def atomic_json(path, obj):
     temp = path.with_suffix(
         path.suffix + ".tmp"
     )
 
-    with temp.open(
-        "w",
-        encoding="utf-8",
-        newline="\n",
-    ) as f:
-        json.dump(
-            obj,
-            f,
-            indent=2,
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-        f.write("\n")
+    try:
+        with temp.open(
+            "w",
+            encoding="utf-8",
+            newline="\n",
+        ) as f:
+            json.dump(
+                obj,
+                f,
+                indent=2,
+                ensure_ascii=False,
+                sort_keys=True,
+            )
 
-    os.replace(temp, path)
+            f.write("\n")
+
+        os.replace(temp, path)
+
+    finally:
+        if temp.exists():
+            temp.unlink()
 
 
 def atomic_csv(path, rows):
@@ -112,26 +228,32 @@ def atomic_csv(path, rows):
         path.suffix + ".tmp"
     )
 
-    with temp.open(
-        "w",
-        encoding="utf-8",
-        newline="",
-    ) as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=FIELDS,
-        )
+    try:
+        with temp.open(
+            "w",
+            encoding="utf-8",
+            newline="",
+        ) as f:
+            writer = csv.DictWriter(
+                f,
+                fieldnames=FIELDS,
+            )
 
-        writer.writeheader()
-        writer.writerows(rows)
+            writer.writeheader()
+            writer.writerows(rows)
 
-    os.replace(temp, path)
+        os.replace(temp, path)
+
+    finally:
+        if temp.exists():
+            temp.unlink()
 
 
 def locate_candles(base, tf, market):
     """
     Accept common OHLCV layouts.
-    Reject ambiguous matches instead of guessing.
+
+    Reject ambiguous matches.
     """
 
     tokens = [
@@ -182,6 +304,24 @@ def locate_candles(base, tf, market):
 
 
 def read_candles(path, tf):
+    """
+    Read and validate candle OPEN times and closes.
+
+    Upbit columns:
+    market,
+    candle_date_time_utc,
+    candle_date_time_kst,
+    timestamp,
+    open,
+    high,
+    low,
+    close,
+    volume,
+    trade_value
+
+    Prefer candle_date_time_utc.
+    """
+
     with path.open(
         "r",
         encoding="utf-8-sig",
@@ -201,28 +341,34 @@ def read_candles(path, tf):
             for name in reader.fieldnames
         }
 
+        # Important:
+        # Prefer ISO UTC over numeric timestamp.
+        time_candidates = (
+            "candle_date_time_utc",
+            "timestamp",
+            "time",
+            "datetime",
+        )
+
         tcol = next(
             (
                 columns[x]
-                for x in (
-                    "timestamp",
-                    "time",
-                    "datetime",
-                    "candle_date_time_utc",
-                )
+                for x in time_candidates
                 if x in columns
             ),
             None,
         )
 
+        close_candidates = (
+            "close",
+            "trade_price",
+            "closing_price",
+        )
+
         ccol = next(
             (
                 columns[x]
-                for x in (
-                    "close",
-                    "trade_price",
-                    "closing_price",
-                )
+                for x in close_candidates
                 if x in columns
             ),
             None,
@@ -235,7 +381,9 @@ def read_candles(path, tf):
                 + str(path)
             )
 
-        candles = []
+        times = []
+        closes = []
+
         last = None
 
         for line, row in enumerate(
@@ -243,15 +391,33 @@ def read_candles(path, tf):
             2,
         ):
             try:
-                t = utc(row[tcol])
-                close = float(row[ccol])
+                raw_time = row.get(tcol)
+
+                raw_close = row.get(ccol)
+
+                if raw_time is None:
+                    raise ValueError(
+                        "Missing timestamp value"
+                    )
+
+                if raw_close is None:
+                    raise ValueError(
+                        "Missing close value"
+                    )
+
+                t = parse_candle_time(
+                    raw_time,
+                    tcol,
+                )
+
+                close = float(raw_close)
 
                 if (
                     not math.isfinite(close)
                     or close <= 0
                 ):
                     raise ValueError(
-                        "invalid close"
+                        "Invalid close"
                     )
 
                 if (
@@ -259,11 +425,32 @@ def read_candles(path, tf):
                     and t <= last
                 ):
                     raise ValueError(
-                        "non-increasing or "
+                        "Non-increasing or "
                         "duplicate candle timestamp"
                     )
 
-                candles.append((t, close))
+                # Check alignment with timeframe.
+                period_seconds = int(
+                    PERIODS[tf].total_seconds()
+                )
+
+                epoch_seconds = int(
+                    t.timestamp()
+                )
+
+                if (
+                    epoch_seconds
+                    % period_seconds
+                    != 0
+                ):
+                    raise ValueError(
+                        "Candle timestamp "
+                        "not aligned to timeframe"
+                    )
+
+                times.append(t)
+                closes.append(close)
+
                 last = t
 
             except Exception as e:
@@ -271,10 +458,7 @@ def read_candles(path, tf):
                     f"Bad candle {path}:{line}: {e}"
                 ) from e
 
-    return (
-        [x[0] for x in candles],
-        [x[1] for x in candles],
-    )
+    return times, closes
 
 
 def regime_at(
@@ -289,11 +473,17 @@ def regime_at(
     """
     Candle timestamps represent candle OPEN times.
 
-    Only candles with:
+    Only candles satisfying:
+
         candle_open + timeframe <= signal
 
-    are used.
+    may be used.
+
+    This prevents future information leakage.
     """
+
+    if not times:
+        return "MISSING_CANDLES"
 
     last_open = signal - PERIODS[tf]
 
@@ -308,7 +498,17 @@ def regime_at(
     if idx < lookback:
         return "INSUFFICIENT_HISTORY"
 
-    # Reject missing candles within the lookback.
+    # Ensure selected candle really closed
+    # no later than signal time.
+    if (
+        times[idx] + PERIODS[tf]
+        > signal
+    ):
+        raise ValueError(
+            "Future candle leakage detected"
+        )
+
+    # Reject gaps inside the lookback.
     for j in range(
         idx - lookback + 1,
         idx + 1,
@@ -319,9 +519,15 @@ def regime_at(
         ):
             return "CANDLE_GAP"
 
+    previous_close = closes[
+        idx - lookback
+    ]
+
+    current_close = closes[idx]
+
     ret = (
-        closes[idx]
-        / closes[idx - lookback]
+        current_close
+        / previous_close
         - 1.0
     )
 
@@ -334,11 +540,177 @@ def regime_at(
     return "SIDEWAYS"
 
 
+def validate_resume(
+    result_path,
+    csv_path,
+    manifest_path,
+    source_hash,
+    config,
+):
+    """
+    Skip only when:
+    - source hash matches
+    - settings match
+    - output hashes match
+    - all previously used candle hashes match
+    - output structure is valid
+    """
+
+    required_paths = (
+        result_path,
+        csv_path,
+        manifest_path,
+    )
+
+    if not all(
+        p.is_file()
+        for p in required_paths
+    ):
+        return False
+
+    try:
+        manifest = json.loads(
+            manifest_path.read_text(
+                encoding="utf-8"
+            )
+        )
+
+        if manifest.get("version") != VERSION:
+            return False
+
+        if (
+            manifest.get("source_sha256")
+            != source_hash
+        ):
+            return False
+
+        if manifest.get("config") != config:
+            return False
+
+        output_hashes = manifest.get(
+            "output_sha256"
+        )
+
+        if not isinstance(
+            output_hashes,
+            dict,
+        ):
+            return False
+
+        expected_outputs = {
+            csv_path.name,
+            result_path.name,
+        }
+
+        if set(output_hashes) != expected_outputs:
+            return False
+
+        for name, expected_hash in (
+            output_hashes.items()
+        ):
+            path = result_path.parent / name
+
+            if not path.is_file():
+                return False
+
+            if sha256(path) != expected_hash:
+                return False
+
+        candle_hashes = manifest.get(
+            "candle_sha256"
+        )
+
+        if not isinstance(
+            candle_hashes,
+            dict,
+        ):
+            return False
+
+        for name, expected_hash in (
+            candle_hashes.items()
+        ):
+            path = Path(name)
+
+            if not path.is_file():
+                return False
+
+            if sha256(path) != expected_hash:
+                return False
+
+        result = json.loads(
+            result_path.read_text(
+                encoding="utf-8"
+            )
+        )
+
+        if result.get("version") != VERSION:
+            return False
+
+        if (
+            result.get("execution_status")
+            != "PASS"
+        ):
+            return False
+
+        if (
+            result.get("source_sha256")
+            != source_hash
+        ):
+            return False
+
+        if (
+            result.get("approved_for_live_trading")
+            is not False
+        ):
+            return False
+
+        if (
+            result.get("config")
+            != config
+        ):
+            return False
+
+        with csv_path.open(
+            "r",
+            encoding="utf-8-sig",
+            newline="",
+        ) as f:
+            reader = csv.DictReader(f)
+
+            if reader.fieldnames != FIELDS:
+                return False
+
+            row_count = sum(
+                1 for _ in reader
+            )
+
+        if (
+            row_count
+            != result.get("comparison_rows")
+        ):
+            return False
+
+        return True
+
+    except (
+        ValueError,
+        KeyError,
+        OSError,
+        TypeError,
+    ):
+        return False
+
+
 def run(args):
     root = args.root.resolve()
 
-    source = root / SOURCE_REL
-    out = root / OUT_REL
+    source = (
+        root / SOURCE_REL
+    ).resolve()
+
+    out = (
+        root / OUT_REL
+    ).resolve()
 
     candles_root = (
         root / args.ohlcv_root
@@ -354,6 +726,18 @@ def run(args):
         raise FileNotFoundError(
             "Missing OHLCV directory: "
             + str(candles_root)
+        )
+
+    if (
+        not math.isfinite(
+            args.down_threshold
+        )
+        or not math.isfinite(
+            args.up_threshold
+        )
+    ):
+        raise ValueError(
+            "Thresholds must be finite"
         )
 
     if not (
@@ -379,21 +763,44 @@ def run(args):
             "lookback must be >= 2"
         )
 
+    # Protect source data from output collisions.
+    if (
+        out == source.parent
+        or out == candles_root
+        or out in source.parents
+        or out in candles_root.parents
+        or candles_root in out.parents
+    ):
+        raise ValueError(
+            "Unsafe output directory"
+        )
+
     out.mkdir(
         parents=True,
         exist_ok=True,
     )
 
     result_path = (
-        out / "market_regime_result.json"
+        out / OUTPUT_JSON
     )
 
     csv_path = (
-        out / "market_regime_comparison.csv"
+        out / OUTPUT_CSV
     )
 
     manifest_path = (
-        out / "market_regime_manifest.json"
+        out / OUTPUT_MANIFEST
+    )
+
+    print(
+        "Pattern 256 Market Regime "
+        + VERSION,
+        flush=True,
+    )
+
+    print(
+        "Calculating source SHA256...",
+        flush=True,
     )
 
     source_hash = sha256(source)
@@ -406,66 +813,42 @@ def run(args):
         "cutoff": cutoff.isoformat(),
         "test_end": test_end.isoformat(),
         "ohlcv_root": str(candles_root),
+        "strict_candles": args.strict_candles,
     }
 
-    # Resume:
-    # Skip only when source, settings and outputs
-    # match the recorded SHA256 values.
-    if (
-        not args.force
-        and all(
-            p.is_file()
-            for p in (
-                result_path,
-                csv_path,
-                manifest_path,
-            )
-        )
-    ):
-        try:
-            manifest = json.loads(
-                manifest_path.read_text(
-                    encoding="utf-8"
-                )
-            )
-
-            if (
-                manifest.get("source_sha256")
-                == source_hash
-                and manifest.get("config")
-                == config
-                and all(
-                    sha256(out / name) == digest
-                    for name, digest
-                    in manifest[
-                        "output_sha256"
-                    ].items()
-                )
-            ):
-                print(
-                    "Verified existing output: SKIP"
-                )
-                return
-
-        except (
-            ValueError,
-            KeyError,
-            OSError,
-            TypeError,
+    if not args.force:
+        if validate_resume(
+            result_path,
+            csv_path,
+            manifest_path,
+            source_hash,
+            config,
         ):
-            pass
+            print(
+                "Verified existing output: SKIP",
+                flush=True,
+            )
+            return
 
     counts = defaultdict(
         lambda: [0, 0]
     )
 
     excluded = Counter()
+
     input_rows = 0
+
     files_used = {}
 
     current_key = None
+
     times = []
     closes = []
+
+    print(
+        "Starting market regime analysis...",
+        flush=True,
+    )
 
     with source.open(
         "r",
@@ -503,6 +886,12 @@ def run(args):
         for row in reader:
             input_rows += 1
 
+            if input_rows % 500000 == 0:
+                print(
+                    f"processed={input_rows:,}",
+                    flush=True,
+                )
+
             tf = row[
                 "timeframe"
             ].strip()
@@ -522,6 +911,7 @@ def run(args):
                 excluded[
                     "unsupported_group"
                 ] += 1
+
                 continue
 
             status = row[
@@ -535,6 +925,7 @@ def run(args):
                 excluded[
                     "incomplete_or_other"
                 ] += 1
+
                 continue
 
             hit = row[
@@ -561,9 +952,19 @@ def run(args):
                 row["entry_timestamp"]
             )
 
-            horizon = int(
-                row["horizon"]
-            )
+            try:
+                horizon = int(
+                    row["horizon"]
+                )
+
+            except (
+                ValueError,
+                TypeError,
+            ) as e:
+                raise ValueError(
+                    "Invalid horizon at "
+                    f"source row {input_rows + 1}"
+                ) from e
 
             if (
                 horizon <= 0
@@ -596,6 +997,7 @@ def run(args):
                 excluded[
                     "boundary_or_after_test"
                 ] += 1
+
                 continue
 
             key = (
@@ -651,26 +1053,21 @@ def run(args):
                 "SIDEWAYS",
             ):
                 excluded[reg] += 1
+
                 continue
 
-            c = counts[
-                (
-                    split,
-                    tf,
-                    horizon,
-                    reg,
-                    group,
-                )
-            ]
+            count_key = (
+                split,
+                tf,
+                horizon,
+                reg,
+                group,
+            )
+
+            c = counts[count_key]
 
             c[0] += 1
             c[1] += int(hit)
-
-            if input_rows % 500000 == 0:
-                print(
-                    f"processed={input_rows:,}",
-                    flush=True,
-                )
 
     rows = []
 
@@ -691,11 +1088,6 @@ def run(args):
                 ),
             )
         )
-
-    atomic_csv(
-        csv_path,
-        rows,
-    )
 
     result = {
         "version": VERSION,
@@ -722,6 +1114,30 @@ def run(args):
         ),
     }
 
+    # Verify source data did not change
+    # during analysis.
+    final_source_hash = sha256(source)
+
+    if final_source_hash != source_hash:
+        raise RuntimeError(
+            "Source CSV changed during analysis"
+        )
+
+    # Verify used candle files did not change.
+    for name, expected_hash in (
+        files_used.items()
+    ):
+        if sha256(Path(name)) != expected_hash:
+            raise RuntimeError(
+                "OHLCV changed during analysis: "
+                + name
+            )
+
+    atomic_csv(
+        csv_path,
+        rows,
+    )
+
     atomic_json(
         result_path,
         result,
@@ -747,17 +1163,34 @@ def run(args):
         manifest,
     )
 
+    if not validate_resume(
+        result_path,
+        csv_path,
+        manifest_path,
+        source_hash,
+        config,
+    ):
+        raise RuntimeError(
+            "Final output integrity "
+            "verification failed"
+        )
+
     print(
         json.dumps(
             {
+                "version": VERSION,
                 "execution_status": "PASS",
                 "research_decision": "HOLD",
                 "source_rows": input_rows,
                 "comparison_rows": len(rows),
+                "used_candle_files": len(files_used),
                 "excluded": dict(excluded),
+                "sha256_verified": True,
+                "approved_for_live_trading": False,
             },
             indent=2,
-        )
+        ),
+        flush=True,
     )
 
 
