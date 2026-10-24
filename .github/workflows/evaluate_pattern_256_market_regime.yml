@@ -12,6 +12,7 @@ on:
 jobs:
   market-regime:
     name: market-regime
+
     runs-on:
       - self-hosted
       - Windows
@@ -20,7 +21,7 @@ jobs:
 
     defaults:
       run:
-        shell: pwsh
+        shell: powershell
 
     env:
       DATA_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
