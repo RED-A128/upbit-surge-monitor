@@ -1,0 +1,342 @@
+name: evaluate_pattern_256_nonoverlap_retest.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evaluate-pattern-256-nonoverlap-retest
+  cancel-in-progress: false
+
+jobs:
+  nonoverlap-retest:
+    name: nonoverlap-retest
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 180
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      DATA_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate Python
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python validation failed"
+          }
+
+      - name: Validate analysis script
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "evaluate_pattern_256_nonoverlap_retest.py"
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Missing analysis script: $script"
+          }
+
+          py -m py_compile $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax validation failed"
+          }
+
+      - name: Validate source data
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $source = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_accumulation_candidate_independent_backtest\backtest_trades.csv"
+
+          if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+            throw "Missing source: $source"
+          }
+
+          $item = Get-Item -LiteralPath $source
+
+          if ($item.Length -le 0) {
+            throw "Source CSV is empty"
+          }
+
+          Write-Host "PASS: source exists"
+          Write-Host "Bytes: $($item.Length)"
+
+      - name: Run nonoverlap retest
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "evaluate_pattern_256_nonoverlap_retest.py"
+
+          py $script --root "$env:DATA_ROOT"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Nonoverlap retest failed"
+          }
+
+      - name: Verify results and SHA256
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $outputDir = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_nonoverlap_retest"
+
+          $source = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_accumulation_candidate_independent_backtest\backtest_trades.csv"
+
+          $csvPath = Join-Path `
+            $outputDir `
+            "nonoverlap_retest_comparison.csv"
+
+          $resultPath = Join-Path `
+            $outputDir `
+            "nonoverlap_retest_result.json"
+
+          $manifestPath = Join-Path `
+            $outputDir `
+            "nonoverlap_retest_manifest.json"
+
+          foreach ($path in @(
+            $csvPath,
+            $resultPath,
+            $manifestPath
+          )) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing output: $path"
+            }
+          }
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw | ConvertFrom-Json
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw | ConvertFrom-Json
+
+          if ($result.version -ne "Clean V001") {
+            throw "Result version mismatch"
+          }
+
+          if ($manifest.version -ne "Clean V001") {
+            throw "Manifest version mismatch"
+          }
+
+          if ($result.execution_status -ne "PASS") {
+            throw "Execution status is not PASS"
+          }
+
+          if ($result.research_decision -ne "HOLD") {
+            throw "Unexpected research decision"
+          }
+
+          if ([int]$result.comparison_rows -ne 36) {
+            throw "Unexpected comparison row count"
+          }
+
+          foreach ($field in @(
+            "statistical_independence_proven",
+            "independent_oos_proven",
+            "profitability_proven",
+            "approved_for_live_trading"
+          )) {
+            if ($result.$field -ne $false) {
+              throw "Invalid safety field: $field"
+            }
+          }
+
+          foreach ($file in @(
+            "nonoverlap_retest_comparison.csv",
+            "nonoverlap_retest_result.json"
+          )) {
+            $path = Join-Path $outputDir $file
+
+            $property = `
+              $manifest.output_sha256.PSObject.Properties[$file]
+
+            if ($null -eq $property) {
+              throw "Missing output hash: $file"
+            }
+
+            $expected = (
+              [string]$property.Value
+            ).ToLowerInvariant()
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($expected -ne $actual) {
+              throw "Output SHA256 mismatch: $file"
+            }
+
+            Write-Host "PASS: $file"
+          }
+
+          $sourceProperty = `
+            $manifest.input_sha256.PSObject.Properties["backtest_trades.csv"]
+
+          if ($null -eq $sourceProperty) {
+            throw "Missing input SHA256"
+          }
+
+          $expectedSource = (
+            [string]$sourceProperty.Value
+          ).ToLowerInvariant()
+
+          $actualSource = (
+            Get-FileHash `
+              -LiteralPath $source `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if ($expectedSource -ne $actualSource) {
+            throw "Input SHA256 mismatch"
+          }
+
+          $rows = @(
+            Import-Csv -LiteralPath $csvPath
+          )
+
+          if ($rows.Count -ne 36) {
+            throw "CSV comparison row count mismatch"
+          }
+
+          $totalSource = [long]0
+          $totalSelected = [long]0
+          $totalExcluded = [long]0
+          $totalHits = [long]0
+
+          foreach ($row in $rows) {
+            if ($row.research_decision -ne "HOLD") {
+              throw "Unexpected CSV research decision"
+            }
+
+            $sourceEvents = [long]$row.source_events
+            $selectedEvents = [long]$row.selected_events
+            $excludedOverlap = [long]$row.excluded_overlap
+            $hits = [long]$row.hits
+
+            if (
+              $sourceEvents -ne (
+                $selectedEvents + $excludedOverlap
+              )
+            ) {
+              throw "Row accounting mismatch"
+            }
+
+            if ($hits -gt $selectedEvents) {
+              throw "Hits exceed selected events"
+            }
+
+            $totalSource += $sourceEvents
+            $totalSelected += $selectedEvents
+            $totalExcluded += $excludedOverlap
+            $totalHits += $hits
+          }
+
+          if ($totalSource -ne [long]$result.eligible_rows) {
+            throw "Eligible row count mismatch"
+          }
+
+          if ($totalSelected -ne [long]$result.selected_events) {
+            throw "Selected event count mismatch"
+          }
+
+          if ($totalExcluded -ne [long]$result.excluded_overlap) {
+            throw "Excluded overlap count mismatch"
+          }
+
+          if ($totalHits -ne [long]$result.selected_hits) {
+            throw "Selected hits count mismatch"
+          }
+
+          if (@($result.pair_comparisons).Count -ne 18) {
+            throw "Unexpected pair comparison count"
+          }
+
+          Write-Host "PASS: input SHA256"
+          Write-Host "PASS: output SHA256"
+          Write-Host "PASS: event accounting"
+          Write-Host "PASS: 36 comparison rows"
+          Write-Host "PASS: 18 pair comparisons"
+          Write-Host "PASS: research safety"
+
+      - name: Write job summary
+        if: success()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $resultPath = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_nonoverlap_retest\nonoverlap_retest_result.json"
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw | ConvertFrom-Json
+
+          @"
+          # Pattern 256 Non-Overlap Retest
+
+          | Check | Result |
+          |---|---|
+          | Execution | $($result.execution_status) |
+          | Version | $($result.version) |
+          | Source rows | $($result.source_rows) |
+          | Eligible rows | $($result.eligible_rows) |
+          | Selected events | $($result.selected_events) |
+          | Excluded overlap | $($result.excluded_overlap) |
+          | Selected hits | $($result.selected_hits) |
+          | Comparison rows | $($result.comparison_rows) |
+          | Research decision | $($result.research_decision) |
+          | Statistical independence proven | $($result.statistical_independence_proven) |
+          | Independent OOS proven | $($result.independent_oos_proven) |
+          | Profitability proven | $($result.profitability_proven) |
+          | Live trading approved | $($result.approved_for_live_trading) |
+          | Input SHA256 | Verified |
+          | Output SHA256 | Verified |
+
+          ## Limitations
+
+          - De-overlap is performed within classifications.
+          - Cross-classification market exposure may remain correlated.
+          - This is not a causal matched comparison.
+          - This is not independent OOS proof.
+          - No automated trading is enabled.
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Encoding utf8 `
+            -Append
+
+      - name: Upload retest reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-nonoverlap-retest-v001
+          path: 'C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_nonoverlap_retest\'
+          if-no-files-found: warn
+          retention-days: 30
