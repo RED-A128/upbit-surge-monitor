@@ -1,0 +1,348 @@
+name: evaluate_pattern_256_feature_redesign.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evaluate-pattern-256-feature-redesign
+  cancel-in-progress: false
+
+jobs:
+  feature-redesign:
+    name: feature-redesign
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      DATA_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate Python
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python validation failed"
+          }
+
+      - name: Validate analysis script
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "evaluate_pattern_256_feature_redesign.py"
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Missing script: $script"
+          }
+
+          py -m py_compile $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax validation failed"
+          }
+
+      - name: Validate source reports
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $sourceDir = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_research_redesign"
+
+          foreach ($file in @(
+            "research_redesign_comparison.csv",
+            "research_redesign_result.json",
+            "research_redesign_manifest.json"
+          )) {
+            $path = Join-Path $sourceDir $file
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing source: $path"
+            }
+
+            Write-Host "FOUND: $path"
+          }
+
+      - name: Run feature redesign research
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "evaluate_pattern_256_feature_redesign.py"
+
+          py $script --root "$env:DATA_ROOT"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Feature redesign research failed"
+          }
+
+      - name: Verify output files and SHA256
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $outputDir = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_feature_redesign"
+
+          $sourceDir = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_research_redesign"
+
+          $resultPath = Join-Path `
+            $outputDir `
+            "feature_redesign_result.json"
+
+          $protocolPath = Join-Path `
+            $outputDir `
+            "feature_redesign_protocol.json"
+
+          $manifestPath = Join-Path `
+            $outputDir `
+            "feature_redesign_manifest.json"
+
+          $csvPath = Join-Path `
+            $outputDir `
+            "feature_redesign_plan.csv"
+
+          foreach ($path in @(
+            $resultPath,
+            $protocolPath,
+            $manifestPath,
+            $csvPath
+          )) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing output: $path"
+            }
+          }
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw | ConvertFrom-Json
+
+          $protocol = Get-Content `
+            -LiteralPath $protocolPath `
+            -Raw | ConvertFrom-Json
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw | ConvertFrom-Json
+
+          if ($result.version -ne "Clean V001") {
+            throw "Result version mismatch"
+          }
+
+          if ($protocol.version -ne "Clean V001") {
+            throw "Protocol version mismatch"
+          }
+
+          if ($manifest.version -ne "Clean V001") {
+            throw "Manifest version mismatch"
+          }
+
+          if ($result.execution_status -ne "PASS") {
+            throw "Execution not PASS"
+          }
+
+          if ($result.research_decision -ne "HOLD") {
+            throw "Unexpected research decision"
+          }
+
+          if ([int]$result.source_research_groups -ne 9) {
+            throw "Unexpected source group count"
+          }
+
+          if ([int]$result.hypothesis_rows -ne 15) {
+            throw "Unexpected hypothesis count"
+          }
+
+          if ($result.new_backtest_completed -ne $false) {
+            throw "Unexpected backtest completion"
+          }
+
+          if ($result.new_feature_performance_proven -ne $false) {
+            throw "Unexpected performance approval"
+          }
+
+          foreach ($field in @(
+            "statistical_independence_proven",
+            "independent_oos_proven",
+            "profitability_proven",
+            "approved_for_live_trading"
+          )) {
+            if ($result.$field -ne $false) {
+              throw "Invalid result safety field: $field"
+            }
+
+            if ($protocol.$field -ne $false) {
+              throw "Invalid protocol safety field: $field"
+            }
+          }
+
+          if ($protocol.automated_trading_enabled -ne $false) {
+            throw "Automated trading unexpectedly enabled"
+          }
+
+          foreach ($file in @(
+            "feature_redesign_plan.csv",
+            "feature_redesign_protocol.json",
+            "feature_redesign_result.json"
+          )) {
+            $path = Join-Path $outputDir $file
+
+            $property = `
+              $manifest.output_sha256.PSObject.Properties[$file]
+
+            if ($null -eq $property) {
+              throw "Missing output SHA256: $file"
+            }
+
+            $expected = (
+              [string]$property.Value
+            ).ToLowerInvariant()
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($expected -ne $actual) {
+              throw "Output SHA256 mismatch: $file"
+            }
+
+            Write-Host "PASS: output $file"
+          }
+
+          foreach ($file in @(
+            "research_redesign_comparison.csv",
+            "research_redesign_result.json",
+            "research_redesign_manifest.json"
+          )) {
+            $path = Join-Path $sourceDir $file
+
+            $property = `
+              $manifest.input_sha256.PSObject.Properties[$file]
+
+            if ($null -eq $property) {
+              throw "Missing input SHA256: $file"
+            }
+
+            $expected = (
+              [string]$property.Value
+            ).ToLowerInvariant()
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($expected -ne $actual) {
+              throw "Input SHA256 mismatch: $file"
+            }
+
+            Write-Host "PASS: input $file"
+          }
+
+          $rows = @(
+            Import-Csv -LiteralPath $csvPath
+          )
+
+          if ($rows.Count -ne 15) {
+            throw "Plan row count mismatch"
+          }
+
+          $ids = @{}
+
+          foreach ($row in $rows) {
+            if ($row.approved_for_live_scanner -ne "false") {
+              throw "Unexpected scanner approval"
+            }
+
+            if ($ids.ContainsKey($row.research_id)) {
+              throw "Duplicate research ID"
+            }
+
+            $ids[$row.research_id] = $true
+          }
+
+          Write-Host "PASS: source integrity"
+          Write-Host "PASS: output integrity"
+          Write-Host "PASS: hypothesis count"
+          Write-Host "PASS: research safety"
+
+      - name: Write job summary
+        if: success()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $resultPath = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_feature_redesign\feature_redesign_result.json"
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw | ConvertFrom-Json
+
+          @"
+          # Pattern 256 Feature Redesign Research
+
+          | Check | Result |
+          |---|---|
+          | Execution | $($result.execution_status) |
+          | Version | $($result.version) |
+          | Source rows | $($result.source_rows) |
+          | Selected events | $($result.selected_events) |
+          | Research groups | $($result.source_research_groups) |
+          | Hypothesis rows | $($result.hypothesis_rows) |
+          | New backtest completed | $($result.new_backtest_completed) |
+          | New feature performance proven | $($result.new_feature_performance_proven) |
+          | Research decision | $($result.research_decision) |
+          | Next stage | $($result.recommended_next_stage) |
+          | Statistical independence proven | $($result.statistical_independence_proven) |
+          | Independent OOS proven | $($result.independent_oos_proven) |
+          | Profitability proven | $($result.profitability_proven) |
+          | Live trading approved | $($result.approved_for_live_trading) |
+          | Input SHA256 | Verified |
+          | Output SHA256 | Verified |
+
+          ## Research limitations
+
+          - Candidate features are hypotheses, not proven signals.
+          - No new backtest was performed.
+          - Previously used TEST data cannot be reused as fresh OOS.
+          - Feature parameters must be frozen before independent validation.
+          - No automated trading is enabled.
+
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Encoding utf8 `
+            -Append
+
+      - name: Upload feature redesign reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-feature-redesign-v001
+          path: 'C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_feature_redesign\'
+          if-no-files-found: warn
+          retention-days: 30
