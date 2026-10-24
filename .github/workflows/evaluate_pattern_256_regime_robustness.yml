@@ -24,6 +24,9 @@ jobs:
       run:
         shell: powershell
 
+    env:
+      DATA_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -42,7 +45,9 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          $script = "evaluate_pattern_256_regime_robustness.py"
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "evaluate_pattern_256_regime_robustness.py"
 
           if (-not (Test-Path -LiteralPath $script)) {
             throw "Missing analysis script: $script"
@@ -58,9 +63,13 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
+          if (-not (Test-Path -LiteralPath $env:DATA_ROOT)) {
+            throw "Data root missing: $env:DATA_ROOT"
+          }
+
           $sourceDir = Join-Path `
-            $env:GITHUB_WORKSPACE `
-            "data/reports/pattern_256_market_regime"
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_market_regime"
 
           $files = @(
             "market_regime_comparison.csv",
@@ -78,41 +87,75 @@ jobs:
             Write-Host "FOUND: $path"
           }
 
+      - name: Validate source metadata
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $sourceDir = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_market_regime"
+
+          $resultPath = Join-Path `
+            $sourceDir `
+            "market_regime_result.json"
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw | ConvertFrom-Json
+
+          if ($result.execution_status -ne "PASS") {
+            throw "Source research execution is not PASS"
+          }
+
+          if ($result.version -ne "Clean V002") {
+            throw "Unexpected source version"
+          }
+
+          if ($result.approved_for_live_trading -ne $false) {
+            throw "Unexpected source trading approval"
+          }
+
+          Write-Host "PASS: source metadata"
+
       - name: Run regime robustness evaluation
         run: |
           $ErrorActionPreference = "Stop"
 
-          py evaluate_pattern_256_regime_robustness.py `
-            --root "$env:GITHUB_WORKSPACE" `
-            --min-events 100
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "evaluate_pattern_256_regime_robustness.py"
+
+          py $script `
+            --root "$env:DATA_ROOT" `
+            --min-events 30
 
           if ($LASTEXITCODE -ne 0) {
             throw "Regime robustness evaluation failed"
           }
 
-      - name: Verify results and SHA256
+      - name: Verify output files and SHA256
         run: |
           $ErrorActionPreference = "Stop"
 
           $outputDir = Join-Path `
-            $env:GITHUB_WORKSPACE `
-            "data/reports/pattern_256_regime_robustness"
-
-          $resultPath = Join-Path `
-            $outputDir `
-            "regime_robustness_result.json"
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_regime_robustness"
 
           $csvPath = Join-Path `
             $outputDir `
             "regime_robustness_comparison.csv"
+
+          $resultPath = Join-Path `
+            $outputDir `
+            "regime_robustness_result.json"
 
           $manifestPath = Join-Path `
             $outputDir `
             "regime_robustness_manifest.json"
 
           foreach ($path in @(
-            $resultPath,
             $csvPath,
+            $resultPath,
             $manifestPath
           )) {
             if (-not (Test-Path -LiteralPath $path)) {
@@ -128,12 +171,12 @@ jobs:
             -LiteralPath $manifestPath `
             -Raw | ConvertFrom-Json
 
-          if ($result.version -ne "Clean V001") {
-            throw "Evaluation version mismatch"
+          if ($result.version -ne "Clean V002") {
+            throw "Result version mismatch"
           }
 
           if ($result.execution_status -ne "PASS") {
-            throw "Evaluation did not PASS"
+            throw "Evaluation status is not PASS"
           }
 
           if ($result.research_decision -ne "HOLD") {
@@ -144,7 +187,7 @@ jobs:
             throw "Unexpected trading approval"
           }
 
-          if ($manifest.version -ne "Clean V001") {
+          if ($manifest.version -ne "Clean V002") {
             throw "Manifest version mismatch"
           }
 
@@ -161,10 +204,10 @@ jobs:
           ).Hash.ToLowerInvariant()
 
           $expectedCsvHash = `
-            $manifest.output_sha256.regime_robustness_comparison.csv
+            $manifest.outputs.'regime_robustness_comparison.csv'.sha256
 
           $expectedResultHash = `
-            $manifest.output_sha256.regime_robustness_result.json
+            $manifest.outputs.'regime_robustness_result.json'.sha256
 
           if ($actualCsvHash -ne $expectedCsvHash) {
             throw "CSV SHA256 mismatch"
@@ -174,15 +217,80 @@ jobs:
             throw "Result SHA256 mismatch"
           }
 
-          Write-Host "PASS: result verified"
-          Write-Host "PASS: SHA256 verified"
+          $sourcePath = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_market_regime\market_regime_comparison.csv"
+
+          $actualSourceHash = (
+            Get-FileHash `
+              -LiteralPath $sourcePath `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if ($actualSourceHash -ne $result.source_sha256) {
+            throw "Source SHA256 mismatch"
+          }
+
+          if ($actualSourceHash -ne $manifest.input.sha256) {
+            throw "Manifest input SHA256 mismatch"
+          }
+
+          $csvRows = @(
+            Import-Csv -LiteralPath $csvPath
+          )
+
+          if ($csvRows.Count -ne $result.comparison_rows) {
+            throw "Comparison row count mismatch"
+          }
+
+          Write-Host "PASS: output files"
+          Write-Host "PASS: input SHA256"
+          Write-Host "PASS: output SHA256"
+          Write-Host "PASS: comparison row count"
           Write-Host "PASS: trading approval remains false"
+
+      - name: Write job summary
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $resultPath = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_regime_robustness\regime_robustness_result.json"
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw | ConvertFrom-Json
+
+          @"
+          # Pattern 256 Regime Robustness
+
+          | Check | Result |
+          |---|---|
+          | Execution | $($result.execution_status) |
+          | Version | $($result.version) |
+          | Source rows | $($result.source_rows) |
+          | Comparison rows | $($result.comparison_rows) |
+          | Research decision | $($result.research_decision) |
+          | Statistical independence proven | $($result.statistical_independence_proven) |
+          | Live trading approved | $($result.approved_for_live_trading) |
+
+          ## Notes
+
+          - TRAIN and TEST are evaluated separately.
+          - Missing comparison groups remain visible.
+          - Small samples do not establish robustness.
+          - Results are observational only.
+          - No automated trading is enabled.
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Encoding utf8 `
+            -Append
 
       - name: Upload robustness reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pattern-256-regime-robustness
-          path: data/reports/pattern_256_regime_robustness/
+          name: pattern-256-regime-robustness-v002
+          path: 'C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_regime_robustness\'
           if-no-files-found: warn
           retention-days: 30
