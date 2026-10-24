@@ -1,0 +1,360 @@
+name: evaluate_pattern_256_reproducibility_sensitivity.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evaluate-pattern-256-reproducibility-sensitivity
+  cancel-in-progress: false
+
+jobs:
+  sensitivity:
+    name: sensitivity
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      DATA_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate Python
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python validation failed"
+          }
+
+      - name: Validate analysis script
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "evaluate_pattern_256_reproducibility_sensitivity.py"
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Missing analysis script: $script"
+          }
+
+          py -m py_compile $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax validation failed"
+          }
+
+      - name: Validate source reports
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $sourceDir = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_nonoverlap_reproducibility"
+
+          foreach ($file in @(
+            "reproducibility_comparison.csv",
+            "reproducibility_result.json",
+            "reproducibility_manifest.json"
+          )) {
+            $path = Join-Path $sourceDir $file
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing source report: $path"
+            }
+
+            Write-Host "FOUND: $path"
+          }
+
+      - name: Run sensitivity audit
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "evaluate_pattern_256_reproducibility_sensitivity.py"
+
+          py $script --root "$env:DATA_ROOT"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Sensitivity audit failed"
+          }
+
+      - name: Verify results and SHA256
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $sourceDir = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_nonoverlap_reproducibility"
+
+          $outputDir = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_reproducibility_sensitivity"
+
+          $csvPath = Join-Path `
+            $outputDir `
+            "sensitivity_comparison.csv"
+
+          $resultPath = Join-Path `
+            $outputDir `
+            "sensitivity_result.json"
+
+          $manifestPath = Join-Path `
+            $outputDir `
+            "sensitivity_manifest.json"
+
+          foreach ($path in @(
+            $csvPath,
+            $resultPath,
+            $manifestPath
+          )) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing output: $path"
+            }
+          }
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw | ConvertFrom-Json
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw | ConvertFrom-Json
+
+          if ($result.version -ne "Clean V001") {
+            throw "Result version mismatch"
+          }
+
+          if ($manifest.version -ne "Clean V001") {
+            throw "Manifest version mismatch"
+          }
+
+          if ($result.execution_status -ne "PASS") {
+            throw "Execution is not PASS"
+          }
+
+          if ($result.research_decision -ne "HOLD") {
+            throw "Unexpected research decision"
+          }
+
+          if ([int]$result.comparison_rows -ne 540) {
+            throw "Unexpected comparison row count"
+          }
+
+          if (
+            [int]$result.baseline_exploratory_reproducible -ne 0
+          ) {
+            throw "Baseline candidate count changed"
+          }
+
+          foreach ($field in @(
+            "statistical_independence_proven",
+            "independent_oos_proven",
+            "profitability_proven",
+            "approved_for_live_trading"
+          )) {
+            if ($result.$field -ne $false) {
+              throw "Invalid safety field: $field"
+            }
+          }
+
+          foreach ($file in @(
+            "sensitivity_comparison.csv",
+            "sensitivity_result.json"
+          )) {
+            $path = Join-Path $outputDir $file
+
+            $property = `
+              $manifest.output_sha256.PSObject.Properties[$file]
+
+            if ($null -eq $property) {
+              throw "Missing output SHA256: $file"
+            }
+
+            $expected = (
+              [string]$property.Value
+            ).ToLowerInvariant()
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($expected -ne $actual) {
+              throw "Output SHA256 mismatch: $file"
+            }
+
+            Write-Host "PASS: $file"
+          }
+
+          foreach ($file in @(
+            "reproducibility_comparison.csv",
+            "reproducibility_result.json",
+            "reproducibility_manifest.json"
+          )) {
+            $path = Join-Path $sourceDir $file
+
+            $property = `
+              $manifest.input_sha256.PSObject.Properties[$file]
+
+            if ($null -eq $property) {
+              throw "Missing input SHA256: $file"
+            }
+
+            $expected = (
+              [string]$property.Value
+            ).ToLowerInvariant()
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($expected -ne $actual) {
+              throw "Input SHA256 mismatch: $file"
+            }
+
+            Write-Host "PASS: $file"
+          }
+
+          $rows = @(
+            Import-Csv -LiteralPath $csvPath
+          )
+
+          if ($rows.Count -ne 540) {
+            throw "CSV row count mismatch"
+          }
+
+          $keys = @{}
+
+          foreach ($row in $rows) {
+            if ($row.research_decision -ne "HOLD") {
+              throw "Unexpected CSV research decision"
+            }
+
+            $key = @(
+              $row.timeframe,
+              $row.horizon,
+              $row.min_events,
+              $row.confidence,
+              $row.min_effect_pp
+            ) -join "|"
+
+            if ($keys.ContainsKey($key)) {
+              throw "Duplicate sensitivity scenario: $key"
+            }
+
+            $keys[$key] = $true
+          }
+
+          $counted = 0
+
+          foreach (
+            $property in $result.classification_counts.PSObject.Properties
+          ) {
+            $counted += [int]$property.Value
+          }
+
+          if ($counted -ne 540) {
+            throw "Classification count mismatch"
+          }
+
+          Write-Host "PASS: input SHA256"
+          Write-Host "PASS: output SHA256"
+          Write-Host "PASS: 540 sensitivity scenarios"
+          Write-Host "PASS: classification accounting"
+          Write-Host "PASS: research safety"
+
+      - name: Write job summary
+        if: success()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $resultPath = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_reproducibility_sensitivity\sensitivity_result.json"
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw | ConvertFrom-Json
+
+          @"
+          # Pattern 256 Reproducibility Sensitivity Audit
+
+          | Check | Result |
+          |---|---|
+          | Execution | $($result.execution_status) |
+          | Version | $($result.version) |
+          | Source rows | $($result.source_rows) |
+          | Selected events | $($result.selected_events) |
+          | Sensitivity comparison rows | $($result.comparison_rows) |
+          | Baseline reproducible groups | $($result.baseline_exploratory_reproducible) |
+          | Exploratory positive scenario cells | $($result.sensitivity_exploratory_positive_cells) |
+          | Research decision | $($result.research_decision) |
+          | Statistical independence proven | $($result.statistical_independence_proven) |
+          | Independent OOS proven | $($result.independent_oos_proven) |
+          | Profitability proven | $($result.profitability_proven) |
+          | Live trading approved | $($result.approved_for_live_trading) |
+          | Input SHA256 | Verified |
+          | Output SHA256 | Verified |
+
+          ## Classification counts
+
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Encoding utf8 `
+            -Append
+
+          foreach (
+            $property in $result.classification_counts.PSObject.Properties
+          ) {
+            "- $($property.Name): $($property.Value)" |
+              Out-File `
+                -FilePath $env:GITHUB_STEP_SUMMARY `
+                -Encoding utf8 `
+                -Append
+          }
+
+          @"
+
+          ## Research limitations
+
+          - Sensitivity scenarios reuse historical observations.
+          - Scenario counts are not independent evidence.
+          - Confidence bounds are not cluster-robust.
+          - Multiple comparisons are not globally corrected.
+          - No independent prospective OOS proof.
+          - No profitability proof.
+          - No automated trading.
+
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Encoding utf8 `
+            -Append
+
+      - name: Upload sensitivity reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-reproducibility-sensitivity-v001
+          path: 'C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_reproducibility_sensitivity\'
+          if-no-files-found: warn
+          retention-days: 30
