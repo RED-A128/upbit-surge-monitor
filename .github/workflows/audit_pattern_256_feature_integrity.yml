@@ -1,0 +1,294 @@
+name: audit_pattern_256_feature_integrity.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-pattern-256-feature-integrity
+  cancel-in-progress: false
+
+jobs:
+  feature-integrity:
+    name: feature-integrity
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 360
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      DATA_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate Python
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python is unavailable"
+          }
+
+          py -c "import pandas; import numpy"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Required Python packages unavailable"
+          }
+
+      - name: Validate audit script
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_feature_integrity.py"
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Missing audit script"
+          }
+
+          py -m py_compile $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax validation failed"
+          }
+
+      - name: Run integrity and gap audit
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_feature_integrity.py"
+
+          py $script --root "$env:DATA_ROOT"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Feature integrity audit failed"
+          }
+
+      - name: Verify audit outputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $reportDir = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_feature_integrity"
+
+          $summaryPath = Join-Path `
+            $reportDir `
+            "feature_integrity_summary.json"
+
+          $manifestPath = Join-Path `
+            $reportDir `
+            "feature_integrity_manifest.json"
+
+          $marketsPath = Join-Path `
+            $reportDir `
+            "feature_integrity_markets.csv"
+
+          foreach ($path in @(
+            $summaryPath,
+            $manifestPath,
+            $marketsPath
+          )) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing audit output: $path"
+            }
+          }
+
+          $summary = Get-Content `
+            -LiteralPath $summaryPath `
+            -Raw | ConvertFrom-Json
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw | ConvertFrom-Json
+
+          if ($summary.version -ne "Clean V001") {
+            throw "Unexpected audit version"
+          }
+
+          if ($summary.execution_status -ne "PASS") {
+            throw "Audit did not PASS"
+          }
+
+          if ($summary.feature_integrity_verified -ne $true) {
+            throw "Feature integrity not verified"
+          }
+
+          if ($summary.gap_audit_completed -ne $true) {
+            throw "Gap audit incomplete"
+          }
+
+          if ($summary.research_decision -ne "HOLD") {
+            throw "Unexpected research decision"
+          }
+
+          foreach ($field in @(
+            "train_experiment_completed",
+            "independent_oos_proven",
+            "statistical_independence_proven",
+            "profitability_proven",
+            "approved_for_live_trading",
+            "automated_trading_enabled"
+          )) {
+            if ($summary.$field -ne $false) {
+              throw "Safety gate failed: $field"
+            }
+          }
+
+          $expectedSummary = `
+            $manifest.output_sha256.'feature_integrity_summary.json'
+
+          $expectedMarkets = `
+            $manifest.output_sha256.'feature_integrity_markets.csv'
+
+          $actualSummary = (
+            Get-FileHash `
+              -LiteralPath $summaryPath `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          $actualMarkets = (
+            Get-FileHash `
+              -LiteralPath $marketsPath `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if ($expectedSummary -ne $actualSummary) {
+            throw "Summary SHA256 mismatch"
+          }
+
+          if ($expectedMarkets -ne $actualMarkets) {
+            throw "Market report SHA256 mismatch"
+          }
+
+          $markets = @(
+            Import-Csv -LiteralPath $marketsPath
+          )
+
+          if ($markets.Count -ne [int]$summary.market_files) {
+            throw "Audited market count mismatch"
+          }
+
+          $sourceRows = [long]0
+          $featureRows = [long]0
+          $eligibleRows = [long]0
+          $missingIntervals = [long]0
+          $gapEvents = [long]0
+
+          foreach ($market in $markets) {
+            if ($market.audit_status -ne "PASS") {
+              throw "Market audit not PASS: $($market.market)"
+            }
+
+            $sourceRows += [long]$market.source_rows
+            $featureRows += [long]$market.feature_rows
+            $eligibleRows += [long]$market.train_eligible_rows
+            $missingIntervals += [long]$market.missing_intervals
+            $gapEvents += [long]$market.gap_events
+          }
+
+          if ($sourceRows -ne [long]$summary.totals.source_rows) {
+            throw "Source row count mismatch"
+          }
+
+          if ($featureRows -ne [long]$summary.totals.feature_rows) {
+            throw "Feature row count mismatch"
+          }
+
+          if ($eligibleRows -ne [long]$summary.totals.train_eligible_rows) {
+            throw "Eligible row count mismatch"
+          }
+
+          if ($missingIntervals -ne [long]$summary.totals.missing_intervals) {
+            throw "Missing interval count mismatch"
+          }
+
+          if ($gapEvents -ne [long]$summary.totals.gap_events) {
+            throw "Gap event count mismatch"
+          }
+
+          Write-Host "PASS: Feature integrity"
+          Write-Host "PASS: Gap audit"
+          Write-Host "PASS: Source/feature row totals"
+          Write-Host "PASS: SHA256 verification"
+          Write-Host "PASS: Research safety"
+
+      - name: Write job summary
+        if: success()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $path = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_feature_integrity\feature_integrity_summary.json"
+
+          $result = Get-Content `
+            -LiteralPath $path `
+            -Raw | ConvertFrom-Json
+
+          @"
+          # Pattern 256 Feature Integrity & Gap Audit
+
+          | Check | Result |
+          |---|---|
+          | Execution | $($result.execution_status) |
+          | Version | $($result.version) |
+          | Market files | $($result.market_files) |
+          | Built audits | $($result.built_audits) |
+          | Resumed audits | $($result.resumed_audits) |
+          | Feature rows | $($result.totals.feature_rows) |
+          | Missing intervals | $($result.totals.missing_intervals) |
+          | Gap events | $($result.totals.gap_events) |
+          | Markets with gaps | $($result.markets_with_gaps) |
+          | Contiguous eligible rows | $($result.totals.contiguous_eligible_rows) |
+          | Complete feature rows | $($result.totals.feature_complete_rows) |
+          | TRAIN-eligible rows | $($result.totals.train_eligible_rows) |
+          | Markets without eligible rows | $($result.markets_with_zero_train_eligible_rows) |
+          | Feature integrity verified | $($result.feature_integrity_verified) |
+          | Gap audit completed | $($result.gap_audit_completed) |
+          | TRAIN experiment completed | $($result.train_experiment_completed) |
+          | Research decision | $($result.research_decision) |
+          | Independent OOS proven | $($result.independent_oos_proven) |
+          | Profitability proven | $($result.profitability_proven) |
+          | Live trading approved | $($result.approved_for_live_trading) |
+          | SHA256 | Verified |
+
+          ## Notes
+
+          - Original OHLCV and feature files were not modified.
+          - Missing intervals were counted, not filled.
+          - Eligibility requires 120 consecutive candles.
+          - This is a data-quality audit, not a backtest.
+          - No automated trading is enabled.
+
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Encoding utf8 `
+            -Append
+
+      - name: Upload audit reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-feature-integrity-v001
+          path: |
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_feature_integrity\feature_integrity_summary.json
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_feature_integrity\feature_integrity_manifest.json
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_feature_integrity\feature_integrity_markets.csv
+          if-no-files-found: warn
+          retention-days: 30
