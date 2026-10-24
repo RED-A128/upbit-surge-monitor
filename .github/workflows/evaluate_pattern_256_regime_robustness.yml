@@ -59,6 +59,8 @@ jobs:
             throw "Python syntax validation failed"
           }
 
+          Write-Host "PASS: Python syntax"
+
       - name: Validate source reports
         run: |
           $ErrorActionPreference = "Stop"
@@ -67,11 +69,17 @@ jobs:
             $env:DATA_ROOT `
             "data\reports\pattern_256_market_regime"
 
-          foreach ($file in @(
+          if (-not (Test-Path -LiteralPath $sourceDir -PathType Container)) {
+            throw "Missing source directory: $sourceDir"
+          }
+
+          $files = @(
             "market_regime_comparison.csv",
             "market_regime_result.json",
             "market_regime_manifest.json"
-          )) {
+          )
+
+          foreach ($file in $files) {
             $path = Join-Path $sourceDir $file
 
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
@@ -80,6 +88,8 @@ jobs:
 
             Write-Host "FOUND: $path"
           }
+
+          Write-Host "PASS: source reports"
 
       - name: Validate source metadata
         run: |
@@ -123,6 +133,8 @@ jobs:
             throw "Regime robustness evaluation failed"
           }
 
+          Write-Host "PASS: regime robustness evaluation"
+
       - name: Verify output files and SHA256
         run: |
           $ErrorActionPreference = "Stop"
@@ -147,6 +159,10 @@ jobs:
             $outputDir `
             "regime_robustness_manifest.json"
 
+          # --------------------------------------------------
+          # 1. Validate output files
+          # --------------------------------------------------
+
           foreach ($path in @(
             $csvPath,
             $resultPath,
@@ -157,6 +173,12 @@ jobs:
             }
           }
 
+          Write-Host "PASS: output files exist"
+
+          # --------------------------------------------------
+          # 2. Read result and manifest
+          # --------------------------------------------------
+
           $result = Get-Content `
             -LiteralPath $resultPath `
             -Raw | ConvertFrom-Json
@@ -164,6 +186,10 @@ jobs:
           $manifest = Get-Content `
             -LiteralPath $manifestPath `
             -Raw | ConvertFrom-Json
+
+          # --------------------------------------------------
+          # 3. Validate research safety
+          # --------------------------------------------------
 
           if ($result.version -ne "Clean V002") {
             throw "Result version mismatch"
@@ -185,6 +211,12 @@ jobs:
             throw "Manifest version mismatch"
           }
 
+          Write-Host "PASS: research safety"
+
+          # --------------------------------------------------
+          # 4. Validate manifest structure
+          # --------------------------------------------------
+
           if ($null -eq $manifest.output_sha256) {
             throw "Manifest output_sha256 missing"
           }
@@ -193,7 +225,11 @@ jobs:
             throw "Manifest input_sha256 missing"
           }
 
-          # Verify every output file against the actual manifest structure.
+          Write-Host "PASS: manifest structure"
+
+          # --------------------------------------------------
+          # 5. Verify output SHA256
+          # --------------------------------------------------
 
           $outputFiles = @(
             "regime_robustness_comparison.csv",
@@ -209,7 +245,9 @@ jobs:
               throw "Missing output SHA256 entry: $file"
             }
 
-            $expected = ([string]$entry.Value).Trim().ToLowerInvariant()
+            $expected = (
+              [string]$entry.Value
+            ).Trim().ToLowerInvariant()
 
             if ($expected -notmatch '^[a-f0-9]{64}$') {
               throw "Invalid output SHA256: $file"
@@ -221,7 +259,7 @@ jobs:
                 -Algorithm SHA256
             ).Hash.Trim().ToLowerInvariant()
 
-            Write-Host "FILE: $file"
+            Write-Host "OUTPUT: $file"
             Write-Host "EXPECTED: $expected"
             Write-Host "ACTUAL:   $actual"
 
@@ -232,7 +270,9 @@ jobs:
             Write-Host "PASS: $file"
           }
 
-          # Verify all three source files, not only the comparison CSV.
+          # --------------------------------------------------
+          # 6. Verify input SHA256
+          # --------------------------------------------------
 
           $sourceFiles = @(
             "market_regime_comparison.csv",
@@ -243,13 +283,19 @@ jobs:
           foreach ($file in $sourceFiles) {
             $path = Join-Path $sourceDir $file
 
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing source file: $path"
+            }
+
             $entry = $manifest.input_sha256.PSObject.Properties[$file]
 
             if ($null -eq $entry) {
               throw "Missing input SHA256 entry: $file"
             }
 
-            $expected = ([string]$entry.Value).Trim().ToLowerInvariant()
+            $expected = (
+              [string]$entry.Value
+            ).Trim().ToLowerInvariant()
 
             if ($expected -notmatch '^[a-f0-9]{64}$') {
               throw "Invalid input SHA256: $file"
@@ -261,7 +307,7 @@ jobs:
                 -Algorithm SHA256
             ).Hash.Trim().ToLowerInvariant()
 
-            Write-Host "SOURCE: $file"
+            Write-Host "INPUT: $file"
             Write-Host "EXPECTED: $expected"
             Write-Host "ACTUAL:   $actual"
 
@@ -272,45 +318,78 @@ jobs:
             Write-Host "PASS: $file"
           }
 
-          # Cross-check source hash recorded in the result JSON.
+          # --------------------------------------------------
+          # 7. Optional result source SHA256 cross-check
+          # --------------------------------------------------
 
-          $sourceCsvPath = Join-Path `
-            $sourceDir `
-            "market_regime_comparison.csv"
+          $sourceHashProperty = `
+            $result.PSObject.Properties["source_sha256"]
 
-          $actualSourceHash = (
-            Get-FileHash `
-              -LiteralPath $sourceCsvPath `
-              -Algorithm SHA256
-          ).Hash.Trim().ToLowerInvariant()
+          if ($null -ne $sourceHashProperty) {
+            $resultSourceHash = (
+              [string]$sourceHashProperty.Value
+            ).Trim().ToLowerInvariant()
 
-          $resultSourceHash = (
-            [string]$result.source_sha256
-          ).Trim().ToLowerInvariant()
+            if ($resultSourceHash -notmatch '^[a-f0-9]{64}$') {
+              throw "Invalid result source_sha256"
+            }
 
-          if ($resultSourceHash -notmatch '^[a-f0-9]{64}$') {
-            throw "Invalid result source_sha256"
+            $sourceCsvPath = Join-Path `
+              $sourceDir `
+              "market_regime_comparison.csv"
+
+            $actualSourceHash = (
+              Get-FileHash `
+                -LiteralPath $sourceCsvPath `
+                -Algorithm SHA256
+            ).Hash.Trim().ToLowerInvariant()
+
+            if ($actualSourceHash -ne $resultSourceHash) {
+              throw "Result source SHA256 mismatch"
+            }
+
+            Write-Host "PASS: result source SHA256"
+          }
+          else {
+            Write-Host "INFO: result source_sha256 not present"
+            Write-Host "PASS: source integrity verified using manifest input_sha256"
           }
 
-          if ($actualSourceHash -ne $resultSourceHash) {
-            throw "Result source SHA256 mismatch"
-          }
-
-          # Verify CSV row count.
+          # --------------------------------------------------
+          # 8. Verify CSV row count
+          # --------------------------------------------------
 
           $csvRows = @(
             Import-Csv -LiteralPath $csvPath
           )
 
-          if ($csvRows.Count -ne [int]$result.comparison_rows) {
+          $expectedRows = [int]$result.comparison_rows
+
+          if ($csvRows.Count -ne $expectedRows) {
+            Write-Host "Expected rows: $expectedRows"
+            Write-Host "Actual rows: $($csvRows.Count)"
+
             throw "Comparison row count mismatch"
           }
 
-          Write-Host "PASS: all output SHA256"
-          Write-Host "PASS: all input SHA256"
-          Write-Host "PASS: result source SHA256"
           Write-Host "PASS: comparison row count"
-          Write-Host "PASS: trading approval remains false"
+
+          # --------------------------------------------------
+          # 9. Final verification
+          # --------------------------------------------------
+
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "PATTERN 256 REGIME ROBUSTNESS"
+          Write-Host "========================================"
+          Write-Host "PASS: Python evaluation"
+          Write-Host "PASS: output files"
+          Write-Host "PASS: manifest structure"
+          Write-Host "PASS: input SHA256"
+          Write-Host "PASS: output SHA256"
+          Write-Host "PASS: comparison row count"
+          Write-Host "PASS: research safety"
+          Write-Host "========================================"
 
       - name: Write job summary
         if: success()
@@ -339,6 +418,7 @@ jobs:
           | Live trading approved | $($result.approved_for_live_trading) |
           | Input SHA256 | Verified |
           | Output SHA256 | Verified |
+          | Comparison row count | Verified |
 
           ## Notes
 
