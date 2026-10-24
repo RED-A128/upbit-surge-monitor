@@ -1,0 +1,318 @@
+name: evaluate_pattern_256_actual_event_overlap.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evaluate-pattern-256-actual-event-overlap
+  cancel-in-progress: false
+
+jobs:
+  actual-event-overlap:
+    name: actual-event-overlap
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 180
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      DATA_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate Python
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python validation failed"
+          }
+
+      - name: Validate analysis script
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "evaluate_pattern_256_actual_event_overlap.py"
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Missing script: $script"
+          }
+
+          py -m py_compile $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax validation failed"
+          }
+
+      - name: Validate source
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $source = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_accumulation_candidate_independent_backtest\backtest_trades.csv"
+
+          if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+            throw "Missing source: $source"
+          }
+
+          $item = Get-Item -LiteralPath $source
+
+          if ($item.Length -le 0) {
+            throw "Source CSV is empty"
+          }
+
+          Write-Host "Source: $source"
+          Write-Host "Bytes: $($item.Length)"
+
+      - name: Run actual event overlap audit
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "evaluate_pattern_256_actual_event_overlap.py"
+
+          py $script --root "$env:DATA_ROOT"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Actual event overlap audit failed"
+          }
+
+      - name: Verify output files and SHA256
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $outputDir = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_actual_event_overlap"
+
+          $source = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_accumulation_candidate_independent_backtest\backtest_trades.csv"
+
+          $csvPath = Join-Path `
+            $outputDir `
+            "actual_event_overlap_comparison.csv"
+
+          $resultPath = Join-Path `
+            $outputDir `
+            "actual_event_overlap_result.json"
+
+          $manifestPath = Join-Path `
+            $outputDir `
+            "actual_event_overlap_manifest.json"
+
+          foreach ($path in @(
+            $csvPath,
+            $resultPath,
+            $manifestPath
+          )) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing output: $path"
+            }
+          }
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw | ConvertFrom-Json
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw | ConvertFrom-Json
+
+          if ($result.version -ne "Clean V001") {
+            throw "Result version mismatch"
+          }
+
+          if ($manifest.version -ne "Clean V001") {
+            throw "Manifest version mismatch"
+          }
+
+          if ($result.execution_status -ne "PASS") {
+            throw "Execution status is not PASS"
+          }
+
+          if ($result.research_decision -ne "HOLD") {
+            throw "Unexpected research decision"
+          }
+
+          if ($result.comparison_rows -ne 9) {
+            throw "Unexpected comparison row count"
+          }
+
+          foreach ($field in @(
+            "statistical_independence_proven",
+            "independent_oos_proven",
+            "profitability_proven",
+            "approved_for_live_trading"
+          )) {
+            if ($result.$field -ne $false) {
+              throw "Safety field invalid: $field"
+            }
+          }
+
+          $outputFiles = @(
+            "actual_event_overlap_comparison.csv",
+            "actual_event_overlap_result.json"
+          )
+
+          foreach ($file in $outputFiles) {
+            $path = Join-Path $outputDir $file
+
+            $property = `
+              $manifest.output_sha256.PSObject.Properties[$file]
+
+            if ($null -eq $property) {
+              throw "Missing output SHA256: $file"
+            }
+
+            $expected = (
+              [string]$property.Value
+            ).ToLowerInvariant()
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($actual -ne $expected) {
+              throw "Output SHA256 mismatch: $file"
+            }
+
+            Write-Host "PASS: $file"
+          }
+
+          $sourceProperty = `
+            $manifest.input_sha256.PSObject.Properties["backtest_trades.csv"]
+
+          if ($null -eq $sourceProperty) {
+            throw "Missing source SHA256"
+          }
+
+          $expectedSource = (
+            [string]$sourceProperty.Value
+          ).ToLowerInvariant()
+
+          $actualSource = (
+            Get-FileHash `
+              -LiteralPath $source `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if ($actualSource -ne $expectedSource) {
+            throw "Source SHA256 mismatch"
+          }
+
+          $rows = @(
+            Import-Csv -LiteralPath $csvPath
+          )
+
+          if ($rows.Count -ne 9) {
+            throw "CSV row count mismatch"
+          }
+
+          $totalEvents = 0
+          $totalOverlapping = 0
+
+          foreach ($row in $rows) {
+            if ($row.research_decision -ne "HOLD") {
+              throw "Invalid research decision in CSV"
+            }
+
+            $events = [long]$row.events
+            $overlapping = [long]$row.overlapping_events
+            $nonoverlapping = [long]$row.nonoverlapping_events
+
+            if ($events -ne ($overlapping + $nonoverlapping)) {
+              throw "Invalid event totals"
+            }
+
+            $totalEvents += $events
+            $totalOverlapping += $overlapping
+          }
+
+          if ($totalEvents -ne [long]$result.eligible_rows) {
+            throw "Eligible event count mismatch"
+          }
+
+          if ($totalOverlapping -ne [long]$result.overlapping_events) {
+            throw "Overlapping event count mismatch"
+          }
+
+          Write-Host "PASS: input SHA256"
+          Write-Host "PASS: output SHA256"
+          Write-Host "PASS: comparison rows"
+          Write-Host "PASS: event counts"
+          Write-Host "PASS: research safety"
+
+      - name: Write job summary
+        if: success()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $resultPath = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_actual_event_overlap\actual_event_overlap_result.json"
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw | ConvertFrom-Json
+
+          @"
+          # Pattern 256 Actual Event Overlap Audit
+
+          | Check | Result |
+          |---|---|
+          | Execution | $($result.execution_status) |
+          | Version | $($result.version) |
+          | Source rows | $($result.source_rows) |
+          | Eligible rows | $($result.eligible_rows) |
+          | Overlapping events | $($result.overlapping_events) |
+          | Overlap rate (%) | $($result.overlap_rate_pct) |
+          | Overlap clusters | $($result.overlap_clusters) |
+          | Comparison rows | $($result.comparison_rows) |
+          | Research decision | $($result.research_decision) |
+          | Statistical independence proven | $($result.statistical_independence_proven) |
+          | Independent OOS proven | $($result.independent_oos_proven) |
+          | Profitability proven | $($result.profitability_proven) |
+          | Live trading approved | $($result.approved_for_live_trading) |
+          | Input SHA256 | Verified |
+          | Output SHA256 | Verified |
+
+          ## Limitations
+
+          - Overlap is measured from theoretical event windows.
+          - Market regimes are not attributed.
+          - Cluster counts are not effective sample sizes.
+          - Statistical independence remains unproven.
+          - No automated trading is enabled.
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Encoding utf8 `
+            -Append
+
+      - name: Upload overlap reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-actual-event-overlap-v001
+          path: 'C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_actual_event_overlap\'
+          if-no-files-found: warn
+          retention-days: 30
