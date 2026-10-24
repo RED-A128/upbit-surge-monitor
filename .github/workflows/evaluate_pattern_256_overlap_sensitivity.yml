@@ -1,0 +1,365 @@
+name: evaluate_pattern_256_overlap_sensitivity.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evaluate-pattern-256-overlap-sensitivity
+  cancel-in-progress: false
+
+jobs:
+  overlap-sensitivity:
+    name: overlap-sensitivity
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 60
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      DATA_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate Python
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python validation failed"
+          }
+
+      - name: Validate analysis script
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "evaluate_pattern_256_overlap_sensitivity.py"
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Missing analysis script: $script"
+          }
+
+          py -m py_compile $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax validation failed"
+          }
+
+          Write-Host "PASS: Python syntax"
+
+      - name: Validate source files
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $sourceDir = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_effect_uncertainty"
+
+          foreach ($file in @(
+            "effect_uncertainty_comparison.csv",
+            "effect_uncertainty_result.json",
+            "effect_uncertainty_manifest.json"
+          )) {
+            $path = Join-Path $sourceDir $file
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing source file: $path"
+            }
+
+            Write-Host "FOUND: $path"
+          }
+
+      - name: Run overlap sensitivity audit
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "evaluate_pattern_256_overlap_sensitivity.py"
+
+          py $script --root "$env:DATA_ROOT"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Overlap sensitivity audit failed"
+          }
+
+      - name: Verify results and SHA256
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $sourceDir = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_effect_uncertainty"
+
+          $outputDir = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_overlap_sensitivity"
+
+          $csvPath = Join-Path `
+            $outputDir `
+            "overlap_sensitivity_comparison.csv"
+
+          $resultPath = Join-Path `
+            $outputDir `
+            "overlap_sensitivity_result.json"
+
+          $manifestPath = Join-Path `
+            $outputDir `
+            "overlap_sensitivity_manifest.json"
+
+          foreach ($path in @(
+            $csvPath,
+            $resultPath,
+            $manifestPath
+          )) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing output: $path"
+            }
+          }
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw | ConvertFrom-Json
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw | ConvertFrom-Json
+
+          if ($result.version -ne "Clean V001") {
+            throw "Result version mismatch"
+          }
+
+          if ($manifest.version -ne "Clean V001") {
+            throw "Manifest version mismatch"
+          }
+
+          if ($result.execution_status -ne "PASS") {
+            throw "Execution is not PASS"
+          }
+
+          if ($result.research_decision -ne "HOLD") {
+            throw "Unexpected research decision"
+          }
+
+          if ($result.comparison_rows -ne 162) {
+            throw "Unexpected comparison row count"
+          }
+
+          if ($result.original_candidates -ne 7) {
+            throw "Unexpected candidate count"
+          }
+
+          foreach ($field in @(
+            "approved_for_live_trading",
+            "statistical_independence_proven",
+            "independent_oos_proven",
+            "profitability_proven"
+          )) {
+            if ($result.$field -ne $false) {
+              throw "Safety field invalid: $field"
+            }
+          }
+
+          foreach ($file in @(
+            "overlap_sensitivity_comparison.csv",
+            "overlap_sensitivity_result.json"
+          )) {
+            $path = Join-Path $outputDir $file
+
+            $property = `
+              $manifest.output_sha256.PSObject.Properties[$file]
+
+            if ($null -eq $property) {
+              throw "Missing output hash: $file"
+            }
+
+            $expected = (
+              [string]$property.Value
+            ).Trim().ToLowerInvariant()
+
+            if ($expected -notmatch '^[a-f0-9]{64}$') {
+              throw "Invalid output hash: $file"
+            }
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($actual -ne $expected) {
+              throw "Output SHA256 mismatch: $file"
+            }
+
+            Write-Host "PASS: $file"
+          }
+
+          foreach ($file in @(
+            "effect_uncertainty_comparison.csv",
+            "effect_uncertainty_result.json",
+            "effect_uncertainty_manifest.json"
+          )) {
+            $path = Join-Path $sourceDir $file
+
+            $property = `
+              $manifest.input_sha256.PSObject.Properties[$file]
+
+            if ($null -eq $property) {
+              throw "Missing input hash: $file"
+            }
+
+            $expected = (
+              [string]$property.Value
+            ).Trim().ToLowerInvariant()
+
+            if ($expected -notmatch '^[a-f0-9]{64}$') {
+              throw "Invalid input hash: $file"
+            }
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($actual -ne $expected) {
+              throw "Input SHA256 mismatch: $file"
+            }
+
+            Write-Host "PASS: $file"
+          }
+
+          $rows = @(
+            Import-Csv -LiteralPath $csvPath
+          )
+
+          if ($rows.Count -ne 162) {
+            throw "CSV row count mismatch"
+          }
+
+          $expectedEffects = @(1, 2, 5, 10, 20, 50)
+
+          foreach ($effect in $expectedEffects) {
+            $count = @(
+              $rows | Where-Object {
+                [int]$_.design_effect -eq $effect
+              }
+            ).Count
+
+            if ($count -ne 27) {
+              throw "Invalid design effect count: $effect"
+            }
+          }
+
+          $validStatuses = @(
+            "NOT_AVAILABLE",
+            "EXPLORATORY_POSITIVE",
+            "EXPLORATORY_NEGATIVE",
+            "CROSSES_ZERO"
+          )
+
+          foreach ($row in $rows) {
+            if ($row.sensitivity_status -notin $validStatuses) {
+              throw "Invalid sensitivity status"
+            }
+
+            if ($row.research_decision -ne "HOLD") {
+              throw "Invalid row research decision"
+            }
+          }
+
+          Write-Host "PASS: input SHA256"
+          Write-Host "PASS: output SHA256"
+          Write-Host "PASS: 162 comparison rows"
+          Write-Host "PASS: six design-effect scenarios"
+          Write-Host "PASS: research safety"
+
+      - name: Write job summary
+        if: success()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $resultPath = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_overlap_sensitivity\overlap_sensitivity_result.json"
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw | ConvertFrom-Json
+
+          $candidates = @(
+            $result.candidate_summary
+          )
+
+          $lines = @(
+            "# Pattern 256 Overlap Sensitivity Audit",
+            "",
+            "| Check | Result |",
+            "|---|---|",
+            "| Execution | $($result.execution_status) |",
+            "| Version | $($result.version) |",
+            "| Source rows | $($result.source_rows) |",
+            "| Comparison rows | $($result.comparison_rows) |",
+            "| Original candidates | $($result.original_candidates) |",
+            "| Research decision | $($result.research_decision) |",
+            "| Statistical independence proven | $($result.statistical_independence_proven) |",
+            "| Independent OOS proven | $($result.independent_oos_proven) |",
+            "| Profitability proven | $($result.profitability_proven) |",
+            "| Live trading approved | $($result.approved_for_live_trading) |",
+            "| Input SHA256 | Verified |",
+            "| Output SHA256 | Verified |",
+            "",
+            "## Sensitivity of Original Seven Candidates",
+            "",
+            "| Design effect | Exploratory positive |",
+            "|---|---|"
+          )
+
+          foreach ($effect in @(1, 2, 5, 10, 20, 50)) {
+            $retained = @(
+              $candidates | Where-Object {
+                $_.positive_design_effects -contains $effect
+              }
+            ).Count
+
+            $lines += "| $effect | $retained / 7 |"
+          }
+
+          $lines += @(
+            "",
+            "## Limitations",
+            "",
+            "- Design effects are hypothetical.",
+            "- Actual event overlap is not measured.",
+            "- Confidence intervals are exploratory.",
+            "- Event-level validation remains required.",
+            "- No automated trading is enabled."
+          )
+
+          $lines -join "`n" | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Encoding utf8 `
+            -Append
+
+      - name: Upload sensitivity reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-overlap-sensitivity-v001
+          path: 'C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_overlap_sensitivity\'
+          if-no-files-found: warn
+          retention-days: 30
