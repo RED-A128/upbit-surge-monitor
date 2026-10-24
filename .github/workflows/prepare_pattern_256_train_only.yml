@@ -1,0 +1,319 @@
+name: prepare_pattern_256_train_only.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prepare-pattern-256-train-only
+  cancel-in-progress: false
+
+jobs:
+  train-only:
+    name: train-only
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 180
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      DATA_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate Python
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+      - name: Validate preparation script
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "prepare_pattern_256_train_only.py"
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Missing preparation script: $script"
+          }
+
+          py -m py_compile $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax validation failed"
+          }
+
+      - name: Validate source files
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $source = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_accumulation_candidate_independent_backtest\backtest_trades.csv"
+
+          $audit = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_feature_integrity\feature_integrity_summary.json"
+
+          foreach ($path in @($source, $audit)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing source file: $path"
+            }
+          }
+
+          $auditResult = Get-Content `
+            -LiteralPath $audit `
+            -Raw | ConvertFrom-Json
+
+          if ($auditResult.execution_status -ne "PASS") {
+            throw "Feature audit is not PASS"
+          }
+
+          if ($auditResult.feature_integrity_verified -ne $true) {
+            throw "Feature integrity not verified"
+          }
+
+          if ($auditResult.gap_audit_completed -ne $true) {
+            throw "Gap audit incomplete"
+          }
+
+          Write-Host "PASS: Source files"
+          Write-Host "PASS: Feature audit"
+
+      - name: Prepare TRAIN-only dataset
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "prepare_pattern_256_train_only.py"
+
+          py $script `
+            --root "$env:DATA_ROOT" `
+            --cutoff "2025-01-01T00:00:00+00:00"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "TRAIN-only preparation failed"
+          }
+
+      - name: Verify outputs and SHA256
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $outputDir = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_train_only"
+
+          $csvPath = Join-Path `
+            $outputDir `
+            "train_only_events.csv"
+
+          $resultPath = Join-Path `
+            $outputDir `
+            "train_only_result.json"
+
+          $manifestPath = Join-Path `
+            $outputDir `
+            "train_only_manifest.json"
+
+          foreach ($path in @(
+            $csvPath,
+            $resultPath,
+            $manifestPath
+          )) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing output: $path"
+            }
+          }
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw | ConvertFrom-Json
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw | ConvertFrom-Json
+
+          if ($result.version -ne "Clean V001") {
+            throw "Unexpected result version"
+          }
+
+          if ($manifest.version -ne "Clean V001") {
+            throw "Unexpected manifest version"
+          }
+
+          if ($result.execution_status -ne "PASS") {
+            throw "Preparation not PASS"
+          }
+
+          if ($result.train_dataset_prepared -ne $true) {
+            throw "TRAIN dataset not prepared"
+          }
+
+          if ($result.train_experiment_completed -ne $false) {
+            throw "Unexpected training completion"
+          }
+
+          if ($result.feature_values_joined -ne $false) {
+            throw "Unexpected feature join status"
+          }
+
+          if ($result.research_decision -ne "HOLD") {
+            throw "Unexpected research decision"
+          }
+
+          foreach ($field in @(
+            "independent_oos_proven",
+            "statistical_independence_proven",
+            "profitability_proven",
+            "approved_for_live_trading",
+            "automated_trading_enabled"
+          )) {
+            if ($result.$field -ne $false) {
+              throw "Safety gate failed: $field"
+            }
+          }
+
+          $expectedCsv = `
+            $manifest.output_sha256.'train_only_events.csv'
+
+          $expectedResult = `
+            $manifest.output_sha256.'train_only_result.json'
+
+          $actualCsv = (
+            Get-FileHash `
+              -LiteralPath $csvPath `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          $actualResult = (
+            Get-FileHash `
+              -LiteralPath $resultPath `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if ($actualCsv -ne $expectedCsv) {
+            throw "TRAIN CSV SHA256 mismatch"
+          }
+
+          if ($actualResult -ne $expectedResult) {
+            throw "Result SHA256 mismatch"
+          }
+
+          $source = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_accumulation_candidate_independent_backtest\backtest_trades.csv"
+
+          $audit = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_feature_integrity\feature_integrity_summary.json"
+
+          $actualSource = (
+            Get-FileHash `
+              -LiteralPath $source `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          $actualAudit = (
+            Get-FileHash `
+              -LiteralPath $audit `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if (
+            $actualSource -ne
+            $manifest.input_sha256.'backtest_trades.csv'
+          ) {
+            throw "Source SHA256 mismatch"
+          }
+
+          if (
+            $actualAudit -ne
+            $manifest.input_sha256.'feature_integrity_summary.json'
+          ) {
+            throw "Audit SHA256 mismatch"
+          }
+
+          if ([long]$result.selected_rows -le 0) {
+            throw "TRAIN dataset is empty"
+          }
+
+          Write-Host "PASS: TRAIN-only dataset"
+          Write-Host "PASS: Input SHA256"
+          Write-Host "PASS: Output SHA256"
+          Write-Host "PASS: Research safety gates"
+
+      - name: Write job summary
+        if: success()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $path = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_train_only\train_only_result.json"
+
+          $result = Get-Content `
+            -LiteralPath $path `
+            -Raw | ConvertFrom-Json
+
+          @"
+          # Pattern 256 TRAIN-ONLY Dataset
+
+          | Check | Result |
+          |---|---|
+          | Execution | $($result.execution_status) |
+          | Version | $($result.version) |
+          | TRAIN cutoff | $($result.train_cutoff) |
+          | Source rows | $($result.source_rows) |
+          | Selected TRAIN rows | $($result.selected_rows) |
+          | Selected +30% hits | $($result.selected_hits) |
+          | Feature values joined | $($result.feature_values_joined) |
+          | TRAIN dataset prepared | $($result.train_dataset_prepared) |
+          | TRAIN experiment completed | $($result.train_experiment_completed) |
+          | Research decision | $($result.research_decision) |
+          | Independent OOS proven | $($result.independent_oos_proven) |
+          | Statistical independence proven | $($result.statistical_independence_proven) |
+          | Profitability proven | $($result.profitability_proven) |
+          | Live trading approved | $($result.approved_for_live_trading) |
+          | SHA256 | Verified |
+
+          ## Research limitations
+
+          - Only completed historical TRAIN outcomes are included.
+          - Events crossing the TRAIN boundary are excluded.
+          - Feature values have not yet been joined.
+          - Event independence is not established.
+          - This is not a new backtest or independent OOS validation.
+          - No automated trading is enabled.
+
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Encoding utf8 `
+            -Append
+
+      - name: Upload TRAIN reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-train-only-v001
+          path: |
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_train_only\train_only_result.json
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_train_only\train_only_manifest.json
+          if-no-files-found: warn
+          retention-days: 30
