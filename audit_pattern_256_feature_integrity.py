@@ -150,6 +150,7 @@ REQUIRED_FEATURES = [
 ]
 
 MARKET_COLUMNS = [
+    "version",
     "timeframe",
     "market",
     "source_rows",
