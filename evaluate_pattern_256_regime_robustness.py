@@ -10,7 +10,681 @@ No automated trading.
 Purpose:
 - Compare PATTERN_256_ONLY against BOTH.
 - Compare TRAIN and TEST performance.
-- Evaluate UP, DOWN, SIDEWAYS regimes.
+- Evaluate UP, DOWN, SIDEWAYS regimes.#!/usr/bin/env python3
+"""
+Pattern 256 Regime Robustness Audit
+Version: Clean V002
+
+Research only.
+No automated trading.
+
+- Validate market regime comparison CSV.
+- Compare 256-only against 256+accumulation.
+- Separate TRAIN and TEST.
+- Preserve original source files.
+- Generate SHA256-verified research reports.
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import hashlib
+import io
+import json
+import math
+import os
+import sys
+import tempfile
+
+from collections import defaultdict
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+VERSION = "Clean V002"
+
+FIELDS = [
+    "split",
+    "timeframe",
+    "horizon",
+    "regime",
+    "classification",
+    "events",
+    "hits",
+    "hit_rate_pct",
+]
+
+OUTPUT_COLUMNS = [
+    "split",
+    "timeframe",
+    "horizon",
+    "regime",
+    "only_events",
+    "only_hits",
+    "only_hit_rate_pct",
+    "both_events",
+    "both_hits",
+    "both_hit_rate_pct",
+    "difference_pp",
+    "minimum_sample_met",
+    "direction",
+    "research_decision",
+]
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+
+    with path.open("rb") as handle:
+        for block in iter(
+            lambda: handle.read(1024 * 1024),
+            b"",
+        ):
+            digest.update(block)
+
+    return digest.hexdigest()
+
+
+def write_atomic(path: Path, content: str) -> None:
+    path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    fd, name = tempfile.mkstemp(
+        prefix="." + path.name + ".",
+        suffix=".tmp",
+        dir=str(path.parent),
+    )
+
+    try:
+        with os.fdopen(
+            fd,
+            "w",
+            encoding="utf-8",
+            newline="",
+        ) as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        os.replace(name, path)
+
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+
+
+def json_text(value: object) -> str:
+    return (
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+
+
+def parse_int(
+    value: str,
+    label: str,
+    line: int,
+) -> int:
+    if not value or not value.isdigit():
+        raise ValueError(
+            f"Line {line}: invalid {label}: {value!r}"
+        )
+
+    return int(value)
+
+
+def parse_rate(
+    value: str,
+    line: int,
+) -> float:
+    try:
+        result = float(value)
+
+    except (ValueError, TypeError):
+        raise ValueError(
+            f"Line {line}: invalid hit_rate_pct: {value!r}"
+        ) from None
+
+    if (
+        not math.isfinite(result)
+        or not 0 <= result <= 100
+    ):
+        raise ValueError(
+            f"Line {line}: hit_rate_pct out of range"
+        )
+
+    return result
+
+
+def load_source(path: Path):
+    records = {}
+    total = 0
+
+    with path.open(
+        "r",
+        encoding="utf-8-sig",
+        newline="",
+    ) as handle:
+
+        reader = csv.DictReader(handle)
+
+        if (
+            reader.fieldnames is None
+            or set(reader.fieldnames) != set(FIELDS)
+        ):
+            raise ValueError(
+                "CSV schema mismatch. "
+                f"Expected {FIELDS}, "
+                f"got {reader.fieldnames}"
+            )
+
+        for line, row in enumerate(
+            reader,
+            start=2,
+        ):
+            total += 1
+
+            if (
+                None in row
+                or any(
+                    row[k] is None
+                    for k in FIELDS
+                )
+            ):
+                raise ValueError(
+                    f"Line {line}: malformed CSV row"
+                )
+
+            split = (
+                row["split"].strip().upper()
+            )
+
+            timeframe = (
+                row["timeframe"].strip().lower()
+            )
+
+            regime = (
+                row["regime"].strip().upper()
+            )
+
+            classification = (
+                row["classification"].strip().upper()
+            )
+
+            horizon = parse_int(
+                row["horizon"].strip(),
+                "horizon",
+                line,
+            )
+
+            events = parse_int(
+                row["events"].strip(),
+                "events",
+                line,
+            )
+
+            hits = parse_int(
+                row["hits"].strip(),
+                "hits",
+                line,
+            )
+
+            reported_rate = parse_rate(
+                row["hit_rate_pct"].strip(),
+                line,
+            )
+
+            if split not in ("TRAIN", "TEST"):
+                raise ValueError(
+                    f"Line {line}: invalid split"
+                )
+
+            if timeframe not in ("h1", "h4", "d1"):
+                raise ValueError(
+                    f"Line {line}: invalid timeframe"
+                )
+
+            if regime not in (
+                "UP",
+                "DOWN",
+                "SIDEWAYS",
+            ):
+                raise ValueError(
+                    f"Line {line}: invalid regime"
+                )
+
+            if classification not in (
+                "PATTERN_256_ONLY",
+                "BOTH",
+            ):
+                raise ValueError(
+                    f"Line {line}: invalid classification"
+                )
+
+            if horizon not in (24, 72, 168):
+                raise ValueError(
+                    f"Line {line}: invalid horizon"
+                )
+
+            if events == 0 or hits > events:
+                raise ValueError(
+                    f"Line {line}: invalid counts"
+                )
+
+            calculated = (
+                100 * hits / events
+            )
+
+            if abs(
+                reported_rate - calculated
+            ) > 0.000001:
+                raise ValueError(
+                    f"Line {line}: hit rate mismatch"
+                )
+
+            key = (
+                split,
+                timeframe,
+                horizon,
+                regime,
+                classification,
+            )
+
+            if key in records:
+                raise ValueError(
+                    f"Line {line}: duplicate group"
+                )
+
+            records[key] = {
+                "events": events,
+                "hits": hits,
+                "hit_rate_pct": calculated,
+            }
+
+    if total == 0:
+        raise ValueError(
+            "Source CSV is empty"
+        )
+
+    return records, total
+
+
+def format_rate(value):
+    if value is None:
+        return ""
+
+    return f"{value:.8f}"
+
+
+def evaluate(records, min_events):
+    group_keys = sorted(
+        {
+            key[:4]
+            for key in records
+        }
+    )
+
+    comparisons = []
+    counters = defaultdict(int)
+
+    for (
+        split,
+        timeframe,
+        horizon,
+        regime,
+    ) in group_keys:
+
+        only = records.get(
+            (
+                split,
+                timeframe,
+                horizon,
+                regime,
+                "PATTERN_256_ONLY",
+            )
+        )
+
+        both = records.get(
+            (
+                split,
+                timeframe,
+                horizon,
+                regime,
+                "BOTH",
+            )
+        )
+
+        complete = (
+            only is not None
+            and both is not None
+        )
+
+        enough = (
+            complete
+            and only["events"] >= min_events
+            and both["events"] >= min_events
+        )
+
+        difference = (
+            both["hit_rate_pct"]
+            - only["hit_rate_pct"]
+        ) if complete else None
+
+        if not complete:
+            direction = "UNMATCHED"
+
+        elif difference > 1e-10:
+            direction = "IMPROVEMENT"
+
+        elif difference < -1e-10:
+            direction = "DETERIORATION"
+
+        else:
+            direction = "TIE"
+
+        decision = (
+            "HOLD"
+            if enough
+            else "REVIEW"
+        )
+
+        counters[
+            f"{split}_groups"
+        ] += 1
+
+        counters[
+            f"{split}_{direction.lower()}"
+        ] += 1
+
+        if enough:
+            counters[
+                f"{split}_adequate_groups"
+            ] += 1
+
+        comparisons.append(
+            {
+                "split": split,
+                "timeframe": timeframe,
+                "horizon": horizon,
+                "regime": regime,
+
+                "only_events": (
+                    only["events"]
+                    if only else 0
+                ),
+
+                "only_hits": (
+                    only["hits"]
+                    if only else 0
+                ),
+
+                "only_hit_rate_pct": (
+                    format_rate(
+                        only["hit_rate_pct"]
+                    )
+                    if only else ""
+                ),
+
+                "both_events": (
+                    both["events"]
+                    if both else 0
+                ),
+
+                "both_hits": (
+                    both["hits"]
+                    if both else 0
+                ),
+
+                "both_hit_rate_pct": (
+                    format_rate(
+                        both["hit_rate_pct"]
+                    )
+                    if both else ""
+                ),
+
+                "difference_pp": (
+                    format_rate(difference)
+                ),
+
+                "minimum_sample_met": bool(enough),
+                "direction": direction,
+                "research_decision": decision,
+            }
+        )
+
+    return (
+        comparisons,
+        dict(sorted(counters.items())),
+    )
+
+
+def csv_text(rows):
+    stream = io.StringIO(
+        newline=""
+    )
+
+    writer = csv.DictWriter(
+        stream,
+        fieldnames=OUTPUT_COLUMNS,
+        lineterminator="\n",
+    )
+
+    writer.writeheader()
+    writer.writerows(rows)
+
+    return stream.getvalue()
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description=__doc__
+    )
+
+    parser.add_argument(
+        "--root",
+        default=".",
+    )
+
+    parser.add_argument(
+        "--source",
+        default=(
+            "data/reports/"
+            "pattern_256_market_regime/"
+            "market_regime_comparison.csv"
+        ),
+    )
+
+    parser.add_argument(
+        "--output-dir",
+        default=(
+            "data/reports/"
+            "pattern_256_regime_robustness"
+        ),
+    )
+
+    parser.add_argument(
+        "--min-events",
+        type=int,
+        default=30,
+    )
+
+    args = parser.parse_args()
+
+    if args.min_events < 1:
+        parser.error(
+            "--min-events must be >= 1"
+        )
+
+    root = Path(
+        args.root
+    ).resolve()
+
+    source = (
+        root / args.source
+    ).resolve()
+
+    output = (
+        root / args.output_dir
+    ).resolve()
+
+    if not source.is_file():
+        raise FileNotFoundError(
+            f"Missing source CSV: {source}"
+        )
+
+    if (
+        output == root
+        or output == source.parent
+        or output in source.parents
+        or source.parent in output.parents
+    ):
+        raise ValueError(
+            "Unsafe output directory"
+        )
+
+    before_hash = sha256(source)
+
+    records, total = load_source(
+        source
+    )
+
+    rows, counts = evaluate(
+        records,
+        args.min_events,
+    )
+
+    if sha256(source) != before_hash:
+        raise RuntimeError(
+            "Source changed during analysis"
+        )
+
+    result = {
+        "version": VERSION,
+        "execution_status": "PASS",
+        "research_decision": "HOLD",
+        "approved_for_live_trading": False,
+        "statistical_independence_proven": False,
+        "independent_oos_proven": False,
+        "source_rows": total,
+        "source_sha256": before_hash,
+        "comparison_rows": len(rows),
+        "minimum_events_per_classification": (
+            args.min_events
+        ),
+        "counts": counts,
+        "caution": (
+            "Aggregate-level regime diagnostic only; "
+            "market/event overlap, selection bias and "
+            "confidence intervals are not resolved."
+        ),
+    }
+
+    output.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    comparison_path = (
+        output
+        / "regime_robustness_comparison.csv"
+    )
+
+    result_path = (
+        output
+        / "regime_robustness_result.json"
+    )
+
+    manifest_path = (
+        output
+        / "regime_robustness_manifest.json"
+    )
+
+    write_atomic(
+        comparison_path,
+        csv_text(rows),
+    )
+
+    write_atomic(
+        result_path,
+        json_text(result),
+    )
+
+    manifest = {
+        "version": VERSION,
+        "generated_at_utc": (
+            datetime.now(
+                timezone.utc
+            ).isoformat()
+        ),
+        "input": {
+            "path": str(source),
+            "sha256": before_hash,
+            "bytes": source.stat().st_size,
+        },
+        "outputs": {
+            comparison_path.name: {
+                "sha256": sha256(
+                    comparison_path
+                ),
+                "bytes": (
+                    comparison_path.stat().st_size
+                ),
+            },
+            result_path.name: {
+                "sha256": sha256(
+                    result_path
+                ),
+                "bytes": (
+                    result_path.stat().st_size
+                ),
+            },
+        },
+    }
+
+    write_atomic(
+        manifest_path,
+        json_text(manifest),
+    )
+
+    print(
+        json_text(
+            {
+                "execution_status": "PASS",
+                "research_decision": "HOLD",
+                "comparison_rows": len(rows),
+                "counts": counts,
+                "output": str(output),
+            }
+        )
+    )
+
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+
+    except (
+        OSError,
+        ValueError,
+        RuntimeError,
+    ) as error:
+
+        print(
+            f"FATAL: {type(error).__name__}: {error}",
+            file=sys.stderr,
+        )
+
+        sys.exit(1)
 - Calculate Wilson 95% confidence intervals.
 - Identify small samples and missing comparison groups.
 - Preserve source data.
