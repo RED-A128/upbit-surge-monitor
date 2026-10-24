@@ -1,0 +1,362 @@
+name: evaluate_pattern_256_research_redesign.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evaluate-pattern-256-research-redesign
+  cancel-in-progress: false
+
+jobs:
+  research-redesign:
+    name: research-redesign
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      DATA_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate Python
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python validation failed"
+          }
+
+      - name: Validate analysis script
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "evaluate_pattern_256_research_redesign.py"
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Missing analysis script: $script"
+          }
+
+          py -m py_compile $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax validation failed"
+          }
+
+      - name: Validate source reports
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $sourceDir = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_reproducibility_sensitivity"
+
+          foreach ($file in @(
+            "sensitivity_comparison.csv",
+            "sensitivity_result.json",
+            "sensitivity_manifest.json"
+          )) {
+            $path = Join-Path $sourceDir $file
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing source report: $path"
+            }
+
+            Write-Host "FOUND: $path"
+          }
+
+      - name: Run research redesign gate
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "evaluate_pattern_256_research_redesign.py"
+
+          py $script --root "$env:DATA_ROOT"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Research redesign gate failed"
+          }
+
+      - name: Verify results and SHA256
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $sourceDir = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_reproducibility_sensitivity"
+
+          $outputDir = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_research_redesign"
+
+          $csvPath = Join-Path `
+            $outputDir `
+            "research_redesign_comparison.csv"
+
+          $resultPath = Join-Path `
+            $outputDir `
+            "research_redesign_result.json"
+
+          $manifestPath = Join-Path `
+            $outputDir `
+            "research_redesign_manifest.json"
+
+          foreach ($path in @(
+            $csvPath,
+            $resultPath,
+            $manifestPath
+          )) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing output: $path"
+            }
+          }
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw | ConvertFrom-Json
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw | ConvertFrom-Json
+
+          if ($result.version -ne "Clean V001") {
+            throw "Result version mismatch"
+          }
+
+          if ($manifest.version -ne "Clean V001") {
+            throw "Manifest version mismatch"
+          }
+
+          if ($result.execution_status -ne "PASS") {
+            throw "Execution is not PASS"
+          }
+
+          if ($result.research_decision -ne "HOLD") {
+            throw "Unexpected research decision"
+          }
+
+          if ([int]$result.comparison_rows -ne 9) {
+            throw "Unexpected comparison row count"
+          }
+
+          if (
+            $result.recommended_next_stage -ne
+            "FEATURE_REDESIGN_RESEARCH"
+          ) {
+            throw "Unexpected next stage"
+          }
+
+          foreach ($field in @(
+            "statistical_independence_proven",
+            "independent_oos_proven",
+            "profitability_proven",
+            "approved_for_live_trading"
+          )) {
+            if ($result.$field -ne $false) {
+              throw "Invalid safety field: $field"
+            }
+          }
+
+          foreach ($file in @(
+            "research_redesign_comparison.csv",
+            "research_redesign_result.json"
+          )) {
+            $path = Join-Path $outputDir $file
+
+            $property = `
+              $manifest.output_sha256.PSObject.Properties[$file]
+
+            if ($null -eq $property) {
+              throw "Missing output SHA256: $file"
+            }
+
+            $expected = (
+              [string]$property.Value
+            ).ToLowerInvariant()
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($expected -ne $actual) {
+              throw "Output SHA256 mismatch: $file"
+            }
+
+            Write-Host "PASS: $file"
+          }
+
+          foreach ($file in @(
+            "sensitivity_comparison.csv",
+            "sensitivity_result.json",
+            "sensitivity_manifest.json"
+          )) {
+            $path = Join-Path $sourceDir $file
+
+            $property = `
+              $manifest.input_sha256.PSObject.Properties[$file]
+
+            if ($null -eq $property) {
+              throw "Missing input SHA256: $file"
+            }
+
+            $expected = (
+              [string]$property.Value
+            ).ToLowerInvariant()
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($expected -ne $actual) {
+              throw "Input SHA256 mismatch: $file"
+            }
+
+            Write-Host "PASS: $file"
+          }
+
+          $rows = @(
+            Import-Csv -LiteralPath $csvPath
+          )
+
+          if ($rows.Count -ne 9) {
+            throw "CSV row count mismatch"
+          }
+
+          $keys = @{}
+
+          foreach ($row in $rows) {
+            if ($row.research_decision -ne "HOLD") {
+              throw "Unexpected CSV research decision"
+            }
+
+            if ($row.eligible_for_live_scanner -ne "false") {
+              throw "Unexpected scanner eligibility"
+            }
+
+            $key = @(
+              $row.timeframe,
+              $row.horizon
+            ) -join "|"
+
+            if ($keys.ContainsKey($key)) {
+              throw "Duplicate research group: $key"
+            }
+
+            $keys[$key] = $true
+          }
+
+          $counted = 0
+
+          foreach (
+            $property in $result.classification_counts.PSObject.Properties
+          ) {
+            $counted += [int]$property.Value
+          }
+
+          if ($counted -ne 9) {
+            throw "Classification count mismatch"
+          }
+
+          Write-Host "PASS: input SHA256"
+          Write-Host "PASS: output SHA256"
+          Write-Host "PASS: nine research groups"
+          Write-Host "PASS: classification accounting"
+          Write-Host "PASS: scanner remains disabled"
+          Write-Host "PASS: research safety"
+
+      - name: Write job summary
+        if: success()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $resultPath = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_research_redesign\research_redesign_result.json"
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw | ConvertFrom-Json
+
+          @"
+          # Pattern 256 Research Redesign Gate
+
+          | Check | Result |
+          |---|---|
+          | Execution | $($result.execution_status) |
+          | Version | $($result.version) |
+          | Source rows | $($result.source_rows) |
+          | Selected events | $($result.selected_events) |
+          | Source sensitivity rows | $($result.source_sensitivity_rows) |
+          | Research groups | $($result.comparison_rows) |
+          | Research decision | $($result.research_decision) |
+          | Recommended next stage | $($result.recommended_next_stage) |
+          | Statistical independence proven | $($result.statistical_independence_proven) |
+          | Independent OOS proven | $($result.independent_oos_proven) |
+          | Profitability proven | $($result.profitability_proven) |
+          | Live trading approved | $($result.approved_for_live_trading) |
+          | Input SHA256 | Verified |
+          | Output SHA256 | Verified |
+
+          ## Classification counts
+
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Encoding utf8 `
+            -Append
+
+          foreach (
+            $property in $result.classification_counts.PSObject.Properties
+          ) {
+            "- $($property.Name): $($property.Value)" |
+              Out-File `
+                -FilePath $env:GITHUB_STEP_SUMMARY `
+                -Encoding utf8 `
+                -Append
+          }
+
+          @"
+
+          ## Research limitations
+
+          - This is a diagnostic gate, not a new backtest.
+          - No new independent market evidence is introduced.
+          - Previous negative findings remain preserved.
+          - No profitability proof.
+          - No live scanner approval.
+          - No automated trading.
+
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Encoding utf8 `
+            -Append
+
+      - name: Upload redesign reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-research-redesign-v001
+          path: 'C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_research_redesign\'
+          if-no-files-found: warn
+          retention-days: 30
