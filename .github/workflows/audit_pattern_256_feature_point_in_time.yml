@@ -1,0 +1,89 @@
+name: audit_pattern_256_feature_point_in_time.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern-256-feature-point-in-time
+  cancel-in-progress: false
+
+jobs:
+  feature-point-in-time:
+    name: feature-point-in-time
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 180
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Python
+        run: |
+          py --version
+
+      - name: Verify audit script
+        run: |
+          if (-not (Test-Path "audit_pattern_256_feature_point_in_time.py")) {
+            throw "Audit script not found"
+          }
+
+      - name: Run point-in-time and coverage audit
+        run: |
+          py -u audit_pattern_256_feature_point_in_time.py --root .
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Point-in-time audit failed"
+          }
+
+      - name: Verify audit result
+        run: |
+          $path = "data/reports/pattern_256_feature_point_in_time/point_in_time_result.json"
+
+          if (-not (Test-Path $path)) {
+            throw "Audit result missing"
+          }
+
+          $result = Get-Content $path -Raw | ConvertFrom-Json
+
+          if ($result.execution_status -ne "PASS") {
+            throw "Audit execution did not pass"
+          }
+
+          if ($result.input_shard_hashes_verified -ne $true) {
+            throw "Shard SHA256 verification failed"
+          }
+
+          if ($result.timestamp_order_violations -ne 0) {
+            throw "Future feature timestamps detected"
+          }
+
+          if ($result.train_experiment_approved -ne $false) {
+            throw "Unexpected TRAIN experiment approval"
+          }
+
+          if ($result.approved_for_live_trading -ne $false) {
+            throw "Unexpected live trading approval"
+          }
+
+          Write-Host "Point-in-time audit completed"
+          Write-Host "Research decision: $($result.research_decision)"
+
+      - name: Upload audit reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-feature-point-in-time
+          path: data/reports/pattern_256_feature_point_in_time/
+          if-no-files-found: warn
+          retention-days: 30
