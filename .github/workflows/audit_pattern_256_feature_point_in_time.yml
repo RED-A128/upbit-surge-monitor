@@ -22,7 +22,7 @@ jobs:
 
     defaults:
       run:
-        shell: pwsh
+        shell: powershell
 
     steps:
       - name: Checkout repository
@@ -31,6 +31,10 @@ jobs:
       - name: Verify Python
         run: |
           py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python verification failed"
+          }
 
       - name: Verify audit script
         run: |
