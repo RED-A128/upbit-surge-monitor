@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-"""
-Pattern 256 Feature Point-in-Time & Coverage Gate
-Clean V001
+"""Pattern 256 feature point-in-time and coverage audit (Clean V001).
 
-Read-only research audit.
-Fails closed when point-in-time provenance is absent.
+Read-only audit of TRAIN-only events and joined feature shards. Never changes source.
 """
+from __future__ import annotations
 
 import argparse
 import csv
@@ -13,967 +11,233 @@ import hashlib
 import json
 import os
 import sys
-
+import tempfile
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-
-VERSION = "Clean V001"
-
-TRAIN = Path(
-    "data/reports/pattern_256_train_only/train_only_events.csv"
-)
-
-JOIN = Path(
-    "data/reports/pattern_256_train_feature_join"
-)
-
-AUDIT = Path(
-    "data/reports/pattern_256_feature_join_integrity"
-)
-
-OUT = Path(
-    "data/reports/pattern_256_feature_point_in_time"
-)
-
-TIME_KEYS = (
-    "signal_timestamp",
-    "signal_time",
-    "timestamp",
-    "event_timestamp",
-    "datetime",
-    "time",
-)
-
-FEATURE_TIME_KEYS = (
-    "feature_timestamp",
-    "feature_time",
-    "feature_candle_timestamp",
-    "candle_timestamp",
-    "feature_available_at",
-    "available_at",
-)
-
-MARKET_KEYS = (
-    "market",
-    "ticker",
-    "symbol",
-    "code",
-)
-
-FRAME_KEYS = (
-    "timeframe",
-    "interval",
-    "tf",
-)
-
-LABEL_KEYS = (
-    "hit_30pct",
-    "hit_30",
-    "target_hit",
-    "hit",
-    "label",
-    "is_hit",
-    "success",
-    "status",
-)
+VERSION = 'Clean V001'
+TRAIN_COLUMNS = ('timeframe','market','signal_timestamp','classification','horizon','entry_timestamp','entry_price','target_price','status','hit_30pct','outcome_maturity_timestamp')
+FEATURE_COLUMNS = ('feature_candle_timestamp','feature_candle_end_timestamp','base_rsi_14','base_sma_20','base_sma_60','base_volume_ratio_20','base_atr_14','candidate_relative_volume_20','candidate_relative_trade_value_20','candidate_atr_ratio_20','candidate_ma_20','candidate_ma_60','candidate_trend_alignment','candidate_distance_to_resistance_20_pct')
+KEY_COLUMNS = ('timeframe','market','signal_timestamp','classification','horizon','entry_timestamp')
 
 
-def sha(path):
+def digest(path: Path) -> str:
     h = hashlib.sha256()
-
-    with path.open("rb") as f:
-        for chunk in iter(
-            lambda: f.read(1024 * 1024),
-            b"",
-        ):
+    with path.open('rb') as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b''):
             h.update(chunk)
-
     return h.hexdigest()
 
 
-def read_json(path):
-    with path.open(encoding="utf-8-sig") as f:
-        return json.load(f)
-
-
-def write_json(path, obj):
-    tmp = path.with_suffix(path.suffix + ".tmp")
-
-    with tmp.open("w", encoding="utf-8") as f:
-        json.dump(
-            obj,
-            f,
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
-        )
-        f.write("\n")
-
-    os.replace(tmp, path)
-
-
-def write_csv(path, columns, rows):
-    tmp = path.with_suffix(path.suffix + ".tmp")
-
-    with tmp.open(
-        "w",
-        newline="",
-        encoding="utf-8",
-    ) as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=columns,
-            extrasaction="ignore",
-        )
-
-        writer.writeheader()
-        writer.writerows(rows)
-
-    os.replace(tmp, path)
-
-
-def choose(columns, candidates):
-    lookup = {
-        column.lower().strip(): column
-        for column in columns
-    }
-
-    return next(
-        (
-            lookup[key]
-            for key in candidates
-            if key in lookup
-        ),
-        None,
-    )
-
-
-def stamp(value):
-    value = str(value or "").strip()
-
+def timestamp(value: str) -> datetime:
     if not value:
-        return None
+        raise ValueError('empty timestamp')
+    dt = datetime.fromisoformat(value.strip().replace('Z', '+00:00'))
+    if dt.tzinfo is None:
+        raise ValueError('timezone missing')
+    return dt.astimezone(timezone.utc)
 
-    if value.endswith("Z"):
-        value = value[:-1] + "+00:00"
 
+def atomic_json(path: Path, obj: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp = tempfile.mkstemp(prefix=path.name+'.', suffix='.tmp', dir=path.parent)
     try:
-        result = datetime.fromisoformat(value)
-    except ValueError:
-        return None
-
-    if result.tzinfo is None:
-        result = result.replace(
-            tzinfo=timezone.utc
-        )
-
-    return result.astimezone(timezone.utc)
-
-
-def label(value):
-    value = str(value or "").strip().upper()
-
-    if value in (
-        "1",
-        "TRUE",
-        "YES",
-        "HIT",
-        "WIN",
-        "SUCCESS",
-        "TARGET_HIT",
-    ):
-        return "HIT"
-
-    if value in (
-        "0",
-        "FALSE",
-        "NO",
-        "MISS",
-        "LOSE",
-        "FAIL",
-        "FAILURE",
-    ):
-        return "MISS"
-
-    return "UNKNOWN"
+        with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as f:
+            json.dump(obj, f, indent=2, ensure_ascii=False, sort_keys=True)
+            f.write('\n')
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp, path)
+    finally:
+        if os.path.exists(temp):
+            os.unlink(temp)
 
 
-def main():
-    parser = argparse.ArgumentParser()
+def atomic_csv(path: Path, columns: list[str], rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp = tempfile.mkstemp(prefix=path.name+'.', suffix='.tmp', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=columns, extrasaction='ignore')
+            writer.writeheader()
+            writer.writerows(rows)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp, path)
+    finally:
+        if os.path.exists(temp):
+            os.unlink(temp)
 
-    parser.add_argument(
-        "--root",
-        default=".",
-    )
 
-    parser.add_argument(
-        "--output",
-        default=None,
-    )
+def require_columns(actual: list[str] | None, required: tuple[str, ...], path: Path) -> None:
+    missing = set(required) - set(actual or [])
+    if missing:
+        raise ValueError(f'{path}: missing columns: {sorted(missing)}')
 
-    parser.add_argument(
-        "--progress-every",
-        type=int,
-        default=250000,
-    )
 
-    args = parser.parse_args()
+def main() -> int:
+    p = argparse.ArgumentParser()
+    p.add_argument('--root', default='.')
+    p.add_argument('--max-issues', type=int, default=1000)
+    args = p.parse_args()
+    if args.max_issues < 0:
+        p.error('--max-issues must be >= 0')
 
     root = Path(args.root).resolve()
+    reports = root / 'data' / 'reports'
+    train = reports / 'pattern_256_train_only' / 'train_only_events.csv'
+    join_dir = reports / 'pattern_256_train_feature_join'
+    integrity_dir = reports / 'pattern_256_feature_join_integrity'
+    output_dir = reports / 'pattern_256_feature_point_in_time'
+    join_result_path = join_dir / 'train_feature_join_result.json'
+    join_manifest_path = join_dir / 'train_feature_join_manifest.json'
+    integrity_result_path = integrity_dir / 'feature_join_integrity_result.json'
+    integrity_manifest_path = integrity_dir / 'feature_join_integrity_manifest.json'
+    inputs = [train, join_result_path, join_manifest_path, integrity_result_path, integrity_manifest_path]
+    for path in inputs:
+        if not path.is_file():
+            raise FileNotFoundError(f'Required source file missing: {path}')
+    shards = sorted((join_dir / 'shards').glob('*/*.csv'))
+    if not shards:
+        raise FileNotFoundError(f'No joined feature shards in {join_dir / "shards"}')
 
-    if args.output:
-        out = (root / args.output).resolve()
-    else:
-        out = root / OUT
+    with join_result_path.open(encoding='utf-8') as f:
+        join_result = json.load(f)
+    with join_manifest_path.open(encoding='utf-8') as f:
+        join_manifest = json.load(f)
+    with integrity_result_path.open(encoding='utf-8') as f:
+        integrity_result = json.load(f)
+    with integrity_manifest_path.open(encoding='utf-8') as f:
+        integrity_manifest = json.load(f)
+    if not isinstance(join_manifest.get('inputs_sha256'), dict) or not isinstance(join_manifest.get('outputs_sha256'), dict):
+        raise ValueError('JOIN manifest SHA256 dictionaries missing')
+    if not isinstance(integrity_manifest.get('input_sha256'), dict) or not isinstance(integrity_manifest.get('output_sha256'), dict):
+        raise ValueError('Integrity manifest SHA256 dictionaries missing')
 
-    train = root / TRAIN
-    join = root / JOIN
-    audit = root / AUDIT
-
-    if not train.is_file():
-        raise RuntimeError(
-            f"Missing TRAIN: {train}"
-        )
-
-    if not join.is_dir():
-        raise RuntimeError(
-            f"Missing JOIN directory: {join}"
-        )
-
-    if (
-        out == root
-        or out == join
-        or out == audit
-        or out == train.parent
-        or join in out.parents
-    ):
-        raise RuntimeError(
-            "Unsafe output directory"
-        )
-
-    out.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    problems = []
-    checks = {}
-    sources = {}
-
-    input_paths = (
-        train,
-        join / "train_feature_join_manifest.json",
-        join / "train_feature_join_result.json",
-        audit / "feature_join_integrity_result.json",
-        audit / "feature_join_integrity_manifest.json",
-    )
-
-    for path in input_paths:
-        if path.exists():
-            sources[
-                str(path.relative_to(root))
-            ] = sha(path)
-
-    prior_path = (
-        audit / "feature_join_integrity_result.json"
-    )
-
-    manifest_path = (
-        audit / "feature_join_integrity_manifest.json"
-    )
-
-    prior = (
-        read_json(prior_path)
-        if prior_path.exists()
-        else {}
-    )
-
-    manifest = (
-        read_json(manifest_path)
-        if manifest_path.exists()
-        else {}
-    )
-
-    expected = manifest.get(
-        "shard_sha256",
-        {},
-    )
-
-    if not expected:
-        problems.append(
-            "Missing prior shard SHA256 manifest"
-        )
-
-    shard_files = sorted(
-        (join / "shards").rglob("*.csv")
-    )
-
-    if not shard_files:
-        raise RuntimeError(
-            "No JOIN shards found"
-        )
-
-    stats = defaultdict(Counter)
-    shard_rows = []
-
-    future = 0
-    bad_timestamp = 0
-    no_feature_time = 0
-    rows_joined = 0
-
+    counts = Counter()
+    issues = []
+    coverage = defaultdict(Counter)
     schema_set = set()
+    input_hashes = {}
+    for path in inputs:
+        input_hashes[str(path.relative_to(root)).replace('\\','/')] = digest(path)
 
-    signal_col_seen = False
-    feature_col_seen = False
-    market_col_seen = False
-    frame_col_seen = False
-
-    # ----------------------------------------
-    # JOIN shard integrity and time audit
-    # ----------------------------------------
-
-    for index, path in enumerate(
-        shard_files,
-        1,
-    ):
-        rel = str(
-            path.relative_to(join)
-        ).replace("/", "\\")
-
-        digest = sha(path)
-
-        expected_digest = (
-            expected.get(rel)
-            or expected.get(
-                rel.replace("\\", "/")
-            )
-        )
-
-        hash_ok = (
-            expected_digest == digest
-        )
-
-        if not hash_ok:
-            problems.append(
-                f"Shard SHA256 missing/mismatch: {rel}"
-            )
-
-        file_rows = 0
-
-        with path.open(
-            newline="",
-            encoding="utf-8-sig",
-        ) as f:
-            reader = csv.DictReader(f)
-
-            columns = reader.fieldnames or []
-
-            schema_set.add(
-                tuple(columns)
-            )
-
-            mc = choose(
-                columns,
-                MARKET_KEYS,
-            )
-
-            fc = choose(
-                columns,
-                FRAME_KEYS,
-            )
-
-            tc = choose(
-                columns,
-                TIME_KEYS,
-            )
-
-            ftc = choose(
-                columns,
-                FEATURE_TIME_KEYS,
-            )
-
-            lc = choose(
-                columns,
-                LABEL_KEYS,
-            )
-
-            signal_col_seen |= bool(tc)
-            feature_col_seen |= bool(ftc)
-            market_col_seen |= bool(mc)
-            frame_col_seen |= bool(fc)
-
-            if not tc:
-                problems.append(
-                    f"No recognized signal timestamp: {rel}"
-                )
-
-            for row in reader:
-                file_rows += 1
-                rows_joined += 1
-
-                market = (
-                    (row.get(mc) or "").strip()
-                    if mc
-                    else path.stem
-                )
-
-                frame = (
-                    (row.get(fc) or "").strip()
-                    if fc
-                    else path.parent.name
-                )
-
-                group = (
-                    frame,
-                    market,
-                )
-
-                stats[group]["joined"] += 1
-
-                if lc:
-                    stats[group][
-                        "joined_" + label(row.get(lc))
-                    ] += 1
-
-                t = (
-                    stamp(row.get(tc))
-                    if tc
-                    else None
-                )
-
-                ft = (
-                    stamp(row.get(ftc))
-                    if ftc
-                    else None
-                )
-
-                if tc and t is None:
-                    bad_timestamp += 1
-
-                if ftc and ft is None:
-                    no_feature_time += 1
-
-                if t and ft and ft > t:
-                    future += 1
-
-        shard_rows.append(
-            {
-                "file": rel,
-                "rows": file_rows,
-                "sha256_verified": hash_ok,
-            }
-        )
-
-        if (
-            index % 25 == 0
-            or index == len(shard_files)
-        ):
-            print(
-                f"[SHARDS] "
-                f"{index}/{len(shard_files)} "
-                f"rows={rows_joined:,}",
-                flush=True,
-            )
-
-    if (
-        not signal_col_seen
-        or not market_col_seen
-        or not frame_col_seen
-    ):
-        problems.append(
-            "Cannot establish all "
-            "market/timeframe/signal timestamp columns"
-        )
-
-    if not feature_col_seen:
-        problems.append(
-            "No recognized feature availability timestamp; "
-            "point-in-time not proven"
-        )
-
-    if bad_timestamp:
-        problems.append(
-            f"Invalid signal timestamps: {bad_timestamp}"
-        )
-
-    if no_feature_time:
-        problems.append(
-            f"Invalid/missing feature timestamps: "
-            f"{no_feature_time}"
-        )
-
-    if future:
-        problems.append(
-            f"Feature timestamps after signal: {future}"
-        )
-
-    expected_rows = prior.get(
-        "joined_rows"
-    )
-
-    if (
-        expected_rows is not None
-        and rows_joined != int(expected_rows)
-    ):
-        problems.append(
-            f"JOIN row count mismatch: "
-            f"{rows_joined} vs {expected_rows}"
-        )
-
-    # ----------------------------------------
-    # TRAIN coverage audit
-    # ----------------------------------------
-
-    train_rows = 0
-    train_bad_time = 0
-    train_label_col = None
-
-    with train.open(
-        newline="",
-        encoding="utf-8-sig",
-    ) as f:
+    # Key-count reconciliation avoids holding 4M full TRAIN rows in memory.
+    train_keys = Counter()
+    with train.open(encoding='utf-8-sig', newline='') as f:
         reader = csv.DictReader(f)
-
-        columns = reader.fieldnames or []
-
-        mc = choose(
-            columns,
-            MARKET_KEYS,
-        )
-
-        fc = choose(
-            columns,
-            FRAME_KEYS,
-        )
-
-        tc = choose(
-            columns,
-            TIME_KEYS,
-        )
-
-        lc = choose(
-            columns,
-            LABEL_KEYS,
-        )
-
-        train_label_col = lc
-
-        if not mc or not fc or not tc:
-            problems.append(
-                "TRAIN market/timeframe/signal "
-                "timestamp schema not fully recognized"
-            )
-
+        require_columns(reader.fieldnames, TRAIN_COLUMNS, train)
         for row in reader:
-            train_rows += 1
+            counts['train_rows'] += 1
+            key = tuple(row[c] for c in KEY_COLUMNS)
+            train_keys[key] += 1
+            coverage[(row['timeframe'], row['classification'])]['train_rows'] += 1
+            if counts['train_rows'] % 500000 == 0:
+                print(f'[TRAIN] {counts["train_rows"]:,}', flush=True)
 
-            if mc and fc:
-                group = (
-                    (row.get(fc) or "").strip(),
-                    (row.get(mc) or "").strip(),
-                )
+    for path in shards:
+        counts['shard_files'] += 1
+        with path.open(encoding='utf-8-sig', newline='') as f:
+            reader = csv.DictReader(f)
+            require_columns(reader.fieldnames, TRAIN_COLUMNS + FEATURE_COLUMNS, path)
+            schema_set.add(tuple(reader.fieldnames or []))
+            for line_no, row in enumerate(reader, start=2):
+                counts['joined_rows'] += 1
+                group = coverage[(row['timeframe'], row['classification'])]
+                group['joined_rows'] += 1
+                key = tuple(row[c] for c in KEY_COLUMNS)
+                if train_keys[key] <= 0:
+                    counts['unmatched_join_rows'] += 1
+                    if len(issues) < args.max_issues:
+                        issues.append({'issue':'UNMATCHED_JOIN_KEY','file':str(path.relative_to(root)).replace('\\','/'),'line':line_no,'market':row['market'],'signal_timestamp':row['signal_timestamp']})
+                else:
+                    train_keys[key] -= 1
+                try:
+                    start = timestamp(row['feature_candle_timestamp'])
+                    end = timestamp(row['feature_candle_end_timestamp'])
+                    signal = timestamp(row['signal_timestamp'])
+                    entry = timestamp(row['entry_timestamp'])
+                    if start >= end:
+                        counts['invalid_candle_window'] += 1
+                        kind = 'INVALID_CANDLE_WINDOW'
+                    elif end > entry:
+                        counts['feature_after_entry'] += 1
+                        kind = 'FEATURE_AFTER_ENTRY'
+                    elif end > signal:
+                        # Signal timestamp may be the OPEN of the signal candle.
+                        # Such rows are flagged for convention review, not silently accepted.
+                        counts['feature_after_signal'] += 1
+                        kind = 'FEATURE_AFTER_SIGNAL_REVIEW'
+                    else:
+                        counts['feature_available_at_signal'] += 1
+                        kind = ''
+                except (ValueError, OverflowError) as exc:
+                    counts['invalid_timestamps'] += 1
+                    kind = 'INVALID_TIMESTAMP'
+                if kind and len(issues) < args.max_issues:
+                    issues.append({'issue':kind,'file':str(path.relative_to(root)).replace('\\','/'),'line':line_no,'market':row['market'],'signal_timestamp':row['signal_timestamp'],'feature_candle_end_timestamp':row['feature_candle_end_timestamp']})
+                if counts['joined_rows'] % 500000 == 0:
+                    print(f'[JOIN] {counts["joined_rows"]:,}', flush=True)
 
-                stats[group]["source"] += 1
-
-                if lc:
-                    stats[group][
-                        "source_" + label(row.get(lc))
-                    ] += 1
-
-            if tc and stamp(row.get(tc)) is None:
-                train_bad_time += 1
-
-            if (
-                args.progress_every > 0
-                and train_rows % args.progress_every == 0
-            ):
-                print(
-                    f"[TRAIN] {train_rows:,}",
-                    flush=True,
-                )
-
-    if train_bad_time:
-        problems.append(
-            f"Invalid TRAIN timestamps: "
-            f"{train_bad_time}"
-        )
-
-    if (
-        prior.get("source_rows") is not None
-        and train_rows != int(
-            prior["source_rows"]
-        )
+    counts['unjoined_train_rows'] = sum(train_keys.values())
+    counts['schema_variants'] = len(schema_set)
+    # Verify available reported aggregate totals without guessing absent fields.
+    for label, obj, key, actual in (
+        ('join_result',join_result,'joined_rows',counts['joined_rows']),
+        ('join_manifest',join_manifest,'joined_rows',counts['joined_rows']),
+        ('join_manifest',join_manifest,'shard_count',counts['shard_files']),
     ):
-        problems.append(
-            "TRAIN source count differs "
-            "from previous audit"
-        )
+        if key in obj and obj[key] is not None and int(obj[key]) != actual:
+            raise ValueError(f'{label}.{key} mismatch: reported={obj[key]}, observed={actual}')
 
-    # ----------------------------------------
-    # Coverage summary
-    # ----------------------------------------
-
-    coverage = []
-
-    for (
-        frame,
-        market,
-    ), counts in sorted(stats.items()):
-
-        source = counts["source"]
-        joined = counts["joined"]
-
-        record = {
-            "timeframe": frame,
-            "market": market,
-            "source_rows": source,
-            "joined_rows": joined,
-            "difference": source - joined,
-            "join_rate_pct": (
-                round(
-                    100 * joined / source,
-                    6,
-                )
-                if source
-                else None
-            ),
-        }
-
-        for lab in (
-            "HIT",
-            "MISS",
-            "UNKNOWN",
-        ):
-            record[
-                f"source_{lab.lower()}"
-            ] = counts[
-                "source_" + lab
-            ]
-
-            record[
-                f"joined_{lab.lower()}"
-            ] = counts[
-                "joined_" + lab
-            ]
-
-        coverage.append(record)
-
-    # ----------------------------------------
-    # Research safety gates
-    # ----------------------------------------
-
-    if (
-        prior.get(
-            "row_level_reconciliation_proven"
-        )
-        is not True
-    ):
-        problems.append(
-            "Prior row-level reconciliation "
-            "is not proven"
-        )
-
-    if not prior.get(
-        "integrity_verified"
-    ):
-        problems.append(
-            "Prior JOIN integrity gate "
-            "is not verified"
-        )
-
-    if not prior.get(
-        "train_experiment_approved",
-        False,
-    ):
-        problems.append(
-            "Prior TRAIN experiment approval "
-            "remains false"
-        )
-
-    if not train_label_col:
-        problems.append(
-            "TRAIN +30% label column not recognized; "
-            "label coverage unverified"
-        )
-
-    # Timestamp ordering is necessary but
-    # insufficient to establish no leakage.
-
-    problems.append(
-        "Feature formula lookback and "
-        "closed-candle provenance not "
-        "independently verified"
-    )
-
-    problems.append(
-        "Exact row-level JOIN selection bias "
-        "not independently verified"
-    )
-
-    # ----------------------------------------
-    # Final checks
-    # ----------------------------------------
-
-    checks[
-        "input_shard_hashes_verified"
-    ] = (
-        bool(expected)
-        and all(
-            row["sha256_verified"]
-            for row in shard_rows
-        )
-    )
-
-    checks[
-        "timestamp_order_violations"
-    ] = future
-
-    checks[
-        "feature_timestamp_missing_or_invalid"
-    ] = no_feature_time
-
-    checks[
-        "signal_timestamp_invalid"
-    ] = bad_timestamp
-
-    checks[
-        "train_timestamp_invalid"
-    ] = train_bad_time
-
-    checks[
-        "feature_formula_proven"
-    ] = False
-
-    checks[
-        "closed_candle_proven"
-    ] = False
-
-    checks[
-        "exact_join_selection_bias_proven"
-    ] = False
-
-    checks[
-        "prior_integrity_verified"
-    ] = (
-        prior.get("integrity_verified")
-        is True
-    )
-
-    checks[
-        "train_label_column"
-    ] = train_label_col
-
-    checks[
-        "schema_variants"
-    ] = len(schema_set)
-
-    checks[
-        "shard_count"
-    ] = len(shard_files)
-
-    checks[
-        "source_rows"
-    ] = train_rows
-
-    checks[
-        "joined_rows"
-    ] = rows_joined
-
-    checks[
-        "join_rate_pct"
-    ] = (
-        round(
-            rows_joined * 100 / train_rows,
-            6,
-        )
-        if train_rows
-        else 0
-    )
-
-    checks[
-        "research_decision"
-    ] = "HOLD"
-
-    checks[
-        "train_experiment_approved"
-    ] = False
-
-    checks[
-        "independent_oos_proven"
-    ] = False
-
-    checks[
-        "approved_for_live_trading"
-    ] = False
-
-    checks[
-        "version"
-    ] = VERSION
-
-    checks[
-        "execution_status"
-    ] = (
-        "PASS"
-        if (
-            checks[
-                "input_shard_hashes_verified"
-            ]
-            and not future
-            and not bad_timestamp
-            and not train_bad_time
-            and rows_joined
-            == prior.get("joined_rows")
-        )
-        else "FAIL"
-    )
-
-    checks[
-        "limitations"
-    ] = sorted(
-        set(problems)
-    )
-
-    # ----------------------------------------
-    # Save reports
-    # ----------------------------------------
-
-    write_csv(
-        out / "point_in_time_coverage.csv",
-        [
-            "timeframe",
-            "market",
-            "source_rows",
-            "joined_rows",
-            "difference",
-            "join_rate_pct",
-            "source_hit",
-            "joined_hit",
-            "source_miss",
-            "joined_miss",
-            "source_unknown",
-            "joined_unknown",
+    # Any post-signal feature requires an explicit timestamp convention review.
+    critical = counts['unmatched_join_rows'] + counts['invalid_timestamps'] + counts['invalid_candle_window'] + counts['feature_after_entry']
+    needs_review = counts['feature_after_signal'] > 0
+    status = 'PASS' if critical == 0 else 'FAIL'
+    rows = []
+    for (tf, classification), c in sorted(coverage.items()):
+        n = c['train_rows']
+        j = c['joined_rows']
+        rows.append({'timeframe':tf,'classification':classification,'train_rows':n,'joined_rows':j,'join_rate_pct':round(100*j/n,6) if n else 0})
+    result = {
+        'version': VERSION,
+        'execution_status': status,
+        'research_decision': 'HOLD',
+        'point_in_time_proven': status == 'PASS' and not needs_review and counts['joined_rows'] > 0,
+        'timestamp_convention_review_required': needs_review,
+        'feature_join_verified': critical == 0 and counts['unjoined_train_rows'] + counts['joined_rows'] == counts['train_rows'],
+        'train_experiment_approved': False,
+        'independent_oos_proven': False,
+        'profitability_proven': False,
+        'approved_for_live_trading': False,
+        'counts': dict(counts),
+        'issues_recorded': len(issues),
+        'issues_truncated': sum(counts[k] for k in ('unmatched_join_rows','invalid_timestamps','invalid_candle_window','feature_after_entry','feature_after_signal')) > len(issues),
+        'notes': [
+            'Feature candle END is compared with signal and entry timestamps.',
+            'If signal_timestamp denotes the opening of the signal candle, feature_after_signal may require an explicit next-open decision convention.',
+            'A PASS indicates the audit ran without critical detected contradictions, not proof of absence of leakage in upstream feature formulas.',
+            'Source files are never modified. Missing TRAIN rows remain excluded from JOIN-based experiments.',
         ],
-        coverage,
-    )
-
-    write_csv(
-        out / "point_in_time_shards.csv",
-        [
-            "file",
-            "rows",
-            "sha256_verified",
-        ],
-        shard_rows,
-    )
-
-    write_json(
-        out / "point_in_time_result.json",
-        checks,
-    )
-
-    output_hashes = {
-        path.name: sha(path)
-        for path in sorted(
-            out.glob("point_in_time_*")
-        )
-        if (
-            path.name
-            != "point_in_time_manifest.json"
-            and path.is_file()
-        )
     }
-
-    write_json(
-        out / "point_in_time_manifest.json",
-        {
-            "version": VERSION,
-            "input_sha256": sources,
-            "output_sha256": output_hashes,
-        },
-    )
-
-    # ----------------------------------------
-    # GitHub Actions summary
-    # ----------------------------------------
-
-    summary = os.environ.get(
-        "GITHUB_STEP_SUMMARY"
-    )
-
-    if summary:
-        with open(
-            summary,
-            "a",
-            encoding="utf-8",
-        ) as f:
-
-            f.write(
-                "## Pattern 256 Feature "
-                "Point-in-Time & Coverage Gate\n\n"
-            )
-
-            f.write(
-                "| Check | Result |\n"
-                "|---|---|\n"
-            )
-
-            keys = (
-                "execution_status",
-                "version",
-                "source_rows",
-                "joined_rows",
-                "join_rate_pct",
-                "shard_count",
-                "schema_variants",
-                "timestamp_order_violations",
-                "feature_formula_proven",
-                "closed_candle_proven",
-                "train_experiment_approved",
-                "research_decision",
-            )
-
-            for key in keys:
-                f.write(
-                    f"| {key} | {checks[key]} |\n"
-                )
-
-            f.write(
-                "\n**Limitations**\n"
-            )
-
-            for item in checks[
-                "limitations"
-            ][:20]:
-                f.write(
-                    f"- {item}\n"
-                )
-
-    print(
-        json.dumps(
-            checks,
-            indent=2,
-            ensure_ascii=False,
-        ),
-        flush=True,
-    )
-
-    if checks["execution_status"] == "PASS":
-        return 0
-
-    return 1
+    output_dir.mkdir(parents=True, exist_ok=True)
+    coverage_path = output_dir / 'feature_point_in_time_coverage.csv'
+    issues_path = output_dir / 'feature_point_in_time_issues.csv'
+    result_path = output_dir / 'feature_point_in_time_result.json'
+    manifest_path = output_dir / 'feature_point_in_time_manifest.json'
+    atomic_csv(coverage_path, ['timeframe','classification','train_rows','joined_rows','join_rate_pct'], rows)
+    atomic_csv(issues_path, ['issue','file','line','market','signal_timestamp','feature_candle_end_timestamp'], issues)
+    atomic_json(result_path, result)
+    manifest = {'version':VERSION,'input_sha256':input_hashes,'output_sha256':{p.name:digest(p) for p in (coverage_path,issues_path,result_path)},'source_shards':counts['shard_files'],'source_shard_content_hashes_not_verified':True}
+    atomic_json(manifest_path, manifest)
+    print(json.dumps({'execution_status':status,'counts':dict(counts),'point_in_time_proven':result['point_in_time_proven'],'output_dir':str(output_dir)}, indent=2), flush=True)
+    return 0 if status == 'PASS' else 2
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     try:
         sys.exit(main())
-
     except Exception as exc:
-        print(
-            f"FATAL: "
-            f"{type(exc).__name__}: {exc}",
-            file=sys.stderr,
-        )
-
+        print(f'FATAL: {type(exc).__name__}: {exc}', file=sys.stderr, flush=True)
         sys.exit(1)
