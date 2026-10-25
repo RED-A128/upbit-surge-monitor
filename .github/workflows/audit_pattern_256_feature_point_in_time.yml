@@ -52,7 +52,7 @@ jobs:
 
       - name: Verify audit result
         run: |
-          $path = "data/reports/pattern_256_feature_point_in_time/point_in_time_result.json"
+          $path = "C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_feature_point_in_time\point_in_time_result.json"
 
           if (-not (Test-Path $path)) {
             throw "Audit result missing"
@@ -88,6 +88,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: pattern-256-feature-point-in-time
-          path: data/reports/pattern_256_feature_point_in_time/
+          path: 'C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_feature_point_in_time\'
           if-no-files-found: warn
           retention-days: 30
