@@ -44,7 +44,7 @@ jobs:
 
       - name: Run point-in-time and coverage audit
         run: |
-          py -u audit_pattern_256_feature_point_in_time.py --root .
+          py -u audit_pattern_256_feature_point_in_time.py --root "C:\Users\USER\Documents\upbit-surge-monitor"
 
           if ($LASTEXITCODE -ne 0) {
             throw "Point-in-time audit failed"
