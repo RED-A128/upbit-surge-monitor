@@ -1,0 +1,294 @@
+name: audit_pattern_256_actual_candle_existence.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern-256-actual-candle-existence
+  cancel-in-progress: false
+
+jobs:
+  actual-candle-existence:
+    name: actual-candle-existence
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    defaults:
+      run:
+        shell: powershell
+
+    timeout-minutes: 180
+
+    env:
+      DATA_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+      REPORT_DIR: C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_actual_candle_existence
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Python
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python verification failed"
+          }
+
+      - name: Verify audit script
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_actual_candle_existence.py"
+
+          if (-not (Test-Path -LiteralPath $script)) {
+            throw "Audit script missing: $script"
+          }
+
+          py -m py_compile $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax verification failed"
+          }
+
+      - name: Verify local source files
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = $env:DATA_ROOT
+
+          $join = Join-Path `
+            $root `
+            "data\reports\pattern_256_train_feature_join\shards"
+
+          $ohlcv = Join-Path `
+            $root `
+            "data\ohlcv"
+
+          if (-not (Test-Path -LiteralPath $join)) {
+            throw "JOIN shard directory missing: $join"
+          }
+
+          if (-not (Test-Path -LiteralPath $ohlcv)) {
+            throw "OHLCV directory missing: $ohlcv"
+          }
+
+          $shards = @(
+            Get-ChildItem `
+              -LiteralPath $join `
+              -Recurse `
+              -Filter "*.csv" `
+              -File
+          )
+
+          if ($shards.Count -eq 0) {
+            throw "No JOIN shards found"
+          }
+
+          Write-Host "JOIN shards: $($shards.Count)"
+          Write-Host "OHLCV directory: $ohlcv"
+
+      - name: Run actual candle existence audit
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_actual_candle_existence.py"
+
+          py -u $script `
+            --root $env:DATA_ROOT `
+            --strict
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Actual candle existence audit failed or requires review"
+          }
+
+      - name: Verify result and SHA256
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $dir = $env:REPORT_DIR
+
+          $resultPath = Join-Path `
+            $dir `
+            "actual_candle_existence_result.json"
+
+          $manifestPath = Join-Path `
+            $dir `
+            "actual_candle_existence_manifest.json"
+
+          if (-not (Test-Path -LiteralPath $resultPath)) {
+            throw "Audit result missing"
+          }
+
+          if (-not (Test-Path -LiteralPath $manifestPath)) {
+            throw "Audit manifest missing"
+          }
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw |
+            ConvertFrom-Json
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw |
+            ConvertFrom-Json
+
+          if ($result.version -ne "Clean V001") {
+            throw "Unexpected audit version"
+          }
+
+          if ($result.execution_status -ne "PASS") {
+            throw "Audit requires review"
+          }
+
+          if ($result.source_rows -le 0) {
+            throw "Invalid source row count"
+          }
+
+          if ($result.source_shards -le 0) {
+            throw "Invalid source shard count"
+          }
+
+          if ($manifest.source_rows -ne $result.source_rows) {
+            throw "Source row reconciliation failed"
+          }
+
+          if ($manifest.source_shards -ne $result.source_shards) {
+            throw "Source shard reconciliation failed"
+          }
+
+          foreach ($item in $manifest.output_sha256.PSObject.Properties) {
+            $path = Join-Path $dir $item.Name
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Output missing: $($item.Name)"
+            }
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            $expected = [string]$item.Value
+
+            if ($actual -ne $expected.ToLowerInvariant()) {
+              throw "Output SHA256 mismatch: $($item.Name)"
+            }
+
+            Write-Host "SHA256 PASS: $($item.Name)"
+          }
+
+          foreach ($item in $manifest.input_sha256.PSObject.Properties) {
+            $relative = $item.Name.Replace("/", "\")
+
+            $path = Join-Path `
+              $env:DATA_ROOT `
+              $relative
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Input missing: $($item.Name)"
+            }
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            $expected = [string]$item.Value
+
+            if ($actual -ne $expected.ToLowerInvariant()) {
+              throw "Input SHA256 mismatch: $($item.Name)"
+            }
+          }
+
+          Write-Host "Input SHA256 verified"
+          Write-Host "Output SHA256 verified"
+
+      - name: Write job summary
+        if: always()
+        run: |
+          $resultPath = Join-Path `
+            $env:REPORT_DIR `
+            "actual_candle_existence_result.json"
+
+          if (-not (Test-Path -LiteralPath $resultPath)) {
+            "## Pattern 256 Actual Candle Existence Audit" |
+              Out-File `
+                -FilePath $env:GITHUB_STEP_SUMMARY `
+                -Encoding utf8 `
+                -Append
+
+            "Result file unavailable. Review execution logs." |
+              Out-File `
+                -FilePath $env:GITHUB_STEP_SUMMARY `
+                -Encoding utf8 `
+                -Append
+
+            exit 0
+          }
+
+          $r = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw |
+            ConvertFrom-Json
+
+          $lines = @(
+            "## Pattern 256 Actual Candle Existence Audit"
+            ""
+            "| Check | Result |"
+            "|---|---|"
+            "| Execution | $($r.execution_status) |"
+            "| Version | $($r.version) |"
+            "| Source shards | $($r.source_shards) |"
+            "| Source rows | $($r.source_rows) |"
+            "| Verified entry candles and prices | $($r.verified_entry_candles_and_prices) |"
+            "| Delayed entry rows | $($r.delayed_entry_rows) |"
+            "| Missing feature candles | $($r.feature_candle_missing) |"
+            "| Issue rows | $($r.issues_total) |"
+            "| Research decision | $($r.research_decision) |"
+            "| TRAIN approved | $($r.train_experiment_approved) |"
+            "| Point-in-time proven | $($r.point_in_time_proven) |"
+            "| Independent OOS proven | $($r.independent_oos_proven) |"
+            "| Live trading approved | $($r.approved_for_live_trading) |"
+            ""
+            "### Notes"
+            ""
+            "- Actual OHLCV timestamps and entry prices are checked."
+            "- Missing candles are not interpolated."
+            "- Upstream signal and feature formulas are not certified."
+            "- Source datasets are not modified."
+            "- No automated trading is enabled."
+          )
+
+          $lines |
+            Out-File `
+              -FilePath $env:GITHUB_STEP_SUMMARY `
+              -Encoding utf8 `
+              -Append
+
+      - name: Upload audit reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-actual-candle-existence
+          path: |
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_actual_candle_existence\actual_candle_existence_issues.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_actual_candle_existence\actual_candle_existence_by_market.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_actual_candle_existence\actual_candle_existence_result.json
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_actual_candle_existence\actual_candle_existence_manifest.json
+          if-no-files-found: warn
+          retention-days: 14
