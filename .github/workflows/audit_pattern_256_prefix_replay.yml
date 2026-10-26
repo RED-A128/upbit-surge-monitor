@@ -13,6 +13,7 @@ concurrency:
 jobs:
   prefix-replay:
     name: prefix-replay
+
     runs-on:
       - self-hosted
       - Windows
@@ -21,7 +22,7 @@ jobs:
 
     defaults:
       run:
-        shell: pwsh
+        shell: powershell
 
     steps:
       - name: Checkout repository
@@ -137,26 +138,28 @@ jobs:
             $r = Get-Content -LiteralPath $path -Raw |
               ConvertFrom-Json
 
-            @"
-          # Pattern 256 Prefix Replay Audit
+            $lines = @(
+              "# Pattern 256 Prefix Replay Audit",
+              "",
+              "| Check | Result |",
+              "|---|---|",
+              "| Execution | $($r.execution) |",
+              "| Version | $($r.version) |",
+              "| Expected checks | $($r.expected_checks) |",
+              "| Passed checks | $($r.passed_checks) |",
+              "| Failed checks | $($r.failed_checks) |",
+              "| Issues | $($r.issue_count) |",
+              "| Feature replay verified | $($r.feature_prefix_replay_verified) |",
+              "| Signal replay verified | $($r.signal_prefix_replay_verified) |",
+              "| Full-market proof | $($r.full_market_leakage_free_proven) |",
+              "| Research decision | $($r.research_decision) |",
+              "| TRAIN approved | $($r.train_approved) |",
+              "| Live trading approved | $($r.live_trading_approved) |",
+              "",
+              "Sampled replay is not proof of full-market leakage freedom."
+            )
 
-          | Check | Result |
-          |---|---|
-          | Execution | $($r.execution) |
-          | Version | $($r.version) |
-          | Expected checks | $($r.expected_checks) |
-          | Passed checks | $($r.passed_checks) |
-          | Failed checks | $($r.failed_checks) |
-          | Issues | $($r.issue_count) |
-          | Feature replay verified | $($r.feature_prefix_replay_verified) |
-          | Signal replay verified | $($r.signal_prefix_replay_verified) |
-          | Full-market proof | $($r.full_market_leakage_free_proven) |
-          | Research decision | $($r.research_decision) |
-          | TRAIN approved | $($r.train_approved) |
-          | Live trading approved | $($r.live_trading_approved) |
-
-          Sampled replay is not proof of full-market leakage freedom.
-          "@ | Out-File `
+            $lines | Out-File `
               -FilePath $env:GITHUB_STEP_SUMMARY `
               -Encoding utf8 `
               -Append
