@@ -1,0 +1,238 @@
+name: audit_pattern_256_signal_timestamp_convention.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-pattern-256-signal-timestamp-convention
+  cancel-in-progress: false
+
+jobs:
+  signal-timestamp-convention:
+    name: signal-timestamp-convention
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 120
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      DATA_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate script and sources
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Python unavailable'
+          }
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            'audit_pattern_256_signal_timestamp_convention.py'
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Script missing: $script"
+          }
+
+          py -m py_compile $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Python syntax invalid'
+          }
+
+          $paths = @(
+            'data\reports\pattern_256_feature_point_in_time\feature_point_in_time_result.json',
+            'data\reports\pattern_256_train_feature_join\train_feature_join_result.json',
+            'data\reports\pattern_256_train_feature_join\train_feature_join_manifest.json',
+            'data\reports\pattern_256_train_feature_join\shards'
+          )
+
+          foreach ($rel in $paths) {
+            $p = Join-Path $env:DATA_ROOT $rel
+
+            if (-not (Test-Path -LiteralPath $p)) {
+              throw "Missing source: $p"
+            }
+          }
+
+      - name: Run signal timestamp convention audit
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            'audit_pattern_256_signal_timestamp_convention.py'
+
+          py -u $script --root "$env:DATA_ROOT"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Timestamp convention audit failed'
+          }
+
+      - name: Verify output and SHA256
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $out = Join-Path `
+            $env:DATA_ROOT `
+            'data\reports\pattern_256_signal_timestamp_convention'
+
+          $resultPath = Join-Path `
+            $out `
+            'signal_timestamp_convention_result.json'
+
+          $manifestPath = Join-Path `
+            $out `
+            'signal_timestamp_convention_manifest.json'
+
+          foreach ($p in @($resultPath, $manifestPath)) {
+            if (-not (Test-Path -LiteralPath $p -PathType Leaf)) {
+              throw "Missing output: $p"
+            }
+          }
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw | ConvertFrom-Json
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw | ConvertFrom-Json
+
+          if ($result.version -ne 'Clean V001') {
+            throw 'Result version mismatch'
+          }
+
+          if ($manifest.version -ne 'Clean V001') {
+            throw 'Manifest version mismatch'
+          }
+
+          if ($result.execution_status -ne 'PASS') {
+            throw 'Audit execution failed'
+          }
+
+          if ($result.train_experiment_approved -ne $false) {
+            throw 'Unexpected TRAIN approval'
+          }
+
+          if ($result.point_in_time_proven -ne $false) {
+            throw 'Unexpected PIT proof'
+          }
+
+          if ($result.approved_for_live_trading -ne $false) {
+            throw 'Unexpected trading approval'
+          }
+
+          $sum = 0
+
+          foreach ($prop in $result.classification_counts.PSObject.Properties) {
+            $sum += [long]$prop.Value
+          }
+
+          if ($sum -ne [long]$result.source_rows) {
+            throw 'Row count mismatch'
+          }
+
+          foreach ($prop in $manifest.output_sha256.PSObject.Properties) {
+            $p = Join-Path $out $prop.Name
+
+            if (-not (Test-Path -LiteralPath $p -PathType Leaf)) {
+              throw "Missing hash target: $p"
+            }
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $p `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($actual -ne ([string]$prop.Value).ToLowerInvariant()) {
+              throw "SHA256 mismatch: $p"
+            }
+
+            Write-Host "PASS output SHA256: $($prop.Name)"
+          }
+
+          foreach ($prop in $manifest.input_sha256.PSObject.Properties) {
+            $p = Join-Path `
+              $env:DATA_ROOT `
+              ($prop.Name -replace '/', '\')
+
+            if (-not (Test-Path -LiteralPath $p -PathType Leaf)) {
+              throw "Missing input: $p"
+            }
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $p `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($actual -ne ([string]$prop.Value).ToLowerInvariant()) {
+              throw "Input SHA256 mismatch: $p"
+            }
+
+            Write-Host "PASS input SHA256: $($prop.Name)"
+          }
+
+      - name: Write job summary
+        if: success()
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $p = Join-Path `
+            $env:DATA_ROOT `
+            'data\reports\pattern_256_signal_timestamp_convention\signal_timestamp_convention_result.json'
+
+          $r = Get-Content `
+            -LiteralPath $p `
+            -Raw | ConvertFrom-Json
+
+          @"
+          # Pattern 256 Signal Timestamp Convention Audit
+
+          | Check | Result |
+          |---|---|
+          | Execution | $($r.execution_status) |
+          | Version | $($r.version) |
+          | JOIN rows | $($r.source_rows) |
+          | Shards | $($r.source_shards) |
+          | Open-to-next-open compatible | $($r.classification_counts.CANDLE_OPEN_NEXT_OPEN_COMPATIBLE) |
+          | Feature closed by signal | $($r.classification_counts.FEATURE_CLOSED_BY_SIGNAL) |
+          | Entry before feature close | $($r.classification_counts.ENTRY_BEFORE_FEATURE_CLOSE) |
+          | Other timing | $($r.classification_counts.OTHER_TIMING) |
+          | Invalid timestamp | $($r.classification_counts.INVALID_TIMESTAMP) |
+          | Research decision | $($r.research_decision) |
+          | Point-in-time proven | $($r.point_in_time_proven) |
+          | TRAIN approved | $($r.train_experiment_approved) |
+          | Live trading approved | $($r.approved_for_live_trading) |
+
+          Timing compatibility is not proof that upstream signal formulas are leakage-free.
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Encoding utf8 `
+            -Append
+
+      - name: Upload audit reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-signal-timestamp-convention-v001
+          path: 'C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_signal_timestamp_convention\'
+          if-no-files-found: warn
+          retention-days: 30
