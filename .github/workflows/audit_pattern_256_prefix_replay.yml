@@ -24,6 +24,10 @@ jobs:
       run:
         shell: powershell
 
+    env:
+      DATA_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+      REPORT_DIR: 'C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_prefix_replay'
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -56,12 +60,40 @@ jobs:
             Write-Host "[PASS] $file"
           }
 
+      - name: Verify local market data
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if (-not (Test-Path -LiteralPath $env:DATA_ROOT -PathType Container)) {
+            throw "Local project directory missing: $env:DATA_ROOT"
+          }
+
+          foreach ($timeframe in @("h1", "h4", "d1")) {
+            $directory = Join-Path $env:DATA_ROOT "data\ohlcv\$timeframe"
+
+            if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+              throw "OHLCV directory missing: $directory"
+            }
+
+            $sample = Get-ChildItem `
+              -LiteralPath $directory `
+              -Filter "*.csv" `
+              -File |
+              Select-Object -First 1
+
+            if ($null -eq $sample) {
+              throw "No OHLCV CSV files found: $directory"
+            }
+
+            Write-Host "[PASS] OHLCV $timeframe"
+          }
+
       - name: Run prefix replay audit
         run: |
           $ErrorActionPreference = "Stop"
 
           py -u audit_pattern_256_prefix_replay.py `
-            --root . `
+            --root "$env:DATA_ROOT" `
             --markets-per-timeframe 3 `
             --cutoffs "0.40,0.65,0.85"
 
@@ -73,22 +105,20 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          $directory = "data/reports/pattern_256_prefix_replay"
-
           $resultPath = Join-Path `
-            $directory `
+            $env:REPORT_DIR `
             "prefix_replay_result.json"
 
           $manifestPath = Join-Path `
-            $directory `
+            $env:REPORT_DIR `
             "prefix_replay_manifest.json"
 
-          if (-not (Test-Path -LiteralPath $resultPath)) {
-            throw "Audit result missing"
+          if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
+            throw "Audit result missing: $resultPath"
           }
 
-          if (-not (Test-Path -LiteralPath $manifestPath)) {
-            throw "Audit manifest missing"
+          if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+            throw "Audit manifest missing: $manifestPath"
           }
 
           $result = Get-Content `
@@ -108,15 +138,15 @@ jobs:
             throw "Signal prefix replay not verified"
           }
 
-          if ($result.failed_checks -ne 0) {
+          if ([int]$result.failed_checks -ne 0) {
             throw "Failed replay checks detected"
           }
 
-          if ($result.issue_count -ne 0) {
+          if ([int]$result.issue_count -ne 0) {
             throw "Replay issues detected"
           }
 
-          if ($result.completed_checks -ne $result.expected_checks) {
+          if ([int]$result.completed_checks -ne [int]$result.expected_checks) {
             throw "Replay check count mismatch"
           }
 
@@ -132,9 +162,13 @@ jobs:
       - name: Write job summary
         if: always()
         run: |
-          $path = "data/reports/pattern_256_prefix_replay/prefix_replay_result.json"
+          $ErrorActionPreference = "Stop"
 
-          if (Test-Path -LiteralPath $path) {
+          $path = Join-Path `
+            $env:REPORT_DIR `
+            "prefix_replay_result.json"
+
+          if (Test-Path -LiteralPath $path -PathType Leaf) {
             $r = Get-Content -LiteralPath $path -Raw |
               ConvertFrom-Json
 
@@ -177,6 +211,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: pattern-256-prefix-replay-audit
-          path: data/reports/pattern_256_prefix_replay/
+          path: C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_prefix_replay\
           if-no-files-found: warn
           retention-days: 14
