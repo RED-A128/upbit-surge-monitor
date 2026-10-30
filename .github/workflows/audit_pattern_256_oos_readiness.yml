@@ -1,0 +1,317 @@
+name: audit_pattern_256_oos_readiness.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern-256-oos-readiness
+  cancel-in-progress: false
+
+jobs:
+  oos-readiness:
+    name: oos-readiness
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 360
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      DATA_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "Workspace: $env:GITHUB_WORKSPACE"
+          Write-Host "Research root: $env:DATA_ROOT"
+          Write-Host "Runner: $env:RUNNER_NAME"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          py -c "import pandas; print('pandas:', pandas.__version__)"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "pandas unavailable"
+          }
+
+      - name: Verify audit script
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_oos_readiness.py"
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Missing audit script: $script"
+          }
+
+          py -c "import ast, pathlib, sys; ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8-sig'))" $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax validation failed"
+          }
+
+      - name: Verify persistent research data
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $required = @(
+            "build_features.py",
+            "detect_256.py",
+            "data\reports\pattern_256_formula_risk\formula_risks.csv",
+            "data\reports\pattern_256_formula_risk\formula_risk_result.json",
+            "data\reports\pattern_256_formula_risk\formula_risk_manifest.json"
+          )
+
+          foreach ($relativePath in $required) {
+            $path = Join-Path $env:DATA_ROOT $relativePath
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Required file missing: $path"
+            }
+
+            Write-Host "[PASS] $relativePath"
+          }
+
+          $directories = @(
+            "data\ohlcv\h1",
+            "data\ohlcv\h4",
+            "data\ohlcv\d1",
+            "data\features\h1",
+            "data\features\h4",
+            "data\features\d1",
+            "data\signals\256\h1",
+            "data\signals\256\h4",
+            "data\signals\256\d1"
+          )
+
+          foreach ($relativePath in $directories) {
+            $path = Join-Path $env:DATA_ROOT $relativePath
+
+            if (-not (Test-Path -LiteralPath $path -PathType Container)) {
+              throw "Required directory missing: $path"
+            }
+
+            Write-Host "[PASS] $relativePath"
+          }
+
+      - name: Execute OOS readiness audit
+        id: audit
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_oos_readiness.py"
+
+          & py -u $script --root $env:DATA_ROOT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "OOS readiness audit failed"
+          }
+
+      - name: Verify output integrity
+        id: verify
+        if: always()
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "Audit execution failed"
+          }
+
+          $report = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_oos_readiness"
+
+          $resultPath = Join-Path `
+            $report `
+            "oos_readiness_result.json"
+
+          $manifestPath = Join-Path `
+            $report `
+            "oos_readiness_manifest.json"
+
+          if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
+            throw "Missing result JSON"
+          }
+
+          if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+            throw "Missing manifest JSON"
+          }
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw | ConvertFrom-Json
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw | ConvertFrom-Json
+
+          if ($result.execution -notin @("PASS", "REVIEW_REQUIRED")) {
+            throw "Unexpected audit execution status"
+          }
+
+          if ($result.discovered_files -le 0) {
+            throw "No files inspected"
+          }
+
+          if ($result.temporal_split_defined -ne $false) {
+            throw "Unexpected temporal split approval"
+          }
+
+          if ($result.independent_oos_proven -ne $false) {
+            throw "Unexpected independent OOS approval"
+          }
+
+          if ($result.train_approved -ne $false) {
+            throw "Unexpected TRAIN approval"
+          }
+
+          if ($result.live_trading_approved -ne $false) {
+            throw "Unexpected trading approval"
+          }
+
+          if ($result.research_decision -ne "HOLD") {
+            throw "Unexpected research decision"
+          }
+
+          if ($manifest.execution -ne $result.execution) {
+            throw "Manifest/result execution mismatch"
+          }
+
+          foreach ($property in $manifest.output_sha256.PSObject.Properties) {
+            $filename = $property.Name
+            $expected = [string]$property.Value
+
+            $path = Join-Path $report $filename
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing output: $filename"
+            }
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($actual -ne $expected.ToLowerInvariant()) {
+              throw "SHA256 mismatch: $filename"
+            }
+
+            Write-Host "[SHA256 PASS] $filename"
+          }
+
+          Write-Host "OOS readiness output integrity PASS"
+
+      - name: Publish summary
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $resultPath = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_oos_readiness\oos_readiness_result.json"
+
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            "## Pattern 256 OOS Readiness - Execution Failed" |
+              Out-File `
+                -FilePath $env:GITHUB_STEP_SUMMARY `
+                -Append `
+                -Encoding utf8
+
+            exit 0
+          }
+
+          if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
+            "## Pattern 256 OOS Readiness - No Result" |
+              Out-File `
+                -FilePath $env:GITHUB_STEP_SUMMARY `
+                -Append `
+                -Encoding utf8
+
+            exit 0
+          }
+
+          $r = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw | ConvertFrom-Json
+
+          @"
+          ## Pattern 256 OOS Readiness
+
+          | Check | Result |
+          |---|---|
+          | Version | $($r.version) |
+          | Execution | $($r.execution) |
+          | Discovered files | $($r.discovered_files) |
+          | PASS files | $($r.pass_files) |
+          | Review required files | $($r.review_required_files) |
+          | Temporal split defined | $($r.temporal_split_defined) |
+          | Independent OOS proven | $($r.independent_oos_proven) |
+          | Research decision | $($r.research_decision) |
+          | TRAIN approved | $($r.train_approved) |
+          | Live trading approved | $($r.live_trading_approved) |
+
+          **Important:** This is a data-readiness audit.
+          It does not measure prediction performance or approve training.
+          "@ |
+            Out-File `
+              -FilePath $env:GITHUB_STEP_SUMMARY `
+              -Append `
+              -Encoding utf8
+
+      - name: Upload audit reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-oos-readiness
+          path: |
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_oos_readiness\oos_data_inventory.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_oos_readiness\oos_readiness_result.json
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_oos_readiness\oos_readiness_manifest.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Final status gate
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $audit = "${{ steps.audit.outcome }}"
+          $verify = "${{ steps.verify.outcome }}"
+
+          Write-Host "Audit outcome: $audit"
+          Write-Host "Verification outcome: $verify"
+
+          if ($audit -ne "success") {
+            throw "OOS readiness audit execution failed"
+          }
+
+          if ($verify -ne "success") {
+            throw "OOS readiness integrity verification failed"
+          }
+
+          Write-Host "OOS READINESS AUDIT COMPLETED"
+          Write-Host "RESEARCH DECISION: HOLD"
