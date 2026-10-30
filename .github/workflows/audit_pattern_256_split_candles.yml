@@ -1,0 +1,335 @@
+name: audit_pattern_256_split_candles.yml
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_replay:
+        description: "Ignore existing checkpoints"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern-256-split-candles
+  cancel-in-progress: false
+
+jobs:
+  split-candle-audit:
+    name: split-candle-audit
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 360
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      DATA_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "Workspace: $env:GITHUB_WORKSPACE"
+          Write-Host "Research root: $env:DATA_ROOT"
+          Write-Host "Runner: $env:RUNNER_NAME"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+      - name: Verify audit script
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_split_candles.py"
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Audit script missing: $script"
+          }
+
+          py -c "import ast, pathlib, sys; ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8-sig'))" $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax validation failed"
+          }
+
+          Write-Host "[PASS] Audit script syntax"
+
+      - name: Verify previous evidence
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $report = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_temporal_split_plan"
+
+          $required = @(
+            "temporal_alignment.csv",
+            "temporal_coverage.csv",
+            "temporal_split_result.json",
+            "temporal_split_manifest.json"
+          )
+
+          foreach ($filename in $required) {
+            $path = Join-Path $report $filename
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing previous evidence: $path"
+            }
+
+            Write-Host "[PASS] $filename"
+          }
+
+      - name: Execute split candle audit
+        id: audit
+        continue-on-error: true
+        env:
+          FORCE_REPLAY: ${{ inputs.force_replay }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_split_candles.py"
+
+          $arguments = @(
+            "-u",
+            $script,
+            "--root",
+            $env:DATA_ROOT
+          )
+
+          if ($env:FORCE_REPLAY -eq "true") {
+            $arguments += "--force"
+          }
+
+          & py @arguments
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Split candle audit execution failed"
+          }
+
+      - name: Verify output integrity
+        id: verify
+        if: always()
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "Audit execution failed"
+          }
+
+          $report = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_split_candles"
+
+          $resultPath = Join-Path `
+            $report `
+            "split_candle_result.json"
+
+          $manifestPath = Join-Path `
+            $report `
+            "split_candle_manifest.json"
+
+          if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
+            throw "Result JSON missing"
+          }
+
+          if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+            throw "Manifest JSON missing"
+          }
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw | ConvertFrom-Json
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw | ConvertFrom-Json
+
+          if ($result.execution -notin @("PASS", "REVIEW_REQUIRED")) {
+            throw "Unexpected execution status"
+          }
+
+          if ($result.jobs -le 0) {
+            throw "No jobs discovered"
+          }
+
+          if ($result.completed_jobs -ne $result.jobs) {
+            throw "Incomplete market jobs"
+          }
+
+          if ($result.failed_jobs -ne 0) {
+            throw "Failed market jobs detected"
+          }
+
+          if ($result.period_records -ne ($result.jobs * 3)) {
+            throw "Unexpected period record count"
+          }
+
+          if ($result.independent_oos_proven -ne $false) {
+            throw "Unexpected OOS approval"
+          }
+
+          if ($result.train_approved -ne $false) {
+            throw "Unexpected TRAIN approval"
+          }
+
+          if ($result.live_trading_approved -ne $false) {
+            throw "Unexpected trading approval"
+          }
+
+          if ($result.research_decision -ne "HOLD") {
+            throw "Unexpected research decision"
+          }
+
+          if ($manifest.execution -ne $result.execution) {
+            throw "Manifest execution mismatch"
+          }
+
+          $requiredFiles = @(
+            "split_candle_checks.csv",
+            "split_candle_result.json"
+          )
+
+          foreach ($filename in $requiredFiles) {
+            $expected = [string](
+              $manifest.output_sha256.$filename
+            )
+
+            if ($expected.Length -ne 64) {
+              throw "Missing SHA256: $filename"
+            }
+
+            $path = Join-Path $report $filename
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing output: $filename"
+            }
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($actual -ne $expected.ToLowerInvariant()) {
+              throw "SHA256 mismatch: $filename"
+            }
+
+            Write-Host "[SHA256 PASS] $filename"
+          }
+
+          Write-Host "Split candle audit integrity PASS"
+
+      - name: Publish summary
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            "## Split Candle Audit - Execution Failed" |
+              Out-File `
+                -FilePath $env:GITHUB_STEP_SUMMARY `
+                -Append `
+                -Encoding utf8
+
+            exit 0
+          }
+
+          $resultPath = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_split_candles\split_candle_result.json"
+
+          if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
+            "## Split Candle Audit - No Result" |
+              Out-File `
+                -FilePath $env:GITHUB_STEP_SUMMARY `
+                -Append `
+                -Encoding utf8
+
+            exit 0
+          }
+
+          $r = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw | ConvertFrom-Json
+
+          @"
+          ## Pattern 256 Split Candle Audit
+
+          | Check | Result |
+          |---|---|
+          | Version | $($r.version) |
+          | Execution | $($r.execution) |
+          | Total jobs | $($r.jobs) |
+          | Executed jobs | $($r.executed_jobs) |
+          | Resumed jobs | $($r.resumed_jobs) |
+          | Failed jobs | $($r.failed_jobs) |
+          | Period records | $($r.period_records) |
+          | Signal counts verified | $($r.signal_counts_verified) |
+          | Historical research overlap checked | $($r.historical_research_overlap_checked) |
+          | Independent OOS proven | $($r.independent_oos_proven) |
+          | Research decision | $($r.research_decision) |
+          | TRAIN approved | $($r.train_approved) |
+          | Live trading approved | $($r.live_trading_approved) |
+
+          **Important:** This audit checks historical candle
+          alignment and period counts. It does not validate
+          prediction performance or independent OOS.
+          "@ |
+            Out-File `
+              -FilePath $env:GITHUB_STEP_SUMMARY `
+              -Append `
+              -Encoding utf8
+
+      - name: Upload audit reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-split-candle-audit
+          path: |
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_split_candles\split_candle_checks.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_split_candles\split_candle_result.json
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_split_candles\split_candle_manifest.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Final status gate
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $audit = "${{ steps.audit.outcome }}"
+          $verify = "${{ steps.verify.outcome }}"
+
+          Write-Host "Audit outcome: $audit"
+          Write-Host "Verification outcome: $verify"
+
+          if ($audit -ne "success") {
+            throw "Split candle audit execution failed"
+          }
+
+          if ($verify -ne "success") {
+            throw "Split candle integrity verification failed"
+          }
+
+          Write-Host "SPLIT CANDLE AUDIT COMPLETED"
+          Write-Host "RESEARCH DECISION: HOLD"
