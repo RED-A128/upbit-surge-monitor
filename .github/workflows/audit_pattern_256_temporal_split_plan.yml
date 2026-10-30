@@ -1,0 +1,322 @@
+name: audit_pattern_256_temporal_split_plan.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern-256-temporal-split-plan
+  cancel-in-progress: false
+
+jobs:
+  temporal-split-plan:
+    name: temporal-split-plan
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 60
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      DATA_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "Workspace: $env:GITHUB_WORKSPACE"
+          Write-Host "Research root: $env:DATA_ROOT"
+          Write-Host "Runner: $env:RUNNER_NAME"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+      - name: Verify audit script
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_temporal_split_plan.py"
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Audit script missing: $script"
+          }
+
+          py -c "import ast, pathlib, sys; ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8-sig'))" $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax validation failed"
+          }
+
+          Write-Host "[PASS] Audit script syntax"
+
+      - name: Verify readiness evidence
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $required = @(
+            "data\reports\pattern_256_oos_readiness\oos_data_inventory.csv",
+            "data\reports\pattern_256_oos_readiness\oos_readiness_result.json",
+            "data\reports\pattern_256_oos_readiness\oos_readiness_manifest.json"
+          )
+
+          foreach ($relativePath in $required) {
+            $path = Join-Path $env:DATA_ROOT $relativePath
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Required evidence missing: $path"
+            }
+
+            Write-Host "[PASS] $relativePath"
+          }
+
+      - name: Execute temporal split audit
+        id: audit
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_temporal_split_plan.py"
+
+          & py -u $script --root $env:DATA_ROOT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Temporal split audit failed"
+          }
+
+      - name: Verify output integrity
+        id: verify
+        if: always()
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "Audit execution did not succeed"
+          }
+
+          $report = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_temporal_split_plan"
+
+          $resultPath = Join-Path `
+            $report `
+            "temporal_split_result.json"
+
+          $manifestPath = Join-Path `
+            $report `
+            "temporal_split_manifest.json"
+
+          if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
+            throw "Result JSON missing"
+          }
+
+          if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+            throw "Manifest JSON missing"
+          }
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw | ConvertFrom-Json
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw | ConvertFrom-Json
+
+          if ($result.execution -notin @("PASS", "REVIEW_REQUIRED")) {
+            throw "Unexpected execution status"
+          }
+
+          if ($result.readiness_evidence_verified -ne $true) {
+            throw "Readiness evidence not verified"
+          }
+
+          if ($result.market_timeframe_combinations -le 0) {
+            throw "No market/timeframe combinations"
+          }
+
+          if (
+            $result.aligned_combinations + $result.alignment_issues `
+              -ne $result.market_timeframe_combinations
+          ) {
+            throw "Alignment count mismatch"
+          }
+
+          if ($result.coverage_rows -ne (
+            $result.market_timeframe_combinations * 3
+          )) {
+            throw "Coverage row count mismatch"
+          }
+
+          if ($result.split_dates_approved -ne $false) {
+            throw "Unexpected split approval"
+          }
+
+          if ($result.independent_oos_proven -ne $false) {
+            throw "Unexpected OOS approval"
+          }
+
+          if ($result.train_approved -ne $false) {
+            throw "Unexpected TRAIN approval"
+          }
+
+          if ($result.live_trading_approved -ne $false) {
+            throw "Unexpected trading approval"
+          }
+
+          if ($result.research_decision -ne "HOLD") {
+            throw "Unexpected research decision"
+          }
+
+          if ($manifest.execution -ne $result.execution) {
+            throw "Manifest execution mismatch"
+          }
+
+          $expectedFiles = @(
+            "temporal_alignment.csv",
+            "temporal_coverage.csv",
+            "temporal_split_result.json"
+          )
+
+          foreach ($filename in $expectedFiles) {
+            $expected = [string](
+              $manifest.output_sha256.$filename
+            )
+
+            if ($expected.Length -ne 64) {
+              throw "Missing SHA256: $filename"
+            }
+
+            $path = Join-Path $report $filename
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing output: $filename"
+            }
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($actual -ne $expected.ToLowerInvariant()) {
+              throw "SHA256 mismatch: $filename"
+            }
+
+            Write-Host "[SHA256 PASS] $filename"
+          }
+
+          Write-Host "Temporal split audit integrity PASS"
+
+      - name: Publish summary
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            "## Temporal Split Plan - Execution Failed" |
+              Out-File `
+                -FilePath $env:GITHUB_STEP_SUMMARY `
+                -Append `
+                -Encoding utf8
+
+            exit 0
+          }
+
+          $resultPath = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_temporal_split_plan\temporal_split_result.json"
+
+          if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
+            "## Temporal Split Plan - No Result" |
+              Out-File `
+                -FilePath $env:GITHUB_STEP_SUMMARY `
+                -Append `
+                -Encoding utf8
+
+            exit 0
+          }
+
+          $r = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw | ConvertFrom-Json
+
+          @"
+          ## Pattern 256 Temporal Split Plan
+
+          | Check | Result |
+          |---|---|
+          | Version | $($r.version) |
+          | Execution | $($r.execution) |
+          | Market/timeframe combinations | $($r.market_timeframe_combinations) |
+          | Aligned combinations | $($r.aligned_combinations) |
+          | Alignment issues | $($r.alignment_issues) |
+          | Coverage rows | $($r.coverage_rows) |
+          | Split dates approved | $($r.split_dates_approved) |
+          | Actual split candle counts verified | $($r.actual_split_candle_counts_verified) |
+          | Historical research overlap checked | $($r.historical_research_overlap_checked) |
+          | Historical research exposure | $($r.historical_research_exposure_status) |
+          | Independent OOS proven | $($r.independent_oos_proven) |
+          | Research decision | $($r.research_decision) |
+          | TRAIN approved | $($r.train_approved) |
+          | Live trading approved | $($r.live_trading_approved) |
+
+          **Important:** This is a retrospective temporal split
+          planning audit. No independent OOS period is approved.
+          "@ |
+            Out-File `
+              -FilePath $env:GITHUB_STEP_SUMMARY `
+              -Append `
+              -Encoding utf8
+
+      - name: Upload audit reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-temporal-split-plan
+          path: |
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_temporal_split_plan\temporal_alignment.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_temporal_split_plan\temporal_coverage.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_temporal_split_plan\temporal_split_result.json
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_temporal_split_plan\temporal_split_manifest.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Final status gate
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $audit = "${{ steps.audit.outcome }}"
+          $verify = "${{ steps.verify.outcome }}"
+
+          Write-Host "Audit outcome: $audit"
+          Write-Host "Verification outcome: $verify"
+
+          if ($audit -ne "success") {
+            throw "Temporal split audit failed"
+          }
+
+          if ($verify -ne "success") {
+            throw "Temporal split integrity verification failed"
+          }
+
+          Write-Host "TEMPORAL SPLIT PLAN AUDIT COMPLETED"
+          Write-Host "RESEARCH DECISION: HOLD"
