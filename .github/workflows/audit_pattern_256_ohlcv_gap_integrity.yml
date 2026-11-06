@@ -1,0 +1,357 @@
+
+name: audit_pattern_256_ohlcv_gap_integrity.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern-256-ohlcv-gap-integrity
+  cancel-in-progress: false
+
+jobs:
+  ohlcv-gap-integrity:
+    name: ohlcv-gap-integrity
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 180
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      DATA_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_ohlcv_gap_integrity.py"
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Audit script missing: $script"
+          }
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          py -c "import ast,pathlib,sys; ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8-sig')); print('Syntax PASS')" $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax failed"
+          }
+
+          $source = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_censoring_concentration"
+
+          $required = @(
+            "concentration_result.json",
+            "concentration_manifest.json",
+            "concentration_ranking.csv",
+            "concentration_topk.csv",
+            "concentration_exclusions.csv"
+          )
+
+          foreach ($name in $required) {
+            $path = Join-Path $source $name
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing source report: $path"
+            }
+          }
+
+          foreach ($tf in @("h1", "h4", "d1")) {
+            $folder = Join-Path `
+              $env:DATA_ROOT `
+              "data\ohlcv\$tf"
+
+            if (-not (Test-Path -LiteralPath $folder -PathType Container)) {
+              throw "Missing OHLCV directory: $folder"
+            }
+          }
+
+          Write-Host "[PASS] Environment"
+
+      - name: Execute OHLCV gap audit
+        id: audit
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_ohlcv_gap_integrity.py"
+
+          & py -u $script --root $env:DATA_ROOT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "OHLCV gap audit failed"
+          }
+
+          Write-Host "[PASS] Execution"
+
+      - name: Verify output and SHA256
+        id: verify
+        if: always()
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "Audit execution failed"
+          }
+
+          $folder = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_ohlcv_gap_integrity"
+
+          $resultPath = Join-Path `
+            $folder `
+            "gap_integrity_result.json"
+
+          $manifestPath = Join-Path `
+            $folder `
+            "gap_integrity_manifest.json"
+
+          $r = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw |
+            ConvertFrom-Json
+
+          $m = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw |
+            ConvertFrom-Json
+
+          if ($r.execution -ne "PASS" -or
+              $m.execution -ne "PASS") {
+            throw "Audit execution status not PASS"
+          }
+
+          if ($r.version -ne "Clean V001" -or
+              $m.version -ne "Clean V001") {
+            throw "Version mismatch"
+          }
+
+          if ($r.source_market_groups -ne 853 -or
+              $r.source_event_records -ne 252600 -or
+              $r.source_censored_events -ne 19921) {
+            throw "Source reconciliation failed"
+          }
+
+          if ($r.market_report_rows -ne 853) {
+            throw "Market report row mismatch"
+          }
+
+          if ($r.research_decision -ne "HOLD" -or
+              $r.independent_oos_proven -ne $false -or
+              $r.train_approved -ne $false -or
+              $r.live_trading_approved -ne $false) {
+            throw "Research safety gate failed"
+          }
+
+          $sourceManifest = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_censoring_concentration\concentration_manifest.json"
+
+          $sourceHash = (
+            Get-FileHash `
+              -LiteralPath $sourceManifest `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if ($sourceHash -ne ([string]$r.source_manifest_sha256).ToLowerInvariant() -or
+              $sourceHash -ne ([string]$m.source_manifest_sha256).ToLowerInvariant()) {
+            throw "Source SHA256 mismatch"
+          }
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_ohlcv_gap_integrity.py"
+
+          $scriptHash = (
+            Get-FileHash `
+              -LiteralPath $script `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if ($scriptHash -ne ([string]$m.script_sha256).ToLowerInvariant()) {
+            throw "Script SHA256 mismatch"
+          }
+
+          $names = @(
+            "gap_integrity_market.csv",
+            "gap_integrity_samples.csv",
+            "gap_integrity_summary.csv",
+            "gap_integrity_result.json"
+          )
+
+          foreach ($name in $names) {
+            $path = Join-Path $folder $name
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing report: $name"
+            }
+
+            $expected = [string]$m.output_sha256.$name
+
+            if ($expected.Length -ne 64) {
+              throw "Invalid SHA256: $name"
+            }
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($actual -ne $expected.ToLowerInvariant()) {
+              throw "SHA256 mismatch: $name"
+            }
+
+            Write-Host "[SHA256 PASS] $name"
+          }
+
+          $marketRows = @(
+            Import-Csv -LiteralPath (
+              Join-Path $folder "gap_integrity_market.csv"
+            )
+          )
+
+          $summaryRows = @(
+            Import-Csv -LiteralPath (
+              Join-Path $folder "gap_integrity_summary.csv"
+            )
+          )
+
+          $gapRows = @(
+            Import-Csv -LiteralPath (
+              Join-Path $folder "gap_integrity_samples.csv"
+            )
+          )
+
+          if ($marketRows.Count -ne 853 -or
+              $summaryRows.Count -ne 4 -or
+              $gapRows.Count -ne $r.gap_sample_rows) {
+            throw "CSV row count mismatch"
+          }
+
+          Write-Host "[PASS] Output verification"
+
+      - name: Publish summary
+        if: always()
+        run: |
+          if ("${{ steps.verify.outcome }}" -ne "success") {
+            @"
+          ## Pattern 256 OHLCV Gap Integrity - FAILED
+
+          | Check | Result |
+          |---|---|
+          | Execution | ${{ steps.audit.outcome }} |
+          | Verification | ${{ steps.verify.outcome }} |
+          | Research decision | HOLD |
+
+          Review execution logs and available reports.
+          "@ |
+            Out-File `
+              -FilePath $env:GITHUB_STEP_SUMMARY `
+              -Append `
+              -Encoding utf8
+
+            exit 0
+          }
+
+          $path = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_ohlcv_gap_integrity\gap_integrity_result.json"
+
+          $r = Get-Content `
+            -LiteralPath $path `
+            -Raw |
+            ConvertFrom-Json
+
+          @"
+          ## Pattern 256 OHLCV Gap Integrity
+
+          | Check | Result |
+          |---|---|
+          | Version | $($r.version) |
+          | Execution | $($r.execution) |
+          | Market groups | $($r.source_market_groups) |
+          | Source events | $($r.source_event_records) |
+          | Source censored | $($r.source_censored_events) |
+          | Research decision | HOLD |
+
+          ### OHLCV timestamp continuity
+
+          | Timeframe | Groups | Anomaly | Missing files | Errors | Gap intervals | Missing slots |
+          |---|---:|---:|---:|---:|---:|---:|
+          "@ |
+            Out-File `
+              -FilePath $env:GITHUB_STEP_SUMMARY `
+              -Append `
+              -Encoding utf8
+
+          foreach ($s in $r.summary) {
+            "| $($s.scope) | $($s.market_groups) | $($s.anomaly) | $($s.missing_file) | $($s.error) | $($s.gap_intervals) | $($s.missing_candle_slots) |" |
+              Out-File `
+                -FilePath $env:GITHUB_STEP_SUMMARY `
+                -Append `
+                -Encoding utf8
+          }
+
+          @"
+
+          **Research decision: HOLD.**
+
+          Timestamp gaps do not automatically explain
+          censoring events. No source files were repaired.
+          "@ |
+            Out-File `
+              -FilePath $env:GITHUB_STEP_SUMMARY `
+              -Append `
+              -Encoding utf8
+
+      - name: Upload audit reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-ohlcv-gap-integrity-v001
+          path: |
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_ohlcv_gap_integrity\gap_integrity_result.json
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_ohlcv_gap_integrity\gap_integrity_manifest.json
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_ohlcv_gap_integrity\gap_integrity_market.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_ohlcv_gap_integrity\gap_integrity_samples.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_ohlcv_gap_integrity\gap_integrity_summary.csv
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Final status gate
+        if: always()
+        run: |
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "OHLCV gap audit failed"
+          }
+
+          if ("${{ steps.verify.outcome }}" -ne "success") {
+            throw "OHLCV output verification failed"
+          }
+
+          Write-Host "[PASS] Clean V001"
+          Write-Host "Research decision: HOLD"
