@@ -1,0 +1,392 @@
+name: audit_pattern_256_signal_schema.yml
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_replay:
+        description: "Ignore existing checkpoints"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern-256-signal-schema
+  cancel-in-progress: false
+
+jobs:
+  signal-schema-audit:
+    name: signal-schema-audit
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 360
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      DATA_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "Workspace: $env:GITHUB_WORKSPACE"
+          Write-Host "Research root: $env:DATA_ROOT"
+          Write-Host "Runner: $env:RUNNER_NAME"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+      - name: Verify audit script
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_signal_schema.py"
+
+          if (-not (
+            Test-Path -LiteralPath $script -PathType Leaf
+          )) {
+            throw "Audit script missing: $script"
+          }
+
+          py -c "import ast, pathlib, sys; ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8-sig'))" $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax verification failed"
+          }
+
+          Write-Host "[PASS] Audit script syntax"
+
+      - name: Verify previous evidence
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $report = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_split_candles"
+
+          $required = @(
+            "split_candle_checks.csv",
+            "split_candle_result.json",
+            "split_candle_manifest.json"
+          )
+
+          foreach ($filename in $required) {
+            $path = Join-Path $report $filename
+
+            if (-not (
+              Test-Path -LiteralPath $path -PathType Leaf
+            )) {
+              throw "Missing previous evidence: $path"
+            }
+
+            Write-Host "[PASS] $filename"
+          }
+
+          foreach ($timeframe in @("h1", "h4", "d1")) {
+            $directory = Join-Path `
+              $env:DATA_ROOT `
+              "data\signals\256\$timeframe"
+
+            if (-not (
+              Test-Path -LiteralPath $directory -PathType Container
+            )) {
+              throw "Missing signal directory: $directory"
+            }
+
+            Write-Host "[PASS] $directory"
+          }
+
+      - name: Execute signal schema audit
+        id: audit
+        continue-on-error: true
+        env:
+          FORCE_REPLAY: ${{ inputs.force_replay }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_signal_schema.py"
+
+          $arguments = @(
+            "-u",
+            $script,
+            "--root",
+            $env:DATA_ROOT
+          )
+
+          if ($env:FORCE_REPLAY -eq "true") {
+            $arguments += "--force"
+          }
+
+          & py @arguments
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Signal schema audit execution failed"
+          }
+
+      - name: Verify output integrity
+        id: verify
+        if: always()
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "Audit execution failed"
+          }
+
+          $report = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_signal_schema"
+
+          $resultPath = Join-Path `
+            $report `
+            "signal_schema_result.json"
+
+          $manifestPath = Join-Path `
+            $report `
+            "signal_schema_manifest.json"
+
+          if (-not (
+            Test-Path -LiteralPath $resultPath -PathType Leaf
+          )) {
+            throw "Result JSON missing"
+          }
+
+          if (-not (
+            Test-Path -LiteralPath $manifestPath -PathType Leaf
+          )) {
+            throw "Manifest JSON missing"
+          }
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw | ConvertFrom-Json
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw | ConvertFrom-Json
+
+          if ($result.execution -ne "PASS") {
+            throw "Audit execution is not PASS"
+          }
+
+          if ($result.previous_evidence_verified -ne $true) {
+            throw "Previous evidence not verified"
+          }
+
+          if ($result.jobs -le 0) {
+            throw "No signal files discovered"
+          }
+
+          if ($result.completed_jobs -ne $result.jobs) {
+            throw "Incomplete signal schema jobs"
+          }
+
+          if ($result.failed_jobs -ne 0) {
+            throw "Failed signal schema jobs"
+          }
+
+          if ($result.column_records -le 0) {
+            throw "No column records generated"
+          }
+
+          if ($result.signal_column_selected -ne $false) {
+            throw "Unexpected signal column approval"
+          }
+
+          if ($result.signal_counts_verified -ne $false) {
+            throw "Unexpected signal count approval"
+          }
+
+          if ($result.independent_oos_proven -ne $false) {
+            throw "Unexpected OOS approval"
+          }
+
+          if ($result.train_approved -ne $false) {
+            throw "Unexpected TRAIN approval"
+          }
+
+          if ($result.live_trading_approved -ne $false) {
+            throw "Unexpected trading approval"
+          }
+
+          if ($result.research_decision -ne "HOLD") {
+            throw "Unexpected research decision"
+          }
+
+          if ($manifest.execution -ne $result.execution) {
+            throw "Manifest execution mismatch"
+          }
+
+          $requiredFiles = @(
+            "signal_schema_files.csv",
+            "signal_schema_columns.csv",
+            "signal_schema_result.json"
+          )
+
+          foreach ($filename in $requiredFiles) {
+            $expected = [string](
+              $manifest.output_sha256.$filename
+            )
+
+            if ($expected.Length -ne 64) {
+              throw "Missing SHA256: $filename"
+            }
+
+            $path = Join-Path $report $filename
+
+            if (-not (
+              Test-Path -LiteralPath $path -PathType Leaf
+            )) {
+              throw "Missing output: $filename"
+            }
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($actual -ne $expected.ToLowerInvariant()) {
+              throw "SHA256 mismatch: $filename"
+            }
+
+            Write-Host "[SHA256 PASS] $filename"
+          }
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_signal_schema.py"
+
+          $actualScriptHash = (
+            Get-FileHash `
+              -LiteralPath $script `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if (
+            $actualScriptHash -ne
+            ([string]$manifest.script_sha256).ToLowerInvariant()
+          ) {
+            throw "Audit script SHA256 mismatch"
+          }
+
+          Write-Host "Signal schema integrity PASS"
+
+      - name: Publish summary
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            "## Signal Schema Audit - Execution Failed" |
+              Out-File `
+                -FilePath $env:GITHUB_STEP_SUMMARY `
+                -Append `
+                -Encoding utf8
+
+            exit 0
+          }
+
+          $resultPath = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_signal_schema\signal_schema_result.json"
+
+          if (-not (
+            Test-Path -LiteralPath $resultPath -PathType Leaf
+          )) {
+            "## Signal Schema Audit - No Result" |
+              Out-File `
+                -FilePath $env:GITHUB_STEP_SUMMARY `
+                -Append `
+                -Encoding utf8
+
+            exit 0
+          }
+
+          $r = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw | ConvertFrom-Json
+
+          @"
+          ## Pattern 256 Signal Schema Audit
+
+          | Check | Result |
+          |---|---|
+          | Version | $($r.version) |
+          | Execution | $($r.execution) |
+          | Total jobs | $($r.jobs) |
+          | Completed jobs | $($r.completed_jobs) |
+          | Executed jobs | $($r.executed_jobs) |
+          | Resumed jobs | $($r.resumed_jobs) |
+          | Failed jobs | $($r.failed_jobs) |
+          | Column records | $($r.column_records) |
+          | Binary-like candidate records | $($r.binary_like_candidate_records) |
+          | Signal column selected | $($r.signal_column_selected) |
+          | Signal counts verified | $($r.signal_counts_verified) |
+          | Independent OOS proven | $($r.independent_oos_proven) |
+          | Research decision | $($r.research_decision) |
+          | TRAIN approved | $($r.train_approved) |
+          | Live trading approved | $($r.live_trading_approved) |
+
+          **Important:** Binary-like columns are candidates only.
+          Signal semantics and event counts require separate verification.
+          "@ |
+            Out-File `
+              -FilePath $env:GITHUB_STEP_SUMMARY `
+              -Append `
+              -Encoding utf8
+
+      - name: Upload audit reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-signal-schema
+          path: |
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_signal_schema\signal_schema_files.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_signal_schema\signal_schema_columns.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_signal_schema\signal_schema_result.json
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_signal_schema\signal_schema_manifest.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Final status gate
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $audit = "${{ steps.audit.outcome }}"
+          $verify = "${{ steps.verify.outcome }}"
+
+          Write-Host "Audit outcome: $audit"
+          Write-Host "Verification outcome: $verify"
+
+          if ($audit -ne "success") {
+            throw "Signal schema audit failed"
+          }
+
+          if ($verify -ne "success") {
+            throw "Signal schema integrity verification failed"
+          }
+
+          Write-Host "SIGNAL SCHEMA AUDIT COMPLETED"
+          Write-Host "RESEARCH DECISION: HOLD"
