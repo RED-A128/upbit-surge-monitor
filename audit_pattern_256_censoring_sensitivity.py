@@ -4,23 +4,23 @@
 
 """
 Pattern 256 Censoring Sensitivity Audit
-Clean V001
+Clean V002
 
-Input:
+Read-only input:
  data/reports/pattern_256_event_gap_integrity/
    gap_integrity_events.csv
    gap_integrity_summary.csv
    gap_integrity_result.json
    gap_integrity_manifest.json
 
-Outputs:
+Output:
  data/reports/pattern_256_censoring_sensitivity/
    censoring_result.json
    censoring_summary.csv
    censoring_market.csv
    censoring_manifest.json
 
-Research only. No trading or training approval.
+Research only. Never approves training or trading.
 """
 
 from __future__ import annotations
@@ -31,13 +31,15 @@ import hashlib
 import json
 import os
 import sys
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
 
 
-VERSION = "Clean V001"
+VERSION = "Clean V002"
+SOURCE_VERSION = "Clean V002"
 EXPECTED_EVENTS = 252600
 EXPECTED_JOBS = 870
 
@@ -48,17 +50,15 @@ PERIODS = {
 }
 TIMEFRAMES = {"h1", "h4", "d1"}
 HORIZONS = {24, 72, 168}
-OUTCOMES = {
+
+OUTCOMES = (
     "HIT",
     "MISS",
     "GAP_CENSORED",
     "END_CENSORED",
-}
+)
 
-SUMMARY_FIELDS = [
-    "timeframe",
-    "period",
-    "horizon_hours",
+METRIC_FIELDS = [
     "events",
     "hits",
     "misses",
@@ -70,22 +70,20 @@ SUMMARY_FIELDS = [
     "observed_hit_rate_pct",
     "optimistic_hit_rate_pct",
     "uncertainty_width_pp",
+]
+
+SUMMARY_FIELDS = [
+    "timeframe",
+    "period",
+    "horizon_hours",
+    *METRIC_FIELDS,
     "status",
 ]
 
 MARKET_FIELDS = [
     "timeframe",
     "market",
-    "events",
-    "hits",
-    "misses",
-    "gap_censored",
-    "end_censored",
-    "censored_total",
-    "censoring_rate_pct",
-    "pessimistic_hit_rate_pct",
-    "observed_hit_rate_pct",
-    "optimistic_hit_rate_pct",
+    *METRIC_FIELDS,
 ]
 
 
@@ -94,85 +92,111 @@ def require(condition, message):
         raise RuntimeError(message)
 
 
-def digest(path):
+def sha256(path):
     h = hashlib.sha256()
-    with Path(path).open("rb") as f:
+
+    with Path(path).open("rb") as handle:
         for block in iter(
-            lambda: f.read(1024 * 1024),
+            lambda: handle.read(1024 * 1024),
             b"",
         ):
             h.update(block)
+
     return h.hexdigest()
 
 
 def read_json(path):
     with Path(path).open(
-        "r", encoding="utf-8-sig"
-    ) as f:
-        return json.load(f)
+        "r",
+        encoding="utf-8-sig",
+    ) as handle:
+        return json.load(handle)
 
 
-def write_json(path, obj):
+def atomic_json(path, data):
     path = Path(path)
     path.parent.mkdir(
-        parents=True, exist_ok=True
-    )
-    temp = path.with_name(path.name + ".tmp")
-
-    with temp.open("w", encoding="utf-8") as f:
-        json.dump(
-            obj,
-            f,
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
-            allow_nan=False,
-        )
-        f.write("\n")
-
-    os.replace(temp, path)
-
-
-def write_csv(path, fields, rows):
-    path = Path(path)
-    path.parent.mkdir(
-        parents=True, exist_ok=True
+        parents=True,
+        exist_ok=True,
     )
     temp = path.with_name(path.name + ".tmp")
 
     with temp.open(
         "w",
-        encoding="utf-8-sig",
-        newline="",
-    ) as f:
-        writer = csv.DictWriter(
-            f, fieldnames=fields
+        encoding="utf-8",
+    ) as handle:
+        json.dump(
+            data,
+            handle,
+            indent=2,
+            ensure_ascii=False,
+            sort_keys=True,
+            allow_nan=False,
         )
-        writer.writeheader()
-        writer.writerows(rows)
+        handle.write("\n")
 
     os.replace(temp, path)
 
 
-def pct(numerator, denominator):
+def atomic_csv(path, columns, records):
+    path = Path(path)
+    path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+    temp = path.with_name(path.name + ".tmp")
+
+    with temp.open(
+        "w",
+        newline="",
+        encoding="utf-8-sig",
+    ) as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=columns,
+            extrasaction="raise",
+        )
+        writer.writeheader()
+
+        for index, record in enumerate(records):
+            extra = set(record) - set(columns)
+            missing = set(columns) - set(record)
+
+            require(
+                not extra and not missing,
+                (
+                    f"CSV schema mismatch "
+                    f"at row {index}: "
+                    f"extra={sorted(extra)}, "
+                    f"missing={sorted(missing)}"
+                ),
+            )
+
+            writer.writerow(record)
+
+    os.replace(temp, path)
+
+
+def percent(numerator, denominator):
     if denominator == 0:
         return None
+
     return round(
-        numerator * 100.0 / denominator,
+        100.0 * numerator / denominator,
         4,
     )
 
 
-def counts_from_series(series):
-    counts = series.value_counts()
+def count_outcomes(series):
+    values = series.value_counts(dropna=False)
 
     return {
-        name: int(counts.get(name, 0))
-        for name in sorted(OUTCOMES)
+        name: int(values.get(name, 0))
+        for name in OUTCOMES
     }
 
 
-def calculate_metrics(counts):
+def metrics(counts):
     hits = counts["HIT"]
     misses = counts["MISS"]
     gap = counts["GAP_CENSORED"]
@@ -182,11 +206,22 @@ def calculate_metrics(counts):
     observed = hits + misses
     total = observed + censored
 
-    require(total > 0, "Empty metric group")
+    require(total > 0, "Empty outcome group")
 
-    lower = pct(hits, total)
-    middle = pct(hits, observed)
-    upper = pct(hits + censored, total)
+    lower = percent(hits, total)
+    middle = percent(hits, observed)
+    upper = percent(hits + censored, total)
+
+    require(
+        lower <= upper,
+        "Invalid sensitivity bounds",
+    )
+
+    if middle is not None:
+        require(
+            lower <= middle <= upper,
+            "Observed rate outside bounds",
+        )
 
     return {
         "events": total,
@@ -195,94 +230,104 @@ def calculate_metrics(counts):
         "gap_censored": gap,
         "end_censored": end,
         "censored_total": censored,
-        "censoring_rate_pct": pct(
+        "censoring_rate_pct": percent(
             censored, total
         ),
         "pessimistic_hit_rate_pct": lower,
         "observed_hit_rate_pct": middle,
         "optimistic_hit_rate_pct": upper,
         "uncertainty_width_pp": round(
-            upper - lower, 4
+            upper - lower,
+            4,
         ),
     }
 
 
-def verify_inputs(folder):
-    names = [
-        "gap_integrity_events.csv",
-        "gap_integrity_summary.csv",
-        "gap_integrity_result.json",
-    ]
-
+def verify_source(folder):
     manifest_path = (
         folder / "gap_integrity_manifest.json"
     )
 
     require(
         manifest_path.is_file(),
-        "Missing gap integrity manifest",
+        "Source manifest missing",
     )
 
     manifest = read_json(manifest_path)
 
     require(
         manifest.get("execution") == "PASS",
-        "Input manifest not PASS",
+        "Source manifest not PASS",
     )
     require(
-        manifest.get("version") == "Clean V002",
-        "Unexpected input version",
+        manifest.get("version") == SOURCE_VERSION,
+        "Unexpected source version",
     )
 
-    hashes = manifest.get(
-        "output_sha256", {}
-    )
+    filenames = {
+        "gap_integrity_events.csv",
+        "gap_integrity_summary.csv",
+        "gap_integrity_result.json",
+    }
+
+    hashes = manifest.get("output_sha256", {})
 
     require(
-        set(hashes) == set(names),
-        "Input manifest file set mismatch",
+        isinstance(hashes, dict)
+        and set(hashes) == filenames,
+        "Source manifest file set mismatch",
     )
 
-    for name in names:
-        path = folder / name
+    for filename in sorted(filenames):
+        path = folder / filename
 
         require(
             path.is_file(),
-            f"Missing input: {name}",
+            f"Source file missing: {filename}",
         )
 
+        actual = sha256(path)
+        expected = str(
+            hashes[filename]
+        ).lower()
+
         require(
-            digest(path)
-            == str(hashes[name]).lower(),
-            f"Input SHA256 mismatch: {name}",
+            actual == expected,
+            f"Source SHA256 mismatch: {filename}",
+        )
+
+        print(
+            f"[SOURCE SHA256 PASS] {filename}",
+            flush=True,
         )
 
     result = read_json(
         folder / "gap_integrity_result.json"
     )
 
-    checks = {
+    expected_values = {
         "execution": "PASS",
-        "version": "Clean V002",
+        "version": SOURCE_VERSION,
         "jobs": EXPECTED_JOBS,
         "completed_jobs": EXPECTED_JOBS,
         "failed_jobs": 0,
+        "original_event_records": EXPECTED_EVENTS,
         "audited_event_records": EXPECTED_EVENTS,
         "gap_integrity_audit_completed": True,
         "independent_oos_proven": False,
         "research_decision": "HOLD",
     }
 
-    for key, expected in checks.items():
+    for key, expected in expected_values.items():
         require(
             result.get(key) == expected,
-            f"Input result mismatch: {key}",
+            f"Source result mismatch: {key}",
         )
 
-    return result, digest(manifest_path)
+    return result, sha256(manifest_path)
 
 
-def validate_events(df, result):
+def validate_events(frame, source_result):
     required = {
         "timeframe",
         "market",
@@ -298,91 +343,131 @@ def validate_events(df, result):
         "full_window_contiguous",
     }
 
+    missing_columns = required - set(frame.columns)
+
     require(
-        required.issubset(df.columns),
-        "Missing event columns",
+        not missing_columns,
+        (
+            "Missing source columns: "
+            f"{sorted(missing_columns)}"
+        ),
     )
 
     require(
-        len(df) == EXPECTED_EVENTS,
-        "Event count mismatch",
+        len(frame) == EXPECTED_EVENTS,
+        "Source event count mismatch",
     )
 
-    require(
-        df["timeframe"].isin(
-            TIMEFRAMES
-        ).all(),
-        "Unknown timeframe",
-    )
+    for column, valid in [
+        ("timeframe", TIMEFRAMES),
+        ("period", PERIODS),
+        ("horizon_hours", HORIZONS),
+        ("corrected_outcome", set(OUTCOMES)),
+    ]:
+        require(
+            frame[column].isin(valid).all(),
+            f"Invalid values in {column}",
+        )
 
     require(
-        df["period"].isin(
-            PERIODS
-        ).all(),
-        "Unknown period",
-    )
-
-    require(
-        df["horizon_hours"].isin(
-            HORIZONS
-        ).all(),
-        "Unknown horizon",
-    )
-
-    require(
-        df["corrected_outcome"].isin(
-            OUTCOMES
-        ).all(),
-        "Unknown outcome",
-    )
-
-    require(
-        df["market"].notna().all()
-        and df["market"].str.startswith(
+        frame["market"].notna().all()
+        and frame["market"].str.startswith(
             "KRW-"
         ).all(),
-        "Invalid market",
+        "Invalid market values",
     )
 
-    require(
-        df["entry_utc"].notna().all()
-        and df["signal_utc"].notna().all(),
-        "Missing event timestamps",
-    )
+    for column in [
+        "signal_utc",
+        "entry_utc",
+    ]:
+        require(
+            frame[column].notna().all(),
+            f"Missing timestamps: {column}",
+        )
 
-    require(
-        df["observed_candles"].notna().all()
-        and df["expected_candles"].notna().all()
-        and df["missing_candles"].notna().all(),
-        "Missing candle counts",
-    )
+    for column in [
+        "observed_candles",
+        "expected_candles",
+        "missing_candles",
+        "full_window_contiguous",
+    ]:
+        require(
+            frame[column].notna().all(),
+            f"Missing numeric values: {column}",
+        )
 
     require(
         (
-            df["observed_candles"] >= 1
+            frame["observed_candles"] >= 1
         ).all(),
         "Invalid observed candle count",
     )
 
     require(
         (
-            df["expected_candles"]
-            >= df["observed_candles"]
+            frame["expected_candles"]
+            >= frame["observed_candles"]
         ).all(),
-        "Observed exceeds expected",
+        "Observed candle count exceeds expected",
     )
 
     require(
         (
-            df["missing_candles"]
-            == df["expected_candles"]
-            - df["observed_candles"]
+            frame["missing_candles"]
+            == frame["expected_candles"]
+            - frame["observed_candles"]
         ).all(),
-        "Missing candle count inconsistent",
+        "Missing candle count mismatch",
     )
 
-    counts = counts_from_series(
-        df["corrected_outcome"]
+    require(
+        frame["full_window_contiguous"].isin(
+            [0, 1]
+        ).all(),
+        "Invalid contiguous flag",
+    )
+
+    censored = frame[
+        "corrected_outcome"
+    ].isin([
+        "GAP_CENSORED",
+        "END_CENSORED",
+    ])
+
+    require(
+        not (
+            censored
+            & frame["full_window_contiguous"].eq(1)
+        ).any(),
+        "Censored event marked fully contiguous",
+    )
+
+    require(
+        not (
+            frame["corrected_outcome"].eq("MISS")
+            & frame["full_window_contiguous"].ne(1)
+        ).any(),
+        "Confirmed miss has incomplete window",
+    )
+
+    unique_columns = [
+        "timeframe",
+        "market",
+        "signal_utc",
+        "entry_utc",
+        "horizon_hours",
+    ]
+
+    require(
+        not frame.duplicated(
+            unique_columns
+        ).any(),
+        "Duplicate event/horizon records",
+    )
+
+    counts = count_outcomes(
+        frame["corrected_outcome"]
     )
 
     expected_counts = {
@@ -392,110 +477,155 @@ def validate_events(df, result):
         "END_CENSORED": "end_censored",
     }
 
-    for outcome, key in expected_counts.items():
+    for outcome, source_key in expected_counts.items():
         require(
             counts[outcome]
-            == int(result[key]),
-            f"Outcome total mismatch: {outcome}",
+            == int(source_result[source_key]),
+            (
+                f"Source outcome count mismatch: "
+                f"{outcome}"
+            ),
         )
 
     require(
-        sum(counts.values())
-        == EXPECTED_EVENTS,
+        sum(counts.values()) == EXPECTED_EVENTS,
         "Outcome accounting mismatch",
-    )
-
-    # A fully continuous window cannot be censored.
-    censored = df[
-        "corrected_outcome"
-    ].isin({
-        "GAP_CENSORED",
-        "END_CENSORED",
-    })
-
-    require(
-        not (
-            censored
-            & df["full_window_contiguous"].eq(1)
-        ).any(),
-        "Censored event marked contiguous",
-    )
-
-    require(
-        not (
-            df["corrected_outcome"].eq("MISS")
-            & df["full_window_contiguous"].ne(1)
-        ).any(),
-        "Confirmed miss has incomplete window",
-    )
-
-    # Check uniqueness within a given horizon.
-    keys = [
-        "timeframe",
-        "market",
-        "signal_utc",
-        "entry_utc",
-        "horizon_hours",
-    ]
-
-    require(
-        not df.duplicated(keys).any(),
-        "Duplicate event/horizon records",
     )
 
     return counts
 
 
-def build_group_rows(df, columns):
-    rows = []
+def grouped_metrics(frame, dimensions):
+    records = []
 
-    for key, group in df.groupby(
-        columns, sort=True
+    for key, group in frame.groupby(
+        dimensions,
+        sort=True,
+        dropna=False,
     ):
         if not isinstance(key, tuple):
             key = (key,)
 
-        dimensions = dict(
-            zip(columns, key)
-        )
+        row = dict(zip(dimensions, key))
 
-        metrics = calculate_metrics(
-            counts_from_series(
-                group["corrected_outcome"]
+        row.update(
+            metrics(
+                count_outcomes(
+                    group["corrected_outcome"]
+                )
             )
         )
 
-        rows.append({
-            **dimensions,
-            **metrics,
-        })
+        records.append(row)
 
-    return rows
+    return records
+
+
+def classify_uncertainty(width):
+    if width == 0:
+        return "NO_CENSORING"
+
+    if width <= 1:
+        return "LOW_CENSORING"
+
+    if width <= 5:
+        return "MATERIAL_CENSORING"
+
+    return "HIGH_CENSORING"
+
+
+def verify_aggregates(
+    overall,
+    summaries,
+    markets,
+    periods,
+    timeframes,
+):
+    for name, rows in [
+        ("summary", summaries),
+        ("market", markets),
+        ("period", periods),
+        ("timeframe", timeframes),
+    ]:
+        for field in [
+            "events",
+            "hits",
+            "misses",
+            "gap_censored",
+            "end_censored",
+            "censored_total",
+        ]:
+            total = sum(
+                int(row[field])
+                for row in rows
+            )
+
+            require(
+                total == overall[field],
+                (
+                    f"Aggregate mismatch: "
+                    f"{name}/{field}"
+                ),
+            )
+
+
+def verify_written_csv(
+    path,
+    expected_columns,
+    expected_rows,
+):
+    with Path(path).open(
+        "r",
+        newline="",
+        encoding="utf-8-sig",
+    ) as handle:
+        reader = csv.DictReader(handle)
+
+        require(
+            reader.fieldnames == expected_columns,
+            f"Written CSV schema mismatch: {path.name}",
+        )
+
+        count = sum(1 for _ in reader)
+
+    require(
+        count == expected_rows,
+        f"Written CSV row count mismatch: {path.name}",
+    )
 
 
 def run(root):
     root = Path(root).resolve()
 
-    source = (
+    source_folder = (
         root
-        / "data/reports/pattern_256_event_gap_integrity"
+        / "data"
+        / "reports"
+        / "pattern_256_event_gap_integrity"
     )
 
-    result, source_manifest_hash = (
-        verify_inputs(source)
+    output_folder = (
+        root
+        / "data"
+        / "reports"
+        / "pattern_256_censoring_sensitivity"
     )
 
-    events_path = (
-        source / "gap_integrity_events.csv"
+    source_result, source_manifest_hash = (
+        verify_source(source_folder)
+    )
+
+    source_path = (
+        source_folder / "gap_integrity_events.csv"
     )
 
     print(
-        "[INFO] Reading verified event records...",
+        "[INFO] Loading verified events...",
         flush=True,
     )
 
-    df = pd.read_csv(
-        events_path,
+    frame = pd.read_csv(
+        source_path,
         encoding="utf-8-sig",
         dtype={
             "timeframe": str,
@@ -509,16 +639,15 @@ def run(root):
         low_memory=False,
     )
 
-    overall_counts = validate_events(
-        df, result
+    counts = validate_events(
+        frame,
+        source_result,
     )
 
-    overall = calculate_metrics(
-        overall_counts
-    )
+    overall = metrics(counts)
 
-    summary = build_group_rows(
-        df,
+    summaries = grouped_metrics(
+        frame,
         [
             "timeframe",
             "period",
@@ -527,192 +656,219 @@ def run(root):
     )
 
     require(
-        len(summary) == 27,
-        "Expected 27 period/horizon groups",
+        len(summaries) == 27,
+        "Expected 27 timeframe/period/horizon groups",
     )
 
-    for row in summary:
-        # This status describes only the width of
-        # uncertainty due to censored observations.
-        width = row["uncertainty_width_pp"]
+    for row in summaries:
+        row["status"] = classify_uncertainty(
+            row["uncertainty_width_pp"]
+        )
 
-        if width == 0:
-            row["status"] = "NO_CENSORING"
-        elif width <= 1:
-            row["status"] = "LOW_CENSORING"
-        elif width <= 5:
-            row["status"] = "MATERIAL_CENSORING"
-        else:
-            row["status"] = "HIGH_CENSORING"
-
-    markets = build_group_rows(
-        df,
-        ["timeframe", "market"],
+    markets = grouped_metrics(
+        frame,
+        [
+            "timeframe",
+            "market",
+        ],
     )
 
     require(
-        len(markets) <= EXPECTED_JOBS,
-        "Unexpected market count",
+        0 < len(markets) <= EXPECTED_JOBS,
+        "Unexpected market group count",
     )
 
     markets.sort(
-        key=lambda r: (
-            -r["censored_total"],
-            -r["censoring_rate_pct"],
-            r["timeframe"],
-            r["market"],
+        key=lambda row: (
+            -row["censored_total"],
+            -row["censoring_rate_pct"],
+            row["timeframe"],
+            row["market"],
         )
     )
 
-    period_rows = build_group_rows(
-        df,
+    periods = grouped_metrics(
+        frame,
         ["period"],
     )
 
-    timeframe_rows = build_group_rows(
-        df,
+    timeframes = grouped_metrics(
+        frame,
         ["timeframe"],
     )
 
     require(
-        sum(r["events"] for r in summary)
-        == EXPECTED_EVENTS,
-        "Summary total mismatch",
+        len(periods) == 3,
+        "Expected three periods",
     )
 
     require(
-        sum(r["events"] for r in markets)
-        == EXPECTED_EVENTS,
-        "Market total mismatch",
+        len(timeframes) == 3,
+        "Expected three timeframes",
     )
 
-    require(
-        sum(r["events"] for r in period_rows)
-        == EXPECTED_EVENTS,
-        "Period total mismatch",
+    verify_aggregates(
+        overall,
+        summaries,
+        markets,
+        periods,
+        timeframes,
     )
 
-    output = (
-        root
-        / "data/reports/pattern_256_censoring_sensitivity"
+    output_folder.mkdir(
+        parents=True,
+        exist_ok=True,
     )
 
     summary_path = (
-        output / "censoring_summary.csv"
+        output_folder / "censoring_summary.csv"
     )
     market_path = (
-        output / "censoring_market.csv"
+        output_folder / "censoring_market.csv"
     )
     result_path = (
-        output / "censoring_result.json"
+        output_folder / "censoring_result.json"
     )
     manifest_path = (
-        output / "censoring_manifest.json"
+        output_folder / "censoring_manifest.json"
     )
 
-    write_csv(
+    # Never leave an old PASS result after a failed
+    # or interrupted attempt to write new outputs.
+    for path in [
+        manifest_path,
+        result_path,
+    ]:
+        if path.exists():
+            path.unlink()
+
+    print(
+        "[INFO] Writing 27 sensitivity groups...",
+        flush=True,
+    )
+
+    atomic_csv(
         summary_path,
         SUMMARY_FIELDS,
-        summary,
+        summaries,
     )
 
-    write_csv(
+    print(
+        f"[INFO] Writing {len(markets)} market groups...",
+        flush=True,
+    )
+
+    atomic_csv(
         market_path,
         MARKET_FIELDS,
         markets,
     )
 
-    output_result = {
+    verify_written_csv(
+        summary_path,
+        SUMMARY_FIELDS,
+        len(summaries),
+    )
+
+    verify_written_csv(
+        market_path,
+        MARKET_FIELDS,
+        len(markets),
+    )
+
+    result = {
         "audit": "pattern_256_censoring_sensitivity",
         "version": VERSION,
         "execution": "PASS",
         "created_utc": datetime.now(
             timezone.utc
         ).isoformat(),
-        "source_version": "Clean V002",
+        "source_version": SOURCE_VERSION,
         "source_manifest_sha256": source_manifest_hash,
         "audited_event_records": EXPECTED_EVENTS,
-        "group_count": len(summary),
+        "group_count": len(summaries),
         "market_timeframe_groups": len(markets),
         "overall": overall,
-        "by_period": period_rows,
-        "by_timeframe": timeframe_rows,
+        "by_period": periods,
+        "by_timeframe": timeframes,
         "highest_censoring_markets": markets[:20],
         "independent_oos_proven": False,
+        "point_in_time_proven": False,
+        "prediction_performance_verified": False,
         "train_approved": False,
         "live_trading_approved": False,
         "research_decision": "HOLD",
         "interpretation": {
             "pessimistic": (
-                "Treat all censored events as misses."
+                "All censored events treated as misses."
             ),
             "observed": (
-                "Exclude censored events from denominator."
+                "Censored events excluded from denominator."
             ),
             "optimistic": (
-                "Treat all censored events as hits."
+                "All censored events treated as hits."
             ),
             "warning": (
-                "These are deterministic bounds, "
-                "not confidence intervals. "
-                "The observed rate may be biased "
-                "when censoring is informative."
+                "These are deterministic sensitivity "
+                "bounds, not confidence intervals."
             ),
         },
         "limitations": [
-            "The three horizons share underlying signals.",
-            "Events may be dependent within markets.",
-            "No independent OOS period is proven.",
-            "No profitability or fillability is proven.",
-            "The optimistic bound is not a forecast.",
+            "Three horizons reuse underlying signals.",
+            "Events within markets are dependent.",
             "Censoring may be nonrandom.",
-            "Source labels are not recalculated.",
+            "Independent OOS is not proven.",
+            "Source event labels are not recalculated.",
+            "Upstream feature causality is unproven.",
+            "No fees, slippage or fill model.",
+            "No trading or training approval.",
         ],
     }
 
-    write_json(
+    atomic_json(
         result_path,
-        output_result,
+        result,
     )
 
-    script_hash = digest(
-        Path(__file__).resolve()
-    )
+    output_hashes = {
+        path.name: sha256(path)
+        for path in [
+            summary_path,
+            market_path,
+            result_path,
+        ]
+    }
 
-    write_json(
+    manifest = {
+        "audit": result["audit"],
+        "version": VERSION,
+        "execution": "PASS",
+        "script_sha256": sha256(
+            Path(__file__).resolve()
+        ),
+        "source_manifest_sha256": source_manifest_hash,
+        "output_sha256": output_hashes,
+    }
+
+    # The manifest is committed last.
+    atomic_json(
         manifest_path,
-        {
-            "audit": output_result["audit"],
-            "version": VERSION,
-            "execution": "PASS",
-            "script_sha256": script_hash,
-            "source_manifest_sha256": source_manifest_hash,
-            "output_sha256": {
-                summary_path.name: digest(
-                    summary_path
-                ),
-                market_path.name: digest(
-                    market_path
-                ),
-                result_path.name: digest(
-                    result_path
-                ),
-            },
-        },
+        manifest,
     )
 
     print(
         json.dumps(
             {
                 "execution": "PASS",
+                "version": VERSION,
                 "events": EXPECTED_EVENTS,
-                "groups": len(summary),
+                "summary_groups": len(summaries),
                 "market_groups": len(markets),
                 "overall": overall,
                 "research_decision": "HOLD",
             },
-            indent=2,
             ensure_ascii=False,
+            indent=2,
         ),
         flush=True,
     )
@@ -721,10 +877,16 @@ def run(root):
 
 
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description=(
+            "Pattern 256 censoring sensitivity audit"
+        )
+    )
+
     parser.add_argument(
         "--root",
         default=".",
+        help="Persistent local research project root",
     )
 
     args = parser.parse_args()
@@ -734,15 +896,20 @@ def main():
 
     except KeyboardInterrupt:
         print(
-            "[STOP] Interrupted",
+            "[STOP] Interrupted by user",
             file=sys.stderr,
+            flush=True,
         )
         return 130
 
-    except Exception as exc:
+    except Exception:
         print(
-            f"[FAIL] {type(exc).__name__}: {exc}",
+            "[FAIL] Censoring sensitivity audit",
             file=sys.stderr,
+            flush=True,
+        )
+        traceback.print_exc(
+            file=sys.stderr
         )
         return 1
 
