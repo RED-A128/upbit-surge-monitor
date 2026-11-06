@@ -1,0 +1,308 @@
+
+name: audit_pattern_256_signal_formula.yml
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_replay:
+        description: "Recheck all files ignoring checkpoints"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern-256-signal-formula
+  cancel-in-progress: false
+
+jobs:
+  signal-formula-audit:
+    name: signal-formula-audit
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 360
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      DATA_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_signal_formula.py"
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Audit script missing: $script"
+          }
+
+          py --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          py -c "import ast, pathlib, sys; ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8-sig'))" $script
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax validation failed"
+          }
+
+          $required = @(
+            "detect_256.py",
+            "data\reports\pattern_256_trigger_runs\trigger_run_result.json",
+            "data\reports\pattern_256_trigger_runs\trigger_run_manifest.json",
+            "data\reports\pattern_256_trigger_runs\trigger_run_periods.csv",
+            "data\signals\256\h1",
+            "data\signals\256\h4",
+            "data\signals\256\d1"
+          )
+
+          foreach ($relative in $required) {
+            $path = Join-Path $env:DATA_ROOT $relative
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Required input missing: $path"
+            }
+          }
+
+          Write-Host "[PASS] Environment verified"
+
+      - name: Execute signal formula audit
+        id: audit
+        continue-on-error: true
+        env:
+          FORCE_REPLAY: ${{ inputs.force_replay }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_signal_formula.py"
+
+          $arguments = @(
+            "-u",
+            $script,
+            "--root",
+            $env:DATA_ROOT
+          )
+
+          if ($env:FORCE_REPLAY -eq "true") {
+            $arguments += "--force"
+          }
+
+          & py @arguments
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Signal formula audit failed"
+          }
+
+      - name: Verify audit result
+        id: verify
+        if: always()
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "Audit execution failed"
+          }
+
+          $folder = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_signal_formula"
+
+          $resultPath = Join-Path `
+            $folder "signal_formula_result.json"
+
+          $manifestPath = Join-Path `
+            $folder "signal_formula_manifest.json"
+
+          if (-not (Test-Path -LiteralPath $resultPath)) {
+            throw "Missing result JSON"
+          }
+
+          if (-not (Test-Path -LiteralPath $manifestPath)) {
+            throw "Missing manifest JSON"
+          }
+
+          $r = Get-Content -LiteralPath $resultPath -Raw |
+            ConvertFrom-Json
+
+          $m = Get-Content -LiteralPath $manifestPath -Raw |
+            ConvertFrom-Json
+
+          if ($r.execution -ne "PASS") {
+            throw "Execution not PASS"
+          }
+
+          if ($m.execution -ne "PASS") {
+            throw "Manifest not PASS"
+          }
+
+          if ($r.jobs -ne 870) {
+            throw "Unexpected job count"
+          }
+
+          if ($r.completed_jobs -ne $r.jobs) {
+            throw "Incomplete jobs"
+          }
+
+          if ($r.failed_jobs -ne 0) {
+            throw "Failed jobs detected"
+          }
+
+          if ($r.mismatches -ne 0) {
+            throw "Formula mismatches detected"
+          }
+
+          if ($r.formula_output_consistency_verified -ne $true) {
+            throw "Formula consistency not verified"
+          }
+
+          if ($r.independent_oos_proven -ne $false) {
+            throw "Unexpected OOS approval"
+          }
+
+          if ($r.train_approved -ne $false) {
+            throw "Unexpected training approval"
+          }
+
+          if ($r.live_trading_approved -ne $false) {
+            throw "Unexpected trading approval"
+          }
+
+          if ($r.research_decision -ne "HOLD") {
+            throw "Unexpected research decision"
+          }
+
+          foreach ($filename in @(
+            "signal_formula_files.csv",
+            "signal_formula_result.json"
+          )) {
+            $path = Join-Path $folder $filename
+            $expected = [string]$m.output_sha256.$filename
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Missing output: $filename"
+            }
+
+            if ($expected.Length -ne 64) {
+              throw "Invalid expected SHA256: $filename"
+            }
+
+            $actual = (
+              Get-FileHash -LiteralPath $path -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($actual -ne $expected.ToLowerInvariant()) {
+              throw "SHA256 mismatch: $filename"
+            }
+
+            Write-Host "[SHA256 PASS] $filename"
+          }
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_signal_formula.py"
+
+          $scriptHash = (
+            Get-FileHash -LiteralPath $script -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if ($scriptHash -ne (
+            [string]$m.script_sha256
+          ).ToLowerInvariant()) {
+            throw "Script SHA256 mismatch"
+          }
+
+          $detector = Join-Path $env:DATA_ROOT "detect_256.py"
+
+          $detectorHash = (
+            Get-FileHash -LiteralPath $detector -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if ($detectorHash -ne (
+            [string]$m.detector_sha256
+          ).ToLowerInvariant()) {
+            throw "Detector SHA256 mismatch"
+          }
+
+          Write-Host "[PASS] Formula audit integrity"
+
+      - name: Publish summary
+        if: always()
+        run: |
+          if ("${{ steps.verify.outcome }}" -ne "success") {
+            "## Pattern 256 Signal Formula Audit - Failed" |
+              Out-File -FilePath $env:GITHUB_STEP_SUMMARY `
+                -Append -Encoding utf8
+            exit 0
+          }
+
+          $path = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_signal_formula\signal_formula_result.json"
+
+          $r = Get-Content -LiteralPath $path -Raw |
+            ConvertFrom-Json
+
+          @"
+          ## Pattern 256 Signal Formula Audit
+
+          | Check | Result |
+          |---|---|
+          | Version | $($r.version) |
+          | Execution | $($r.execution) |
+          | Jobs | $($r.jobs) |
+          | Completed | $($r.completed_jobs) |
+          | Failed | $($r.failed_jobs) |
+          | Signal rows | $($r.signal_rows) |
+          | Checked values | $($r.checked_values) |
+          | Formula mismatches | $($r.mismatches) |
+          | Formula consistency verified | $($r.formula_output_consistency_verified) |
+          | Upstream leakage-free proven | $($r.upstream_feature_leakage_free_proven) |
+          | Independent OOS proven | $($r.independent_oos_proven) |
+          | Research decision | $($r.research_decision) |
+
+          This is a formula consistency audit, not a prediction
+          accuracy or profitability validation.
+          "@ |
+            Out-File -FilePath $env:GITHUB_STEP_SUMMARY `
+              -Append -Encoding utf8
+
+      - name: Upload audit reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-signal-formula
+          path: |
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_signal_formula\signal_formula_files.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_signal_formula\signal_formula_result.json
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_signal_formula\signal_formula_manifest.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Final status gate
+        if: always()
+        run: |
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "Signal formula audit execution failed"
+          }
+
+          if ("${{ steps.verify.outcome }}" -ne "success") {
+            throw "Signal formula audit verification failed"
+          }
+
+          Write-Host "SIGNAL FORMULA AUDIT PASSED"
+          Write-Host "RESEARCH DECISION: HOLD"
