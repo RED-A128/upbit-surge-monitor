@@ -1,0 +1,339 @@
+
+name: audit_pattern_256_signal_counts.yml
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_replay:
+        description: "Ignore valid checkpoints"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern-256-signal-counts
+  cancel-in-progress: false
+
+jobs:
+  signal-count-audit:
+    name: signal-count-audit
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 360
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      DATA_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment and source
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "Workspace: $env:GITHUB_WORKSPACE"
+          Write-Host "Data root: $env:DATA_ROOT"
+          Write-Host "Runner: $env:RUNNER_NAME"
+
+          py --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_signal_counts.py"
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Missing audit script: $script"
+          }
+
+          py -c "import ast, pathlib, sys; ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8-sig'))" $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax validation failed"
+          }
+
+          foreach ($timeframe in @("h1", "h4", "d1")) {
+            $folder = Join-Path `
+              $env:DATA_ROOT `
+              "data\signals\256\$timeframe"
+
+            if (-not (Test-Path -LiteralPath $folder -PathType Container)) {
+              throw "Missing signal directory: $folder"
+            }
+          }
+
+          $previous = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_signal_schema"
+
+          foreach ($file in @(
+            "signal_schema_files.csv",
+            "signal_schema_columns.csv",
+            "signal_schema_result.json",
+            "signal_schema_manifest.json"
+          )) {
+            if (-not (Test-Path -LiteralPath (Join-Path $previous $file))) {
+              throw "Missing previous evidence: $file"
+            }
+          }
+
+          Write-Host "[PASS] Environment verified"
+
+      - name: Execute signal count audit
+        id: audit
+        continue-on-error: true
+        env:
+          FORCE_REPLAY: ${{ inputs.force_replay }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_signal_counts.py"
+
+          $arguments = @(
+            "-u",
+            $script,
+            "--root",
+            $env:DATA_ROOT
+          )
+
+          if ($env:FORCE_REPLAY -eq "true") {
+            $arguments += "--force"
+          }
+
+          & py @arguments
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Signal count audit failed"
+          }
+
+      - name: Verify result and SHA256
+        id: verify
+        if: always()
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "Audit did not complete successfully"
+          }
+
+          $folder = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_signal_counts"
+
+          $resultPath = Join-Path $folder "signal_count_result.json"
+          $manifestPath = Join-Path $folder "signal_count_manifest.json"
+
+          if (-not (Test-Path -LiteralPath $resultPath)) {
+            throw "Missing result JSON"
+          }
+
+          if (-not (Test-Path -LiteralPath $manifestPath)) {
+            throw "Missing manifest JSON"
+          }
+
+          $r = Get-Content -LiteralPath $resultPath -Raw |
+            ConvertFrom-Json
+
+          $m = Get-Content -LiteralPath $manifestPath -Raw |
+            ConvertFrom-Json
+
+          if ($r.execution -ne "PASS") {
+            throw "Result not PASS"
+          }
+
+          if ($m.execution -ne "PASS") {
+            throw "Manifest not PASS"
+          }
+
+          if ($r.jobs -ne 870) {
+            throw "Unexpected job count"
+          }
+
+          if ($r.completed_jobs -ne $r.jobs) {
+            throw "Incomplete jobs"
+          }
+
+          if ($r.failed_jobs -ne 0) {
+            throw "Failed jobs detected"
+          }
+
+          if ($r.period_records -ne ($r.jobs * 3)) {
+            throw "Unexpected period count"
+          }
+
+          if ($r.signal_counts_verified -ne $true) {
+            throw "Signal counts not verified"
+          }
+
+          if ($r.signal_semantics_verified -ne $false) {
+            throw "Unexpected semantics approval"
+          }
+
+          if ($r.independent_oos_proven -ne $false) {
+            throw "Unexpected OOS approval"
+          }
+
+          if ($r.prediction_performance_verified -ne $false) {
+            throw "Unexpected performance approval"
+          }
+
+          if ($r.train_approved -ne $false) {
+            throw "Unexpected training approval"
+          }
+
+          if ($r.live_trading_approved -ne $false) {
+            throw "Unexpected trading approval"
+          }
+
+          if ($r.research_decision -ne "HOLD") {
+            throw "Unexpected research decision"
+          }
+
+          foreach ($file in @(
+            "signal_count_periods.csv",
+            "signal_count_result.json"
+          )) {
+            $path = Join-Path $folder $file
+            $expected = [string]$m.output_sha256.$file
+
+            if ($expected.Length -ne 64) {
+              throw "Missing SHA256: $file"
+            }
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Missing output: $file"
+            }
+
+            $actual = (
+              Get-FileHash -LiteralPath $path -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($actual -ne $expected.ToLowerInvariant()) {
+              throw "SHA256 mismatch: $file"
+            }
+
+            Write-Host "[SHA256 PASS] $file"
+          }
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_signal_counts.py"
+
+          $scriptHash = (
+            Get-FileHash -LiteralPath $script -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if ($scriptHash -ne (
+            [string]$m.script_sha256
+          ).ToLowerInvariant()) {
+            throw "Script SHA256 mismatch"
+          }
+
+          Write-Host "[PASS] Signal count integrity"
+
+      - name: Publish summary
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            "## Signal Count Audit - Execution Failed" |
+              Out-File `
+                -FilePath $env:GITHUB_STEP_SUMMARY `
+                -Append -Encoding utf8
+            exit 0
+          }
+
+          $path = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_signal_counts\signal_count_result.json"
+
+          if (-not (Test-Path -LiteralPath $path)) {
+            "## Signal Count Audit - Missing Result" |
+              Out-File `
+                -FilePath $env:GITHUB_STEP_SUMMARY `
+                -Append -Encoding utf8
+            exit 0
+          }
+
+          $r = Get-Content -LiteralPath $path -Raw |
+            ConvertFrom-Json
+
+          $development = $r.period_totals.DEVELOPMENT
+          $validation = $r.period_totals.VALIDATION
+          $test = $r.period_totals.RETROSPECTIVE_TEST
+
+          @"
+          ## Pattern 256 Signal Count Audit
+
+          | Check | Result |
+          |---|---|
+          | Version | $($r.version) |
+          | Execution | $($r.execution) |
+          | Jobs | $($r.jobs) |
+          | Completed | $($r.completed_jobs) |
+          | Failed | $($r.failed_jobs) |
+          | Period records | $($r.period_records) |
+          | Signal counts verified | $($r.signal_counts_verified) |
+          | Signal semantics verified | $($r.signal_semantics_verified) |
+          | Independent OOS proven | $($r.independent_oos_proven) |
+          | Research decision | $($r.research_decision) |
+
+          ### Signal counts by retrospective period
+
+          | Period | Candles | Setup | Ready | Trigger |
+          |---|---:|---:|---:|---:|
+          | Development | $($development.rows) | $($development.signal_setup) | $($development.signal_ready) | $($development.signal_trigger) |
+          | Validation | $($validation.rows) | $($validation.signal_setup) | $($validation.signal_ready) | $($validation.signal_trigger) |
+          | Retrospective test | $($test.rows) | $($test.signal_setup) | $($test.signal_ready) | $($test.signal_trigger) |
+
+          **Note:** These are positive-candle counts, not
+          independent trades or validated +30% predictions.
+          "@ |
+            Out-File `
+              -FilePath $env:GITHUB_STEP_SUMMARY `
+              -Append -Encoding utf8
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-signal-counts
+          path: |
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_signal_counts\signal_count_periods.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_signal_counts\signal_count_result.json
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_signal_counts\signal_count_manifest.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Final status gate
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "Signal count execution failed"
+          }
+
+          if ("${{ steps.verify.outcome }}" -ne "success") {
+            throw "Signal count integrity failed"
+          }
+
+          Write-Host "SIGNAL COUNT AUDIT COMPLETED"
+          Write-Host "RESEARCH DECISION: HOLD"
