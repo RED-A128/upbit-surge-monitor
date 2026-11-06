@@ -1,0 +1,322 @@
+
+name: audit_pattern_256_gap_censor_robustness.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern-256-gap-censor-robustness
+  cancel-in-progress: false
+
+jobs:
+  gap-censor-robustness:
+    name: gap-censor-robustness
+    runs-on:
+      - self-hosted
+      - Windows
+    timeout-minutes: 60
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      DATA_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_gap_censor_robustness.py"
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Missing script: $script"
+          }
+
+          py --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          py -c "import ast,pathlib,sys; ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8-sig')); print('Syntax PASS')" $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax check failed"
+          }
+
+          $folder = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_gap_censor_association"
+
+          foreach ($name in @(
+            "association_market.csv",
+            "association_summary.csv",
+            "association_rankings.csv",
+            "association_result.json",
+            "association_manifest.json"
+          )) {
+            $path = Join-Path $folder $name
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing input: $path"
+            }
+          }
+
+          Write-Host "[PASS] Environment"
+
+      - name: Execute robustness audit
+        id: audit
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_gap_censor_robustness.py"
+
+          & py -u $script `
+            --root $env:DATA_ROOT `
+            --iterations 2000
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Robustness audit failed"
+          }
+
+          Write-Host "[PASS] Execution"
+
+      - name: Verify result and SHA256
+        id: verify
+        if: always()
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "Audit execution did not succeed"
+          }
+
+          $folder = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_gap_censor_robustness"
+
+          $result = Get-Content `
+            -LiteralPath (Join-Path $folder "robustness_result.json") `
+            -Raw | ConvertFrom-Json
+
+          $manifest = Get-Content `
+            -LiteralPath (Join-Path $folder "robustness_manifest.json") `
+            -Raw | ConvertFrom-Json
+
+          if ($result.execution -ne "PASS" -or
+              $manifest.execution -ne "PASS") {
+            throw "Execution status mismatch"
+          }
+
+          if ($result.version -ne "Clean V001" -or
+              $manifest.version -ne "Clean V001") {
+            throw "Version mismatch"
+          }
+
+          if ($result.market_groups -ne 853 -or
+              $result.source_events -ne 252600 -or
+              $result.source_censored -ne 19921 -or
+              $result.missing_candle_slots -ne 57412) {
+            throw "Source reconciliation failed"
+          }
+
+          if ($result.scenario_rows -ne 16 -or
+              $result.coverage_strata_rows -ne 16 -or
+              $result.permutation_iterations -ne 2000) {
+            throw "Unexpected analysis dimensions"
+          }
+
+          if ($result.research_decision -ne "HOLD" -or
+              $result.independent_oos_proven -ne $false -or
+              $result.causal_relationship_proven -ne $false -or
+              $result.train_approved -ne $false -or
+              $result.live_trading_approved -ne $false) {
+            throw "Research safety gate failed"
+          }
+
+          $source = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_gap_censor_association\association_manifest.json"
+
+          $sourceHash = (
+            Get-FileHash -LiteralPath $source -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if ($sourceHash -ne ([string]$result.source_manifest_sha256).ToLowerInvariant() -or
+              $sourceHash -ne ([string]$manifest.source_manifest_sha256).ToLowerInvariant()) {
+            throw "Source SHA256 mismatch"
+          }
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_gap_censor_robustness.py"
+
+          $scriptHash = (
+            Get-FileHash -LiteralPath $script -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if ($scriptHash -ne ([string]$manifest.script_sha256).ToLowerInvariant()) {
+            throw "Script SHA256 mismatch"
+          }
+
+          foreach ($name in @(
+            "robustness_summary.csv",
+            "robustness_strata.csv",
+            "robustness_market.csv",
+            "robustness_result.json"
+          )) {
+            $path = Join-Path $folder $name
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing output: $name"
+            }
+
+            $expected = [string]$manifest.output_sha256.$name
+
+            $actual = (
+              Get-FileHash -LiteralPath $path -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($expected.Length -ne 64 -or
+                $actual -ne $expected.ToLowerInvariant()) {
+              throw "SHA256 mismatch: $name"
+            }
+
+            Write-Host "[SHA256 PASS] $name"
+          }
+
+          $summary = @(
+            Import-Csv -LiteralPath (
+              Join-Path $folder "robustness_summary.csv"
+            )
+          )
+
+          $strata = @(
+            Import-Csv -LiteralPath (
+              Join-Path $folder "robustness_strata.csv"
+            )
+          )
+
+          $markets = @(
+            Import-Csv -LiteralPath (
+              Join-Path $folder "robustness_market.csv"
+            )
+          )
+
+          if ($summary.Count -ne 16 -or
+              $strata.Count -ne 16 -or
+              $markets.Count -ne 853) {
+            throw "Report row count mismatch"
+          }
+
+          Write-Host "[PASS] Verification"
+
+      - name: Publish summary
+        if: always()
+        run: |
+          $folder = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_gap_censor_robustness"
+
+          if ("${{ steps.verify.outcome }}" -ne "success") {
+            @"
+          ## Pattern 256 Gap-Censor Robustness - FAILED
+
+          | Check | Result |
+          |---|---|
+          | Execution | ${{ steps.audit.outcome }} |
+          | Verification | ${{ steps.verify.outcome }} |
+          | Research decision | HOLD |
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Append -Encoding utf8
+
+            exit 0
+          }
+
+          $result = Get-Content `
+            -LiteralPath (Join-Path $folder "robustness_result.json") `
+            -Raw | ConvertFrom-Json
+
+          @"
+          ## Pattern 256 Gap-Censor Robustness
+
+          | Check | Result |
+          |---|---|
+          | Version | $($result.version) |
+          | Execution | $($result.execution) |
+          | Market groups | $($result.market_groups) |
+          | Source events | $($result.source_events) |
+          | Censored events | $($result.source_censored) |
+          | Missing slots | $($result.missing_candle_slots) |
+          | Permutations | $($result.permutation_iterations) |
+          | Research decision | HOLD |
+
+          ### Sensitivity results
+
+          | Scope | Scenario | Groups | Spearman | Partial Spearman | Permutation p |
+          |---|---|---:|---:|---:|---:|
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Append -Encoding utf8
+
+          foreach ($s in $result.scenarios) {
+            "| $($s.scope) | $($s.scenario) | $($s.market_groups) | $($s.spearman_rates) | $($s.partial_spearman) | $($s.permutation_pvalue) |" |
+              Out-File `
+                -FilePath $env:GITHUB_STEP_SUMMARY `
+                -Append -Encoding utf8
+          }
+
+          @"
+
+          **Research decision: HOLD.**
+
+          Partial correlations and permutation results are
+          descriptive diagnostics, not causal proof.
+
+          Independent OOS, trading profitability, and
+          executable fills remain unverified.
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Append -Encoding utf8
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-gap-censor-robustness-v001
+          path: |
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_gap_censor_robustness\robustness_result.json
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_gap_censor_robustness\robustness_manifest.json
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_gap_censor_robustness\robustness_summary.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_gap_censor_robustness\robustness_strata.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_gap_censor_robustness\robustness_market.csv
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Final status gate
+        if: always()
+        run: |
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "Robustness audit execution failed"
+          }
+
+          if ("${{ steps.verify.outcome }}" -ne "success") {
+            throw "Robustness audit verification failed"
+          }
+
+          Write-Host "[PASS] Clean V001"
+          Write-Host "Research decision: HOLD"
