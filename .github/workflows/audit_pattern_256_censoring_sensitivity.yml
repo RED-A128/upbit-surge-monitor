@@ -1,0 +1,354 @@
+
+name: audit_pattern_256_censoring_sensitivity.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern-256-censoring-sensitivity
+  cancel-in-progress: false
+
+jobs:
+  censoring-sensitivity:
+    name: censoring-sensitivity
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 60
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      DATA_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_censoring_sensitivity.py"
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Missing Python audit script"
+          }
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          py -c "import pandas; print('Pandas PASS')"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Pandas unavailable"
+          }
+
+          $source = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_event_gap_integrity"
+
+          $required = @(
+            "gap_integrity_events.csv",
+            "gap_integrity_summary.csv",
+            "gap_integrity_result.json",
+            "gap_integrity_manifest.json"
+          )
+
+          foreach ($name in $required) {
+            $path = Join-Path $source $name
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing source file: $path"
+            }
+          }
+
+          Write-Host "[PASS] Environment"
+
+      - name: Execute censoring sensitivity audit
+        id: audit
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_censoring_sensitivity.py"
+
+          & py -u $script --root $env:DATA_ROOT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Censoring sensitivity audit failed"
+          }
+
+      - name: Verify output and SHA256
+        id: verify
+        if: always()
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "Audit execution failed"
+          }
+
+          $folder = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_censoring_sensitivity"
+
+          $resultPath = Join-Path `
+            $folder `
+            "censoring_result.json"
+
+          $manifestPath = Join-Path `
+            $folder `
+            "censoring_manifest.json"
+
+          if (-not (Test-Path -LiteralPath $resultPath)) {
+            throw "Missing result"
+          }
+
+          if (-not (Test-Path -LiteralPath $manifestPath)) {
+            throw "Missing manifest"
+          }
+
+          $r = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw |
+            ConvertFrom-Json
+
+          $m = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw |
+            ConvertFrom-Json
+
+          if ($r.execution -ne "PASS") {
+            throw "Result not PASS"
+          }
+
+          if ($r.version -ne "Clean V001") {
+            throw "Unexpected version"
+          }
+
+          if ($r.audited_event_records -ne 252600) {
+            throw "Event count mismatch"
+          }
+
+          if ($r.group_count -ne 27) {
+            throw "Group count mismatch"
+          }
+
+          if ($r.research_decision -ne "HOLD") {
+            throw "Research gate mismatch"
+          }
+
+          if ($r.independent_oos_proven -ne $false) {
+            throw "OOS incorrectly approved"
+          }
+
+          if ($r.train_approved -ne $false) {
+            throw "Training incorrectly approved"
+          }
+
+          if ($r.live_trading_approved -ne $false) {
+            throw "Trading incorrectly approved"
+          }
+
+          $o = $r.overall
+
+          $total = (
+            [long]$o.hits +
+            [long]$o.misses +
+            [long]$o.gap_censored +
+            [long]$o.end_censored
+          )
+
+          if ($total -ne 252600) {
+            throw "Outcome accounting mismatch"
+          }
+
+          $names = @(
+            "censoring_summary.csv",
+            "censoring_market.csv",
+            "censoring_result.json"
+          )
+
+          foreach ($name in $names) {
+            $path = Join-Path $folder $name
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Missing output: $name"
+            }
+
+            $expected = [string]$m.output_sha256.$name
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($actual -ne $expected.ToLowerInvariant()) {
+              throw "SHA256 mismatch: $name"
+            }
+
+            Write-Host "[PASS] SHA256 $name"
+          }
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_censoring_sensitivity.py"
+
+          $scriptHash = (
+            Get-FileHash `
+              -LiteralPath $script `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if ($scriptHash -ne ([string]$m.script_sha256).ToLowerInvariant()) {
+            throw "Script SHA256 mismatch"
+          }
+
+          $sourceManifest = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_event_gap_integrity\gap_integrity_manifest.json"
+
+          $sourceHash = (
+            Get-FileHash `
+              -LiteralPath $sourceManifest `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if ($sourceHash -ne ([string]$m.source_manifest_sha256).ToLowerInvariant()) {
+            throw "Source manifest SHA256 mismatch"
+          }
+
+          Write-Host "[PASS] Verification complete"
+
+      - name: Publish summary
+        if: always()
+        run: |
+          if ("${{ steps.verify.outcome }}" -ne "success") {
+            @"
+          ## Pattern 256 Censoring Sensitivity - FAILED
+
+          | Check | Result |
+          |---|---|
+          | Execution | ${{ steps.audit.outcome }} |
+          | Verification | ${{ steps.verify.outcome }} |
+          | Research decision | HOLD |
+          "@ |
+              Out-File `
+                -FilePath $env:GITHUB_STEP_SUMMARY `
+                -Append `
+                -Encoding utf8
+
+            exit 0
+          }
+
+          $path = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_censoring_sensitivity\censoring_result.json"
+
+          $r = Get-Content `
+            -LiteralPath $path `
+            -Raw |
+            ConvertFrom-Json
+
+          $o = $r.overall
+
+          @"
+          ## Pattern 256 Censoring Sensitivity
+
+          | Check | Result |
+          |---|---|
+          | Version | $($r.version) |
+          | Execution | $($r.execution) |
+          | Events | $($r.audited_event_records) |
+          | Groups | $($r.group_count) |
+          | Market/timeframe groups | $($r.market_timeframe_groups) |
+          | Confirmed hits | $($o.hits) |
+          | Confirmed misses | $($o.misses) |
+          | Gap censored | $($o.gap_censored) |
+          | End censored | $($o.end_censored) |
+          | Censoring rate | $($o.censoring_rate_pct)% |
+          | Pessimistic hit rate | $($o.pessimistic_hit_rate_pct)% |
+          | Observed hit rate | $($o.observed_hit_rate_pct)% |
+          | Optimistic hit rate | $($o.optimistic_hit_rate_pct)% |
+          | Research decision | HOLD |
+
+          ### Sensitivity by timeframe and period
+
+          | Timeframe | Period | Hours | Events | Censored | Censoring % | Lower % | Observed % | Upper % | Status |
+          |---|---|---:|---:|---:|---:|---:|---:|---:|---|
+          "@ |
+            Out-File `
+              -FilePath $env:GITHUB_STEP_SUMMARY `
+              -Append `
+              -Encoding utf8
+
+          $csvPath = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_censoring_sensitivity\censoring_summary.csv"
+
+          $rows = Import-Csv -LiteralPath $csvPath
+
+          foreach ($s in $rows) {
+            "| $($s.timeframe) | $($s.period) | $($s.horizon_hours) | $($s.events) | $($s.censored_total) | $($s.censoring_rate_pct) | $($s.pessimistic_hit_rate_pct) | $($s.observed_hit_rate_pct) | $($s.optimistic_hit_rate_pct) | $($s.status) |" |
+              Out-File `
+                -FilePath $env:GITHUB_STEP_SUMMARY `
+                -Append `
+                -Encoding utf8
+          }
+
+          @"
+
+          **Important:** Bounds are not confidence intervals.
+          Censoring may be nonrandom. Independent OOS
+          and predictive performance remain unproven.
+
+          **Research decision: HOLD.**
+          "@ |
+            Out-File `
+              -FilePath $env:GITHUB_STEP_SUMMARY `
+              -Append `
+              -Encoding utf8
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-censoring-sensitivity
+          path: |
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_censoring_sensitivity\censoring_result.json
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_censoring_sensitivity\censoring_summary.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_censoring_sensitivity\censoring_market.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_censoring_sensitivity\censoring_manifest.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Final status gate
+        if: always()
+        run: |
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "Audit execution failed"
+          }
+
+          if ("${{ steps.verify.outcome }}" -ne "success") {
+            throw "Audit verification failed"
+          }
+
+          Write-Host "[PASS] Censoring sensitivity audit"
+          Write-Host "Research decision: HOLD"
