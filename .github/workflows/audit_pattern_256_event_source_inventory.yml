@@ -26,6 +26,7 @@ jobs:
     env:
       DATA_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
       REPORT_REL: 'data\reports\pattern_256_event_source_inventory'
+      MAX_REPORT_FILES: '10000'
 
     steps:
       - name: Checkout repository
@@ -37,11 +38,11 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           Write-Host "===== ENVIRONMENT ====="
-          Write-Host "User:"
           whoami
 
           Write-Host "Workspace: $env:GITHUB_WORKSPACE"
           Write-Host "Data root: $env:DATA_ROOT"
+          Write-Host "Max files: $env:MAX_REPORT_FILES"
 
           $script = Join-Path $env:GITHUB_WORKSPACE `
             "audit_pattern_256_event_source_inventory.py"
@@ -102,10 +103,11 @@ jobs:
             "Commit: $env:GITHUB_SHA"
             "Data root: $env:DATA_ROOT"
             "Workspace: $env:GITHUB_WORKSPACE"
+            "Max report files: $env:MAX_REPORT_FILES"
             "Started UTC: $([DateTime]::UtcNow.ToString('o'))"
           ) | Set-Content -LiteralPath $marker -Encoding UTF8
 
-          Write-Host "Diagnostics: $diag"
+          Write-Host "[PASS] Diagnostics prepared"
 
       - name: Execute inventory with full logging
         id: audit
@@ -116,31 +118,38 @@ jobs:
           $script = Join-Path $env:GITHUB_WORKSPACE `
             "audit_pattern_256_event_source_inventory.py"
 
+          $stdout = Join-Path $env:DIAG_DIR "python_stdout.log"
+          $stderr = Join-Path $env:DIAG_DIR "python_stderr.log"
           $log = Join-Path $env:DIAG_DIR "python_execution.log"
           $exitFile = Join-Path $env:DIAG_DIR "python_exit_code.txt"
 
-          Write-Host "===== PYTHON EXECUTION ====="
+          Write-Host "===== INVENTORY EXECUTION ====="
           Write-Host "Script: $script"
           Write-Host "Root: $env:DATA_ROOT"
+          Write-Host "Max files: $env:MAX_REPORT_FILES"
 
           $exitCode = 999
 
           try {
-            & py -u $script `
-              --root $env:DATA_ROOT `
-              --max-files 3000 2>&1 |
-              ForEach-Object {
-                $line = [string]$_
-                Write-Host $line
-                Add-Content -LiteralPath $log `
-                  -Value $line -Encoding UTF8
-              }
+            $arguments = @(
+              "-u"
+              $script
+              "--root"
+              $env:DATA_ROOT
+              "--max-files"
+              $env:MAX_REPORT_FILES
+            )
 
-            $exitCode = $LASTEXITCODE
+            $process = Start-Process `
+              -FilePath "py.exe" `
+              -ArgumentList $arguments `
+              -Wait `
+              -PassThru `
+              -NoNewWindow `
+              -RedirectStandardOutput $stdout `
+              -RedirectStandardError $stderr
 
-            if ($null -eq $exitCode) {
-              $exitCode = 998
-            }
+            $exitCode = [int]$process.ExitCode
           }
           catch {
             $message = $_ | Out-String
@@ -153,15 +162,27 @@ jobs:
           finally {
             [string]$exitCode |
               Set-Content -LiteralPath $exitFile -Encoding UTF8
+
+            foreach ($path in @($stdout, $stderr)) {
+              if (Test-Path -LiteralPath $path -PathType Leaf) {
+                Get-Content -LiteralPath $path |
+                  ForEach-Object {
+                    Write-Host $_
+
+                    Add-Content -LiteralPath $log `
+                      -Value $_ -Encoding UTF8
+                  }
+              }
+            }
           }
 
           Write-Host "Python exit code: $exitCode"
 
           if ($exitCode -ne 0) {
-            throw "Python inventory failed. See python_execution.log"
+            throw "Python inventory failed with exit code $exitCode"
           }
 
-          Write-Host "[PASS] Python execution"
+          Write-Host "[PASS] Python inventory"
 
       - name: Verify output and SHA256
         id: verify
@@ -171,7 +192,7 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           if ("${{ steps.audit.outcome }}" -ne "success") {
-            throw "Python execution was not successful"
+            throw "Python inventory execution failed"
           }
 
           $folder = Join-Path $env:DATA_ROOT $env:REPORT_REL
@@ -261,11 +282,10 @@ jobs:
             throw "Inventory accounting mismatch"
           }
 
-          $verified = Join-Path $env:DIAG_DIR `
-            "verification_pass.txt"
-
           "PASS" | Set-Content `
-            -LiteralPath $verified -Encoding UTF8
+            -LiteralPath (
+              Join-Path $env:DIAG_DIR "verification_pass.txt"
+            ) -Encoding UTF8
 
           Write-Host "[PASS] Output and SHA256"
 
@@ -275,8 +295,6 @@ jobs:
           $ErrorActionPreference = "Continue"
 
           $folder = Join-Path $env:DATA_ROOT $env:REPORT_REL
-
-          Write-Host "===== DIAGNOSTICS ====="
 
           foreach ($name in @(
             "inventory_result.json",
@@ -306,7 +324,6 @@ jobs:
               ForEach-Object { Write-Host $_ }
           }
 
-          Write-Host "===== STEP OUTCOMES ====="
           Write-Host "Audit: ${{ steps.audit.outcome }}"
           Write-Host "Verify: ${{ steps.verify.outcome }}"
 
@@ -321,7 +338,8 @@ jobs:
 
           | Check | Result |
           |---|---|
-          | Workflow version | Clean V002 |
+          | Workflow version | Clean V003 |
+          | Maximum report files | $env:MAX_REPORT_FILES |
           | Python execution | $audit |
           | Verification | $verify |
           | Research decision | HOLD |
@@ -333,11 +351,10 @@ jobs:
             @"
           ### Failure diagnostics
 
-          Check the **Execute inventory with full logging**
-          and **Verify output and SHA256** steps.
+          Inspect the execution and verification steps.
 
-          Download the diagnostic artifact and inspect
-          python_execution.log and python_exit_code.txt.
+          The diagnostic artifact contains Python logs,
+          exit code, and available reports.
 
           No training or live trading is approved.
           "@ | Out-File $env:GITHUB_STEP_SUMMARY `
@@ -354,7 +371,7 @@ jobs:
             ) -Raw | ConvertFrom-Json
 
           @"
-          ### Verified results
+          ### Verified inventory
 
           | Check | Result |
           |---|---|
@@ -368,6 +385,25 @@ jobs:
           Event-level attribution remains unproven.
           "@ | Out-File $env:GITHUB_STEP_SUMMARY `
             -Append -Encoding utf8
+
+          if ($result.top_candidates) {
+            @"
+
+          ### Top candidate files
+
+          | Path | Score | Columns |
+          |---|---:|---|
+          "@ | Out-File $env:GITHUB_STEP_SUMMARY `
+              -Append -Encoding utf8
+
+            foreach ($item in $result.top_candidates) {
+              $cols = ($item.columns -join ", ")
+
+              "| $($item.path) | $($item.score) | $cols |" |
+                Out-File $env:GITHUB_STEP_SUMMARY `
+                  -Append -Encoding utf8
+            }
+          }
 
       - name: Upload diagnostic artifact
         if: always()
@@ -389,5 +425,5 @@ jobs:
             throw "Inventory verification failed; inspect verification logs"
           }
 
-          Write-Host "[PASS] Inventory execution and verification"
+          Write-Host "[PASS] Clean V003 workflow"
           Write-Host "Research decision: HOLD"
