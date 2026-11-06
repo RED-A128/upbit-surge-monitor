@@ -25,20 +25,29 @@ jobs:
 
     env:
       DATA_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+      REPORT_REL: 'data\reports\pattern_256_event_source_inventory'
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Verify environment
+        id: environment
         run: |
           $ErrorActionPreference = "Stop"
+
+          Write-Host "===== ENVIRONMENT ====="
+          Write-Host "User:"
+          whoami
+
+          Write-Host "Workspace: $env:GITHUB_WORKSPACE"
+          Write-Host "Data root: $env:DATA_ROOT"
 
           $script = Join-Path $env:GITHUB_WORKSPACE `
             "audit_pattern_256_event_source_inventory.py"
 
           if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
-            throw "Missing script: $script"
+            throw "Missing Python script: $script"
           }
 
           foreach ($dir in @(
@@ -48,24 +57,57 @@ jobs:
             "data\ohlcv\d1"
           )) {
             $path = Join-Path $env:DATA_ROOT $dir
+
             if (-not (Test-Path -LiteralPath $path -PathType Container)) {
               throw "Missing directory: $path"
             }
+
+            Write-Host "[OK] $path"
           }
 
           py --version
+
           if ($LASTEXITCODE -ne 0) {
             throw "Python unavailable"
           }
 
-          py -c "import ast,pathlib,sys; ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8-sig')); print('Syntax PASS')" $script
+          & py -c "import ast,pathlib,sys; ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8-sig')); print('Python syntax PASS')" $script
+
           if ($LASTEXITCODE -ne 0) {
-            throw "Python syntax failed"
+            throw "Python syntax verification failed"
           }
 
           Write-Host "[PASS] Environment"
 
-      - name: Execute inventory
+      - name: Prepare isolated run diagnostics
+        id: prepare
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $diag = Join-Path $env:RUNNER_TEMP `
+            "pattern256_inventory_$env:GITHUB_RUN_ID"
+
+          New-Item -ItemType Directory `
+            -Path $diag -Force | Out-Null
+
+          "DIAG_DIR=$diag" |
+            Out-File -FilePath $env:GITHUB_ENV `
+              -Encoding utf8 -Append
+
+          $marker = Join-Path $diag "run_metadata.txt"
+
+          @(
+            "Workflow: $env:GITHUB_WORKFLOW"
+            "Run ID: $env:GITHUB_RUN_ID"
+            "Commit: $env:GITHUB_SHA"
+            "Data root: $env:DATA_ROOT"
+            "Workspace: $env:GITHUB_WORKSPACE"
+            "Started UTC: $([DateTime]::UtcNow.ToString('o'))"
+          ) | Set-Content -LiteralPath $marker -Encoding UTF8
+
+          Write-Host "Diagnostics: $diag"
+
+      - name: Execute inventory with full logging
         id: audit
         continue-on-error: true
         run: |
@@ -74,11 +116,52 @@ jobs:
           $script = Join-Path $env:GITHUB_WORKSPACE `
             "audit_pattern_256_event_source_inventory.py"
 
-          & py -u $script --root $env:DATA_ROOT --max-files 3000
+          $log = Join-Path $env:DIAG_DIR "python_execution.log"
+          $exitFile = Join-Path $env:DIAG_DIR "python_exit_code.txt"
 
-          if ($LASTEXITCODE -ne 0) {
-            throw "Inventory execution failed"
+          Write-Host "===== PYTHON EXECUTION ====="
+          Write-Host "Script: $script"
+          Write-Host "Root: $env:DATA_ROOT"
+
+          $exitCode = 999
+
+          try {
+            & py -u $script `
+              --root $env:DATA_ROOT `
+              --max-files 3000 2>&1 |
+              ForEach-Object {
+                $line = [string]$_
+                Write-Host $line
+                Add-Content -LiteralPath $log `
+                  -Value $line -Encoding UTF8
+              }
+
+            $exitCode = $LASTEXITCODE
+
+            if ($null -eq $exitCode) {
+              $exitCode = 998
+            }
           }
+          catch {
+            $message = $_ | Out-String
+
+            Write-Host $message
+
+            Add-Content -LiteralPath $log `
+              -Value $message -Encoding UTF8
+          }
+          finally {
+            [string]$exitCode |
+              Set-Content -LiteralPath $exitFile -Encoding UTF8
+          }
+
+          Write-Host "Python exit code: $exitCode"
+
+          if ($exitCode -ne 0) {
+            throw "Python inventory failed. See python_execution.log"
+          }
+
+          Write-Host "[PASS] Python execution"
 
       - name: Verify output and SHA256
         id: verify
@@ -88,25 +171,39 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           if ("${{ steps.audit.outcome }}" -ne "success") {
-            throw "Inventory execution failed"
+            throw "Python execution was not successful"
           }
 
-          $folder = Join-Path $env:DATA_ROOT `
-            "data\reports\pattern_256_event_source_inventory"
+          $folder = Join-Path $env:DATA_ROOT $env:REPORT_REL
+
+          $resultPath = Join-Path $folder "inventory_result.json"
+          $manifestPath = Join-Path $folder "inventory_manifest.json"
+          $csvPath = Join-Path $folder "inventory_files.csv"
+
+          foreach ($path in @(
+            $resultPath,
+            $manifestPath,
+            $csvPath
+          )) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing report: $path"
+            }
+          }
 
           $result = Get-Content `
-            -LiteralPath (Join-Path $folder "inventory_result.json") `
-            -Raw | ConvertFrom-Json
+            -LiteralPath $resultPath -Raw | ConvertFrom-Json
 
           $manifest = Get-Content `
-            -LiteralPath (Join-Path $folder "inventory_manifest.json") `
-            -Raw | ConvertFrom-Json
+            -LiteralPath $manifestPath -Raw | ConvertFrom-Json
 
           if ($result.execution -ne "PASS" -or
-              $manifest.execution -ne "PASS" -or
-              $result.version -ne "Clean V001" -or
+              $manifest.execution -ne "PASS") {
+            throw "Execution status mismatch"
+          }
+
+          if ($result.version -ne "Clean V001" -or
               $manifest.version -ne "Clean V001") {
-            throw "Execution/version mismatch"
+            throw "Report version mismatch"
           }
 
           if ($result.research_decision -ne "HOLD" -or
@@ -120,11 +217,15 @@ jobs:
           $script = Join-Path $env:GITHUB_WORKSPACE `
             "audit_pattern_256_event_source_inventory.py"
 
-          $scriptHash = (
+          $actualScriptHash = (
             Get-FileHash -LiteralPath $script -Algorithm SHA256
           ).Hash.ToLowerInvariant()
 
-          if ($scriptHash -ne ([string]$manifest.script_sha256).ToLowerInvariant()) {
+          $expectedScriptHash = (
+            [string]$manifest.script_sha256
+          ).ToLowerInvariant()
+
+          if ($actualScriptHash -ne $expectedScriptHash) {
             throw "Script SHA256 mismatch"
           }
 
@@ -134,115 +235,159 @@ jobs:
           )) {
             $path = Join-Path $folder $name
 
-            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-              throw "Missing output: $name"
-            }
+            $expected = (
+              [string]$manifest.output_sha256.$name
+            ).ToLowerInvariant()
 
-            $expected = [string]$manifest.output_sha256.$name
             $actual = (
               Get-FileHash -LiteralPath $path -Algorithm SHA256
             ).Hash.ToLowerInvariant()
 
-            if ($expected.Length -ne 64 -or
-                $actual -ne $expected.ToLowerInvariant()) {
+            if ($expected.Length -ne 64 -or $actual -ne $expected) {
               throw "SHA256 mismatch: $name"
             }
           }
 
-          $rows = @(
-            Import-Csv -LiteralPath (
-              Join-Path $folder "inventory_files.csv"
-            )
-          )
+          $rows = @(Import-Csv -LiteralPath $csvPath)
 
-          if ($rows.Count -ne $result.report_csv_files) {
-            throw "CSV inventory count mismatch"
+          if ($rows.Count -ne [int]$result.report_csv_files) {
+            throw "CSV inventory row count mismatch"
           }
 
-          if (($result.readable_csv_files +
-               $result.unreadable_csv_files) -ne
-               $result.report_csv_files) {
+          if ((
+              [int]$result.readable_csv_files +
+              [int]$result.unreadable_csv_files
+            ) -ne [int]$result.report_csv_files) {
             throw "Inventory accounting mismatch"
           }
 
-          Write-Host "[PASS] SHA256 and result verification"
+          $verified = Join-Path $env:DIAG_DIR `
+            "verification_pass.txt"
+
+          "PASS" | Set-Content `
+            -LiteralPath $verified -Encoding UTF8
+
+          Write-Host "[PASS] Output and SHA256"
+
+      - name: Capture diagnostics
+        if: always()
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          $folder = Join-Path $env:DATA_ROOT $env:REPORT_REL
+
+          Write-Host "===== DIAGNOSTICS ====="
+
+          foreach ($name in @(
+            "inventory_result.json",
+            "inventory_manifest.json",
+            "inventory_files.csv"
+          )) {
+            $source = Join-Path $folder $name
+
+            if (Test-Path -LiteralPath $source -PathType Leaf) {
+              Copy-Item -LiteralPath $source `
+                -Destination (Join-Path $env:DIAG_DIR $name) `
+                -Force
+
+              Write-Host "[FOUND] $name"
+            }
+            else {
+              Write-Host "[MISSING] $name"
+            }
+          }
+
+          $log = Join-Path $env:DIAG_DIR "python_execution.log"
+
+          if (Test-Path -LiteralPath $log) {
+            Write-Host "===== PYTHON LOG TAIL ====="
+
+            Get-Content -LiteralPath $log -Tail 100 |
+              ForEach-Object { Write-Host $_ }
+          }
+
+          Write-Host "===== STEP OUTCOMES ====="
+          Write-Host "Audit: ${{ steps.audit.outcome }}"
+          Write-Host "Verify: ${{ steps.verify.outcome }}"
 
       - name: Publish summary
         if: always()
         run: |
-          if ("${{ steps.verify.outcome }}" -ne "success") {
-            @"
-          ## Pattern 256 Event Source Inventory - FAILED
-
-          | Check | Result |
-          |---|---|
-          | Execution | ${{ steps.audit.outcome }} |
-          | Verification | ${{ steps.verify.outcome }} |
-          | Research decision | HOLD |
-          "@ | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-            exit 0
-          }
-
-          $folder = Join-Path $env:DATA_ROOT `
-            "data\reports\pattern_256_event_source_inventory"
-
-          $result = Get-Content `
-            -LiteralPath (Join-Path $folder "inventory_result.json") `
-            -Raw | ConvertFrom-Json
+          $audit = "${{ steps.audit.outcome }}"
+          $verify = "${{ steps.verify.outcome }}"
 
           @"
           ## Pattern 256 Event Source Inventory
 
           | Check | Result |
           |---|---|
-          | Version | $($result.version) |
-          | Execution | $($result.execution) |
-          | CSV files | $($result.report_csv_files) |
-          | Readable | $($result.readable_csv_files) |
-          | Unreadable | $($result.unreadable_csv_files) |
-          | Candidate files | $($result.candidate_files) |
+          | Workflow version | Clean V002 |
+          | Python execution | $audit |
+          | Verification | $verify |
           | Research decision | HOLD |
 
-          ### Candidate source files
+          "@ | Out-File $env:GITHUB_STEP_SUMMARY `
+            -Append -Encoding utf8
 
-          | Path | Score | Columns |
-          |---|---:|---|
-          "@ | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          if ($audit -ne "success" -or $verify -ne "success") {
+            @"
+          ### Failure diagnostics
 
-          foreach ($item in $result.top_candidates) {
-            $cols = ($item.columns -join ", ")
-            "| $($item.path) | $($item.score) | $cols |" |
-              Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          Check the **Execute inventory with full logging**
+          and **Verify output and SHA256** steps.
+
+          Download the diagnostic artifact and inspect
+          python_execution.log and python_exit_code.txt.
+
+          No training or live trading is approved.
+          "@ | Out-File $env:GITHUB_STEP_SUMMARY `
+              -Append -Encoding utf8
+
+            exit 0
           }
 
+          $folder = Join-Path $env:DATA_ROOT $env:REPORT_REL
+
+          $result = Get-Content `
+            -LiteralPath (
+              Join-Path $folder "inventory_result.json"
+            ) -Raw | ConvertFrom-Json
+
           @"
+          ### Verified results
 
-          This is a read-only schema inventory.
-          Event-level gap attribution is not yet proven.
-          "@ | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          | Check | Result |
+          |---|---|
+          | Report version | $($result.version) |
+          | Execution | $($result.execution) |
+          | CSV files | $($result.report_csv_files) |
+          | Readable files | $($result.readable_csv_files) |
+          | Unreadable files | $($result.unreadable_csv_files) |
+          | Candidate files | $($result.candidate_files) |
 
-      - name: Upload reports
-        if: steps.verify.outcome == 'success'
+          Event-level attribution remains unproven.
+          "@ | Out-File $env:GITHUB_STEP_SUMMARY `
+            -Append -Encoding utf8
+
+      - name: Upload diagnostic artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pattern-256-event-source-inventory-v001
-          path: |
-            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_event_source_inventory\inventory_files.csv
-            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_event_source_inventory\inventory_result.json
-            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_event_source_inventory\inventory_manifest.json
-          if-no-files-found: error
+          name: pattern-256-inventory-diagnostics
+          path: ${{ runner.temp }}/pattern256_inventory_${{ github.run_id }}/
+          if-no-files-found: warn
           retention-days: 30
 
       - name: Final status gate
         if: always()
         run: |
           if ("${{ steps.audit.outcome }}" -ne "success") {
-            throw "Inventory execution failed"
+            throw "Inventory execution failed; inspect diagnostic artifact"
           }
 
           if ("${{ steps.verify.outcome }}" -ne "success") {
-            throw "Inventory verification failed"
+            throw "Inventory verification failed; inspect verification logs"
           }
 
-          Write-Host "[PASS] Clean V001"
+          Write-Host "[PASS] Inventory execution and verification"
           Write-Host "Research decision: HOLD"
