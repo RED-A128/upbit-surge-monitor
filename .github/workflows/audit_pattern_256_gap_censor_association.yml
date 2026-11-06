@@ -1,0 +1,306 @@
+
+name: audit_pattern_256_gap_censor_association.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern-256-gap-censor-association
+  cancel-in-progress: false
+
+jobs:
+  gap-censor-association:
+    name: gap-censor-association
+    runs-on:
+      - self-hosted
+      - Windows
+    timeout-minutes: 60
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      DATA_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_gap_censor_association.py"
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Missing Python script: $script"
+          }
+
+          py --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          py -c "import ast,pathlib,sys; ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8-sig')); print('Syntax PASS')" $script
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax verification failed"
+          }
+
+          $source = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_ohlcv_gap_integrity"
+
+          foreach ($name in @(
+            "gap_integrity_result.json",
+            "gap_integrity_manifest.json",
+            "gap_integrity_market.csv",
+            "gap_integrity_samples.csv",
+            "gap_integrity_summary.csv"
+          )) {
+            $path = Join-Path $source $name
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing input: $path"
+            }
+          }
+
+          Write-Host "[PASS] Environment"
+
+      - name: Execute association audit
+        id: audit
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_gap_censor_association.py"
+
+          & py -u $script --root $env:DATA_ROOT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Association audit failed"
+          }
+
+          Write-Host "[PASS] Execution"
+
+      - name: Verify output and SHA256
+        id: verify
+        if: always()
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "Execution failed"
+          }
+
+          $folder = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_gap_censor_association"
+
+          $result = Get-Content `
+            -LiteralPath (Join-Path $folder "association_result.json") `
+            -Raw | ConvertFrom-Json
+
+          $manifest = Get-Content `
+            -LiteralPath (Join-Path $folder "association_manifest.json") `
+            -Raw | ConvertFrom-Json
+
+          if ($result.execution -ne "PASS" -or
+              $manifest.execution -ne "PASS") {
+            throw "Execution status mismatch"
+          }
+
+          if ($result.version -ne "Clean V001" -or
+              $manifest.version -ne "Clean V001") {
+            throw "Version mismatch"
+          }
+
+          if ($result.market_groups -ne 853 -or
+              $result.source_events -ne 252600 -or
+              $result.source_censored -ne 19921 -or
+              $result.missing_candle_slots -ne 57412) {
+            throw "Source reconciliation failed"
+          }
+
+          if ($result.research_decision -ne "HOLD" -or
+              $result.independent_oos_proven -ne $false -or
+              $result.causal_relationship_proven -ne $false -or
+              $result.train_approved -ne $false -or
+              $result.live_trading_approved -ne $false) {
+            throw "Research safety gate failed"
+          }
+
+          $sourcePath = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_ohlcv_gap_integrity\gap_integrity_manifest.json"
+
+          $sourceHash = (
+            Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if ($sourceHash -ne ([string]$result.source_manifest_sha256).ToLowerInvariant() -or
+              $sourceHash -ne ([string]$manifest.source_manifest_sha256).ToLowerInvariant()) {
+            throw "Source manifest SHA256 mismatch"
+          }
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_gap_censor_association.py"
+
+          $scriptHash = (
+            Get-FileHash -LiteralPath $script -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if ($scriptHash -ne ([string]$manifest.script_sha256).ToLowerInvariant()) {
+            throw "Script SHA256 mismatch"
+          }
+
+          foreach ($name in @(
+            "association_market.csv",
+            "association_summary.csv",
+            "association_rankings.csv",
+            "association_result.json"
+          )) {
+            $path = Join-Path $folder $name
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing report: $name"
+            }
+
+            $expected = [string]$manifest.output_sha256.$name
+            $actual = (
+              Get-FileHash -LiteralPath $path -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($expected.Length -ne 64 -or
+                $actual -ne $expected.ToLowerInvariant()) {
+              throw "SHA256 mismatch: $name"
+            }
+
+            Write-Host "[SHA256 PASS] $name"
+          }
+
+          $markets = @(
+            Import-Csv -LiteralPath (
+              Join-Path $folder "association_market.csv"
+            )
+          )
+          $summaries = @(
+            Import-Csv -LiteralPath (
+              Join-Path $folder "association_summary.csv"
+            )
+          )
+          $rankings = @(
+            Import-Csv -LiteralPath (
+              Join-Path $folder "association_rankings.csv"
+            )
+          )
+
+          if ($markets.Count -ne 853 -or
+              $summaries.Count -ne 4 -or
+              $rankings.Count -ne 160) {
+            throw "Report row count mismatch"
+          }
+
+          Write-Host "[PASS] Output verification"
+
+      - name: Publish summary
+        if: always()
+        run: |
+          if ("${{ steps.verify.outcome }}" -ne "success") {
+            @"
+          ## Pattern 256 Gap-Censor Association - FAILED
+
+          | Check | Result |
+          |---|---|
+          | Execution | ${{ steps.audit.outcome }} |
+          | Verification | ${{ steps.verify.outcome }} |
+          | Research decision | HOLD |
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Append -Encoding utf8
+
+            exit 0
+          }
+
+          $path = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_gap_censor_association\association_result.json"
+
+          $r = Get-Content -LiteralPath $path -Raw |
+            ConvertFrom-Json
+
+          @"
+          ## Pattern 256 Gap-Censor Association
+
+          | Check | Result |
+          |---|---|
+          | Version | $($r.version) |
+          | Execution | $($r.execution) |
+          | Market groups | $($r.market_groups) |
+          | Source events | $($r.source_events) |
+          | Censored events | $($r.source_censored) |
+          | Missing candle slots | $($r.missing_candle_slots) |
+          | Research decision | HOLD |
+
+          ### Market-level association
+
+          | Scope | Groups | Pearson rates | Spearman rates | Pearson counts | Spearman counts |
+          |---|---:|---:|---:|---:|---:|
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Append -Encoding utf8
+
+          foreach ($s in $r.associations) {
+            "| $($s.scope) | $($s.market_groups) | $($s.pearson_rates) | $($s.spearman_rates) | $($s.pearson_counts) | $($s.spearman_counts) |" |
+              Out-File `
+                -FilePath $env:GITHUB_STEP_SUMMARY `
+                -Append -Encoding utf8
+          }
+
+          @"
+
+          **Research decision: HOLD.**
+
+          These are descriptive market-level correlations,
+          not proof that candle gaps caused censoring.
+
+          No OHLCV source files were modified.
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Append -Encoding utf8
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-gap-censor-association-v001
+          path: |
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_gap_censor_association\association_result.json
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_gap_censor_association\association_manifest.json
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_gap_censor_association\association_market.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_gap_censor_association\association_summary.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_gap_censor_association\association_rankings.csv
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Final status gate
+        if: always()
+        run: |
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "Association audit execution failed"
+          }
+
+          if ("${{ steps.verify.outcome }}" -ne "success") {
+            throw "Association output verification failed"
+          }
+
+          Write-Host "[PASS] Clean V001"
+          Write-Host "Research decision: HOLD"
