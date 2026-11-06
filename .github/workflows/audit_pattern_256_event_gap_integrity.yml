@@ -3,6 +3,12 @@ name: audit_pattern_256_event_gap_integrity.yml
 
 on:
   workflow_dispatch:
+    inputs:
+      force_replay:
+        description: "Ignore valid checkpoints"
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -14,6 +20,7 @@ concurrency:
 jobs:
   event-gap-integrity:
     name: event-gap-integrity
+
     runs-on:
       - self-hosted
       - Windows
@@ -39,23 +46,26 @@ jobs:
             $env:GITHUB_WORKSPACE `
             "audit_pattern_256_event_gap_integrity.py"
 
-          if (-not (Test-Path -LiteralPath $script)) {
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
             throw "Missing Python script: $script"
           }
 
           py --version
+
           if ($LASTEXITCODE -ne 0) {
             throw "Python unavailable"
           }
 
-          py -c "import numpy, pandas; print('Dependencies PASS')"
+          py -c "import pandas, numpy; print('Dependencies PASS')"
+
           if ($LASTEXITCODE -ne 0) {
-            throw "Dependencies unavailable"
+            throw "Python dependencies unavailable"
           }
 
-          py -c "import ast, pathlib, sys; ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8-sig'))" $script
+          py -c "import ast, pathlib, sys; ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8-sig')); print('Syntax PASS')" $script
+
           if ($LASTEXITCODE -ne 0) {
-            throw "Syntax validation failed"
+            throw "Python syntax validation failed"
           }
 
           $required = @(
@@ -72,7 +82,7 @@ jobs:
             $path = Join-Path $env:DATA_ROOT $relative
 
             if (-not (Test-Path -LiteralPath $path)) {
-              throw "Missing required input: $path"
+              throw "Required input missing: $path"
             }
           }
 
@@ -81,6 +91,8 @@ jobs:
       - name: Execute gap integrity audit
         id: audit
         continue-on-error: true
+        env:
+          FORCE_REPLAY: ${{ inputs.force_replay }}
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -88,11 +100,57 @@ jobs:
             $env:GITHUB_WORKSPACE `
             "audit_pattern_256_event_gap_integrity.py"
 
-          & py -u $script --root $env:DATA_ROOT
+          $arguments = @(
+            "-u",
+            $script,
+            "--root",
+            $env:DATA_ROOT
+          )
 
-          if ($LASTEXITCODE -ne 0) {
+          if ($env:FORCE_REPLAY -eq "true") {
+            $arguments += "--force"
+          }
+
+          $diagnostics = Join-Path `
+            $env:RUNNER_TEMP `
+            "event_gap_audit_diagnostics.log"
+
+          $exitCode = 1
+
+          try {
+            & py @arguments 2>&1 |
+              ForEach-Object {
+                $line = [string]$_
+                Write-Host $line
+                $line |
+                  Out-File `
+                    -FilePath $diagnostics `
+                    -Append `
+                    -Encoding utf8
+              }
+
+            $exitCode = $LASTEXITCODE
+          }
+          catch {
+            $message = $_.Exception.Message
+
+            Write-Host "[ERROR] $message"
+
+            $message |
+              Out-File `
+                -FilePath $diagnostics `
+                -Append `
+                -Encoding utf8
+
+            $exitCode = 1
+          }
+
+          if ($exitCode -ne 0) {
+            Write-Host "[FAIL] Python exit code: $exitCode"
             throw "Gap integrity audit failed"
           }
+
+          Write-Host "[PASS] Python audit completed"
 
       - name: Verify result and SHA256
         id: verify
@@ -102,7 +160,7 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           if ("${{ steps.audit.outcome }}" -ne "success") {
-            throw "Audit execution failed"
+            throw "Audit execution did not succeed"
           }
 
           $folder = Join-Path `
@@ -110,31 +168,39 @@ jobs:
             "data\reports\pattern_256_event_gap_integrity"
 
           $resultPath = Join-Path `
-            $folder "gap_integrity_result.json"
+            $folder `
+            "gap_integrity_result.json"
 
           $manifestPath = Join-Path `
-            $folder "gap_integrity_manifest.json"
+            $folder `
+            "gap_integrity_manifest.json"
 
-          if (-not (Test-Path -LiteralPath $resultPath)) {
-            throw "Missing result JSON"
+          foreach ($path in @($resultPath, $manifestPath)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing report: $path"
+            }
           }
 
-          if (-not (Test-Path -LiteralPath $manifestPath)) {
-            throw "Missing manifest JSON"
+          $r = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw |
+            ConvertFrom-Json
+
+          $m = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw |
+            ConvertFrom-Json
+
+          if ($r.version -ne "Clean V002") {
+            throw "Unexpected audit version"
           }
-
-          $r = Get-Content -LiteralPath $resultPath -Raw |
-            ConvertFrom-Json
-
-          $m = Get-Content -LiteralPath $manifestPath -Raw |
-            ConvertFrom-Json
 
           if ($r.execution -ne "PASS") {
-            throw "Audit result not PASS"
+            throw "Audit execution not PASS"
           }
 
           if ($m.execution -ne "PASS") {
-            throw "Manifest not PASS"
+            throw "Manifest execution not PASS"
           }
 
           if ($r.jobs -ne 870) {
@@ -150,11 +216,15 @@ jobs:
           }
 
           if ($r.original_event_records -ne 252600) {
-            throw "Unexpected original event count"
+            throw "Original event count mismatch"
           }
 
           if ($r.audited_event_records -ne 252600) {
-            throw "Incomplete event audit"
+            throw "Audited event count mismatch"
+          }
+
+          if ($r.gap_integrity_audit_completed -ne $true) {
+            throw "Gap integrity audit incomplete"
           }
 
           $classified = (
@@ -164,16 +234,16 @@ jobs:
             [long]$r.end_censored
           )
 
-          if ($classified -ne $r.audited_event_records) {
-            throw "Outcome classification count mismatch"
-          }
-
-          if ($r.gap_integrity_audit_completed -ne $true) {
-            throw "Audit completion not verified"
+          if ($classified -ne 252600) {
+            throw "Outcome totals inconsistent"
           }
 
           if ($r.independent_oos_proven -ne $false) {
             throw "Unexpected OOS approval"
+          }
+
+          if ($r.point_in_time_proven -ne $false) {
+            throw "Unexpected point-in-time approval"
           }
 
           if ($r.train_approved -ne $false) {
@@ -196,18 +266,21 @@ jobs:
 
           foreach ($name in $names) {
             $path = Join-Path $folder $name
-            $expected = [string]$m.output_sha256.$name
 
-            if (-not (Test-Path -LiteralPath $path)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
               throw "Missing output: $name"
             }
 
+            $expected = [string]$m.output_sha256.$name
+
             if ($expected.Length -ne 64) {
-              throw "Invalid SHA256: $name"
+              throw "Invalid expected SHA256: $name"
             }
 
             $actual = (
-              Get-FileHash -LiteralPath $path -Algorithm SHA256
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
             ).Hash.ToLowerInvariant()
 
             if ($actual -ne $expected.ToLowerInvariant()) {
@@ -222,35 +295,74 @@ jobs:
             "audit_pattern_256_event_gap_integrity.py"
 
           $actualScriptHash = (
-            Get-FileHash -LiteralPath $script -Algorithm SHA256
+            Get-FileHash `
+              -LiteralPath $script `
+              -Algorithm SHA256
           ).Hash.ToLowerInvariant()
 
-          if ($actualScriptHash -ne (
+          $expectedScriptHash = (
             [string]$m.script_sha256
-          ).ToLowerInvariant()) {
-            throw "Script SHA256 mismatch"
+          ).ToLowerInvariant()
+
+          if ($actualScriptHash -ne $expectedScriptHash) {
+            throw "Python script SHA256 mismatch"
           }
 
-          Write-Host "[PASS] Integrity verification"
+          $previousManifest = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_trigger_event_study\event_study_manifest.json"
+
+          $actualPreviousHash = (
+            Get-FileHash `
+              -LiteralPath $previousManifest `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          $expectedPreviousHash = (
+            [string]$m.previous_manifest_sha256
+          ).ToLowerInvariant()
+
+          if ($actualPreviousHash -ne $expectedPreviousHash) {
+            throw "Previous manifest SHA256 mismatch"
+          }
+
+          Write-Host "[PASS] All integrity checks passed"
 
       - name: Publish summary
         if: always()
         run: |
-          if ("${{ steps.verify.outcome }}" -ne "success") {
-            "## Pattern 256 Gap Integrity Audit - Failed" |
-              Out-File -FilePath $env:GITHUB_STEP_SUMMARY `
-                -Append -Encoding utf8
-            exit 0
-          }
-
           $folder = Join-Path `
             $env:DATA_ROOT `
             "data\reports\pattern_256_event_gap_integrity"
 
           $resultPath = Join-Path `
-            $folder "gap_integrity_result.json"
+            $folder `
+            "gap_integrity_result.json"
 
-          $r = Get-Content -LiteralPath $resultPath -Raw |
+          if ("${{ steps.verify.outcome }}" -ne "success") {
+            @"
+          ## Pattern 256 Gap Integrity Audit - FAILED
+
+          | Check | Result |
+          |---|---|
+          | Python execution | ${{ steps.audit.outcome }} |
+          | Integrity verification | ${{ steps.verify.outcome }} |
+          | Research decision | HOLD |
+
+          Review the Execute gap integrity audit log
+          and the uploaded diagnostic log.
+          "@ |
+              Out-File `
+                -FilePath $env:GITHUB_STEP_SUMMARY `
+                -Append `
+                -Encoding utf8
+
+            exit 0
+          }
+
+          $r = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw |
             ConvertFrom-Json
 
           @"
@@ -262,52 +374,57 @@ jobs:
           | Execution | $($r.execution) |
           | Jobs | $($r.jobs) |
           | Completed | $($r.completed_jobs) |
+          | Executed | $($r.executed_jobs) |
+          | Resumed | $($r.resumed_jobs) |
           | Failed | $($r.failed_jobs) |
-          | Event records | $($r.audited_event_records) |
+          | Audited records | $($r.audited_event_records) |
           | Confirmed hits | $($r.confirmed_hits) |
           | Confirmed misses | $($r.confirmed_misses) |
           | Gap censored | $($r.gap_censored) |
           | End censored | $($r.end_censored) |
+          | Original outcome disagreements | $($r.original_outcome_disagreements) |
           | Independent OOS proven | $($r.independent_oos_proven) |
           | Research decision | $($r.research_decision) |
 
-          ### Corrected retrospective +30% results
+          ### Corrected +30% retrospective results
 
-          | Timeframe | Period | Hours | Events | Hits | Misses | Gap censored | End censored | Corrected hit rate |
+          | Timeframe | Period | Hours | Events | Hits | Misses | Gap censored | End censored | Hit rate |
           |---|---|---:|---:|---:|---:|---:|---:|---:|
           "@ |
-            Out-File -FilePath $env:GITHUB_STEP_SUMMARY `
-              -Append -Encoding utf8
+            Out-File `
+              -FilePath $env:GITHUB_STEP_SUMMARY `
+              -Append `
+              -Encoding utf8
 
           foreach ($s in $r.summary) {
-            $rate = if (
-              [string]::IsNullOrEmpty(
-                [string]$s.confirmed_hit_rate_pct
-              )
-            ) {
-              "N/A"
+            $rate = [string]$s.confirmed_hit_rate_pct
+
+            if ([string]::IsNullOrWhiteSpace($rate)) {
+              $rate = "N/A"
             } else {
-              "$($s.confirmed_hit_rate_pct)%"
+              $rate = "$rate%"
             }
 
             "| $($s.timeframe) | $($s.period) | $($s.horizon_hours) | $($s.events) | $($s.confirmed_hits) | $($s.confirmed_misses) | $($s.gap_censored) | $($s.end_censored) | $rate |" |
-              Out-File -FilePath $env:GITHUB_STEP_SUMMARY `
-                -Append -Encoding utf8
+              Out-File `
+                -FilePath $env:GITHUB_STEP_SUMMARY `
+                -Append `
+                -Encoding utf8
           }
 
           @"
 
           **Research decision: HOLD.**
 
-          Corrected rates exclude gap-censored and
-          end-censored observations from the denominator.
-          These are historical target-touch statistics,
-          not executable trade returns.
+          This is a retrospective candle-continuity
+          audit, not an independent OOS validation.
           "@ |
-            Out-File -FilePath $env:GITHUB_STEP_SUMMARY `
-              -Append -Encoding utf8
+            Out-File `
+              -FilePath $env:GITHUB_STEP_SUMMARY `
+              -Append `
+              -Encoding utf8
 
-      - name: Upload reports
+      - name: Upload audit reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -320,15 +437,25 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+      - name: Upload diagnostics on failure
+        if: always() && steps.audit.outcome != 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-event-gap-diagnostics
+          path: |
+            ${{ runner.temp }}\event_gap_audit_diagnostics.log
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Final status gate
         if: always()
         run: |
           if ("${{ steps.audit.outcome }}" -ne "success") {
-            throw "Event gap audit execution failed"
+            throw "Gap integrity audit execution failed"
           }
 
           if ("${{ steps.verify.outcome }}" -ne "success") {
-            throw "Event gap audit verification failed"
+            throw "Gap integrity verification failed"
           }
 
           Write-Host "EVENT GAP INTEGRITY AUDIT PASSED"
