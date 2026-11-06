@@ -1,0 +1,318 @@
+
+name: audit_pattern_256_trigger_runs.yml
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_replay:
+        description: "Ignore valid checkpoints"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern-256-trigger-runs
+  cancel-in-progress: false
+
+jobs:
+  trigger-run-audit:
+    name: trigger-run-audit
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 360
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      DATA_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_trigger_runs.py"
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Audit script missing: $script"
+          }
+
+          py --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          py -c "import ast, pathlib, sys; ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8-sig'))" $script
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax check failed"
+          }
+
+          $required = @(
+            "detect_256.py",
+            "data\reports\pattern_256_signal_counts\signal_count_result.json",
+            "data\reports\pattern_256_signal_counts\signal_count_manifest.json",
+            "data\reports\pattern_256_signal_counts\signal_count_periods.csv",
+            "data\reports\pattern_256_signal_schema\signal_schema_files.csv",
+            "data\reports\pattern_256_signal_schema\signal_schema_manifest.json"
+          )
+
+          foreach ($relative in $required) {
+            $path = Join-Path $env:DATA_ROOT $relative
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Required file missing: $path"
+            }
+          }
+
+          Write-Host "[PASS] Environment verified"
+
+      - name: Execute trigger run audit
+        id: audit
+        continue-on-error: true
+        env:
+          FORCE_REPLAY: ${{ inputs.force_replay }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_trigger_runs.py"
+
+          $arguments = @(
+            "-u",
+            $script,
+            "--root",
+            $env:DATA_ROOT
+          )
+
+          if ($env:FORCE_REPLAY -eq "true") {
+            $arguments += "--force"
+          }
+
+          & py @arguments
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Trigger run audit failed"
+          }
+
+      - name: Verify result integrity
+        id: verify
+        if: always()
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "Audit execution failed"
+          }
+
+          $folder = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_trigger_runs"
+
+          $resultPath = Join-Path $folder "trigger_run_result.json"
+          $manifestPath = Join-Path $folder "trigger_run_manifest.json"
+
+          if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
+            throw "Result JSON missing"
+          }
+
+          if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+            throw "Manifest JSON missing"
+          }
+
+          $r = Get-Content -LiteralPath $resultPath -Raw |
+            ConvertFrom-Json
+
+          $m = Get-Content -LiteralPath $manifestPath -Raw |
+            ConvertFrom-Json
+
+          if ($r.execution -ne "PASS") {
+            throw "Audit is not PASS"
+          }
+
+          if ($m.execution -ne "PASS") {
+            throw "Manifest is not PASS"
+          }
+
+          if ($r.jobs -ne 870) {
+            throw "Unexpected job count"
+          }
+
+          if ($r.completed_jobs -ne $r.jobs) {
+            throw "Incomplete jobs"
+          }
+
+          if ($r.failed_jobs -ne 0) {
+            throw "Failed jobs detected"
+          }
+
+          if ($r.previous_signal_counts_matched -ne $true) {
+            throw "Previous signal counts mismatch"
+          }
+
+          if ($r.trigger_semantics_verified -ne $false) {
+            throw "Unexpected semantic approval"
+          }
+
+          if ($r.independent_trade_events_verified -ne $false) {
+            throw "Unexpected trade-event approval"
+          }
+
+          if ($r.independent_oos_proven -ne $false) {
+            throw "Unexpected OOS approval"
+          }
+
+          if ($r.train_approved -ne $false) {
+            throw "Unexpected TRAIN approval"
+          }
+
+          if ($r.live_trading_approved -ne $false) {
+            throw "Unexpected trading approval"
+          }
+
+          if ($r.research_decision -ne "HOLD") {
+            throw "Unexpected research decision"
+          }
+
+          foreach ($filename in @(
+            "trigger_run_periods.csv",
+            "trigger_run_result.json"
+          )) {
+            $path = Join-Path $folder $filename
+            $expected = [string]$m.output_sha256.$filename
+
+            if ($expected.Length -ne 64) {
+              throw "Missing SHA256: $filename"
+            }
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing output: $filename"
+            }
+
+            $actual = (
+              Get-FileHash -LiteralPath $path -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($actual -ne $expected.ToLowerInvariant()) {
+              throw "SHA256 mismatch: $filename"
+            }
+
+            Write-Host "[SHA256 PASS] $filename"
+          }
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_trigger_runs.py"
+
+          $scriptHash = (
+            Get-FileHash -LiteralPath $script -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if ($scriptHash -ne (
+            [string]$m.script_sha256
+          ).ToLowerInvariant()) {
+            throw "Audit script SHA256 mismatch"
+          }
+
+          $detector = Join-Path $env:DATA_ROOT "detect_256.py"
+          $detectorHash = (
+            Get-FileHash -LiteralPath $detector -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if ($detectorHash -ne (
+            [string]$m.detector_sha256
+          ).ToLowerInvariant()) {
+            throw "Detector source SHA256 mismatch"
+          }
+
+          Write-Host "[PASS] Trigger run integrity"
+
+      - name: Publish summary
+        if: always()
+        run: |
+          if ("${{ steps.verify.outcome }}" -ne "success") {
+            "## Trigger Run Audit - Failed" |
+              Out-File -FilePath $env:GITHUB_STEP_SUMMARY `
+                -Append -Encoding utf8
+            exit 0
+          }
+
+          $path = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_trigger_runs\trigger_run_result.json"
+
+          $r = Get-Content -LiteralPath $path -Raw |
+            ConvertFrom-Json
+
+          $d = $r.period_totals.DEVELOPMENT
+          $v = $r.period_totals.VALIDATION
+          $t = $r.period_totals.RETROSPECTIVE_TEST
+
+          @"
+          ## Pattern 256 Trigger Run Audit
+
+          | Check | Result |
+          |---|---|
+          | Version | $($r.version) |
+          | Execution | $($r.execution) |
+          | Jobs | $($r.jobs) |
+          | Completed | $($r.completed_jobs) |
+          | Failed | $($r.failed_jobs) |
+          | Previous counts matched | $($r.previous_signal_counts_matched) |
+          | Total trigger runs | $($r.all_history_trigger_runs) |
+          | Longest market run | $($r.longest_market_run_candles) |
+          | Trigger semantics verified | $($r.trigger_semantics_verified) |
+          | Independent OOS proven | $($r.independent_oos_proven) |
+          | Research decision | $($r.research_decision) |
+
+          ### Trigger run starts by period
+
+          | Period | Trigger-positive candles | Run starts |
+          |---|---:|---:|
+          | Development | $($d.trigger_positive_candles) | $($d.trigger_run_starts) |
+          | Validation | $($v.trigger_positive_candles) | $($v.trigger_run_starts) |
+          | Retrospective test | $($t.trigger_positive_candles) | $($t.trigger_run_starts) |
+
+          **Note:** A run start is not a validated independent trade.
+          "@ |
+            Out-File -FilePath $env:GITHUB_STEP_SUMMARY `
+              -Append -Encoding utf8
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-trigger-runs
+          path: |
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_trigger_runs\trigger_run_periods.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_trigger_runs\trigger_run_result.json
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_trigger_runs\trigger_run_manifest.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Final status gate
+        if: always()
+        run: |
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "Trigger run audit execution failed"
+          }
+
+          if ("${{ steps.verify.outcome }}" -ne "success") {
+            throw "Trigger run audit verification failed"
+          }
+
+          Write-Host "TRIGGER RUN AUDIT COMPLETED"
+          Write-Host "RESEARCH DECISION: HOLD"
