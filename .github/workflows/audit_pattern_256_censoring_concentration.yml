@@ -1,0 +1,424 @@
+
+name: audit_pattern_256_censoring_concentration.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern-256-censoring-concentration
+  cancel-in-progress: false
+
+jobs:
+  censoring-concentration:
+    name: censoring-concentration
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 60
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      DATA_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_censoring_concentration.py"
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Missing Python audit script: $script"
+          }
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          py -c "import ast,pathlib,sys; ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8-sig')); print('Syntax PASS')" $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax validation failed"
+          }
+
+          $source = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_censoring_sensitivity"
+
+          $required = @(
+            "censoring_result.json",
+            "censoring_summary.csv",
+            "censoring_market.csv",
+            "censoring_manifest.json"
+          )
+
+          foreach ($name in $required) {
+            $path = Join-Path $source $name
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Required source missing: $path"
+            }
+          }
+
+          Write-Host "[PASS] Environment verified"
+
+      - name: Execute concentration audit
+        id: audit
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_censoring_concentration.py"
+
+          $log = Join-Path `
+            $env:RUNNER_TEMP `
+            "censoring_concentration_diagnostics.log"
+
+          $exitCode = 1
+
+          try {
+            $output = @(
+              & py -u $script --root $env:DATA_ROOT 2>&1
+            )
+
+            $exitCode = $LASTEXITCODE
+
+            $output |
+              ForEach-Object {
+                Write-Host ([string]$_)
+                [string]$_
+              } |
+              Out-File `
+                -LiteralPath $log `
+                -Encoding utf8
+
+          } catch {
+            $_.Exception.ToString() |
+              Out-File `
+                -LiteralPath $log `
+                -Append `
+                -Encoding utf8
+
+            Write-Host $_.Exception.ToString()
+            $exitCode = 1
+          }
+
+          if ($exitCode -ne 0) {
+            throw "Concentration audit failed: $exitCode"
+          }
+
+          Write-Host "[PASS] Audit completed"
+
+      - name: Verify result and SHA256
+        id: verify
+        if: always()
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "Audit execution did not succeed"
+          }
+
+          $folder = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_censoring_concentration"
+
+          $resultPath = Join-Path `
+            $folder `
+            "concentration_result.json"
+
+          $manifestPath = Join-Path `
+            $folder `
+            "concentration_manifest.json"
+
+          foreach ($path in @($resultPath, $manifestPath)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing output: $path"
+            }
+          }
+
+          $r = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw |
+            ConvertFrom-Json
+
+          $m = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw |
+            ConvertFrom-Json
+
+          if ($r.execution -ne "PASS" -or
+              $m.execution -ne "PASS") {
+            throw "Audit not PASS"
+          }
+
+          if ($r.version -ne "Clean V001" -or
+              $m.version -ne "Clean V001") {
+            throw "Unexpected version"
+          }
+
+          if ($r.audited_event_records -ne 252600) {
+            throw "Event count mismatch"
+          }
+
+          if ($r.audited_market_timeframe_groups -ne 853) {
+            throw "Market group count mismatch"
+          }
+
+          if ($r.overall.censored -ne 19921) {
+            throw "Censored count mismatch"
+          }
+
+          if ($r.overall.hits -ne 14062) {
+            throw "Hit count mismatch"
+          }
+
+          if ($r.ranking_rows -ne 1706) {
+            throw "Ranking count mismatch"
+          }
+
+          if ($r.topk_rows -ne 12) {
+            throw "Top K count mismatch"
+          }
+
+          if ($r.exclusion_rows -ne 20) {
+            throw "Exclusion count mismatch"
+          }
+
+          if ($r.research_decision -ne "HOLD" -or
+              $r.independent_oos_proven -ne $false -or
+              $r.train_approved -ne $false -or
+              $r.live_trading_approved -ne $false) {
+            throw "Research safety gate failed"
+          }
+
+          $names = @(
+            "concentration_ranking.csv",
+            "concentration_topk.csv",
+            "concentration_exclusions.csv",
+            "concentration_result.json"
+          )
+
+          foreach ($name in $names) {
+            $path = Join-Path $folder $name
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing report: $name"
+            }
+
+            $expected = [string]$m.output_sha256.$name
+
+            if ($expected.Length -ne 64) {
+              throw "Invalid expected SHA256: $name"
+            }
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($actual -ne $expected.ToLowerInvariant()) {
+              throw "SHA256 mismatch: $name"
+            }
+
+            Write-Host "[SHA256 PASS] $name"
+          }
+
+          $sourceManifest = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_censoring_sensitivity\censoring_manifest.json"
+
+          $sourceHash = (
+            Get-FileHash `
+              -LiteralPath $sourceManifest `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if ($sourceHash -ne ([string]$m.source_manifest_sha256).ToLowerInvariant() -or
+              $sourceHash -ne ([string]$r.source_manifest_sha256).ToLowerInvariant()) {
+            throw "Source manifest SHA256 mismatch"
+          }
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_censoring_concentration.py"
+
+          $scriptHash = (
+            Get-FileHash `
+              -LiteralPath $script `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if ($scriptHash -ne ([string]$m.script_sha256).ToLowerInvariant()) {
+            throw "Audit script SHA256 mismatch"
+          }
+
+          $checks = @(
+            @("concentration_ranking.csv", 1706),
+            @("concentration_topk.csv", 12),
+            @("concentration_exclusions.csv", 20)
+          )
+
+          foreach ($check in $checks) {
+            $path = Join-Path $folder $check[0]
+            $rows = @(Import-Csv -LiteralPath $path)
+
+            if ($rows.Count -ne $check[1]) {
+              throw "CSV row count mismatch: $($check[0])"
+            }
+          }
+
+          Write-Host "[PASS] All output checks passed"
+
+      - name: Publish summary
+        if: always()
+        run: |
+          if ("${{ steps.verify.outcome }}" -ne "success") {
+            @"
+          ## Pattern 256 Censoring Concentration - FAILED
+
+          | Check | Result |
+          |---|---|
+          | Execution | ${{ steps.audit.outcome }} |
+          | Verification | ${{ steps.verify.outcome }} |
+          | Research decision | HOLD |
+
+          Review the audit logs and diagnostic artifact.
+          "@ |
+            Out-File `
+              -FilePath $env:GITHUB_STEP_SUMMARY `
+              -Append `
+              -Encoding utf8
+
+            exit 0
+          }
+
+          $folder = Join-Path `
+            $env:DATA_ROOT `
+            "data\reports\pattern_256_censoring_concentration"
+
+          $r = Get-Content `
+            -LiteralPath (Join-Path $folder "concentration_result.json") `
+            -Raw |
+            ConvertFrom-Json
+
+          @"
+          ## Pattern 256 Censoring Concentration
+
+          | Check | Result |
+          |---|---|
+          | Version | $($r.version) |
+          | Execution | $($r.execution) |
+          | Events | $($r.audited_event_records) |
+          | Market groups | $($r.audited_market_timeframe_groups) |
+          | Censored | $($r.overall.censored) |
+          | Censoring rate | $($r.overall.censoring_rate_pct)% |
+          | Independent OOS | False |
+          | Research decision | HOLD |
+
+          ### Censoring concentration
+
+          | Scope | Top K | Censored | Share % |
+          |---|---:|---:|---:|
+          "@ |
+            Out-File `
+              -FilePath $env:GITHUB_STEP_SUMMARY `
+              -Append `
+              -Encoding utf8
+
+          foreach ($s in $r.topk) {
+            "| $($s.scope) | $($s.top_k) | $($s.top_censored) | $($s.share_of_censoring_pct) |" |
+              Out-File `
+                -FilePath $env:GITHUB_STEP_SUMMARY `
+                -Append `
+                -Encoding utf8
+          }
+
+          @"
+
+          ### Market exclusion sensitivity
+
+          | Scope | Max censor % | Retained groups | Retained events % | Lower % | Observed % | Upper % |
+          |---|---:|---:|---:|---:|---:|---:|
+          "@ |
+            Out-File `
+              -FilePath $env:GITHUB_STEP_SUMMARY `
+              -Append `
+              -Encoding utf8
+
+          foreach ($s in $r.threshold_sensitivity) {
+            "| $($s.scope) | $($s.max_market_censoring_pct) | $($s.market_groups_retained) | $($s.events_retained_pct) | $($s.pessimistic_hit_rate_pct) | $($s.observed_hit_rate_pct) | $($s.optimistic_hit_rate_pct) |" |
+              Out-File `
+                -FilePath $env:GITHUB_STEP_SUMMARY `
+                -Append `
+                -Encoding utf8
+          }
+
+          @"
+
+          **Research decision: HOLD.**
+
+          Market exclusion results are descriptive.
+          They do not prove a predictive advantage.
+          "@ |
+            Out-File `
+              -FilePath $env:GITHUB_STEP_SUMMARY `
+              -Append `
+              -Encoding utf8
+
+      - name: Upload verified reports
+        if: steps.verify.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-censoring-concentration-v001
+          path: |
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_censoring_concentration\concentration_result.json
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_censoring_concentration\concentration_ranking.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_censoring_concentration\concentration_topk.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_censoring_concentration\concentration_exclusions.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_censoring_concentration\concentration_manifest.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload failure diagnostics
+        if: always() && steps.audit.outcome != 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-concentration-diagnostics
+          path: |
+            ${{ runner.temp }}\censoring_concentration_diagnostics.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Final status gate
+        if: always()
+        run: |
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "Concentration audit execution failed"
+          }
+
+          if ("${{ steps.verify.outcome }}" -ne "success") {
+            throw "Concentration audit verification failed"
+          }
+
+          Write-Host "[PASS] Concentration Clean V001"
+          Write-Host "Research decision: HOLD"
