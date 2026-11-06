@@ -4,17 +4,24 @@
 
 """
 Pattern 256 Event Gap Integrity Audit
-Clean V001
+Clean V002
 
-Re-evaluate retrospective +30% event outcomes using
-actual UTC candle continuity.
+Purpose:
+- Recheck all 252,600 retrospective event records.
+- Verify UTC candle continuity.
+- Confirm +30% hits only when observable before a gap.
+- Separate confirmed misses from censored observations.
+- Preserve source files.
+- Support SHA256-verified checkpoint/resume.
 
-Original OHLCV and event-study reports are read-only.
-This audit does not prove independent OOS or profitability.
+No training, trading, or independent OOS approval.
 
 Usage:
     py audit_pattern_256_event_gap_integrity.py --root .
+    py audit_pattern_256_event_gap_integrity.py --root . --force
 """
+
+from __future__ import annotations
 
 import argparse
 import csv
@@ -30,132 +37,277 @@ import numpy as np
 import pandas as pd
 
 
-VERSION = "Clean V001"
+VERSION = "Clean V002"
 STEPS = {"h1": 1, "h4": 4, "d1": 24}
 HORIZONS = (24, 72, 168)
-TARGET_MULTIPLIER = 1.30
+TARGET = 1.30
 
-OUTPUT_COLUMNS = [
-    "timeframe", "market", "period", "signal_utc",
-    "entry_utc", "horizon_hours", "original_outcome",
-    "corrected_outcome", "first_gap_utc",
-    "hours_to_target", "observed_candles",
-    "expected_candles", "missing_candles",
-    "full_window_contiguous", "original_outcome_agrees",
+EVENT_FIELDS = [
+    "timeframe",
+    "market",
+    "period",
+    "signal_utc",
+    "entry_utc",
+    "horizon_hours",
+    "original_outcome",
+    "corrected_outcome",
+    "first_gap_utc",
+    "hours_to_target",
+    "observed_candles",
+    "expected_candles",
+    "missing_candles",
+    "full_window_contiguous",
+    "original_outcome_agrees",
 ]
 
-SUMMARY_COLUMNS = [
-    "timeframe", "period", "horizon_hours",
-    "events", "confirmed_hits", "confirmed_misses",
-    "gap_censored", "end_censored",
-    "confirmed_hit_rate_pct", "original_hit_rate_pct",
+SUMMARY_FIELDS = [
+    "timeframe",
+    "period",
+    "horizon_hours",
+    "events",
+    "confirmed_hits",
+    "confirmed_misses",
+    "gap_censored",
+    "end_censored",
+    "confirmed_hit_rate_pct",
+    "original_hit_rate_pct",
     "original_outcome_disagreements",
 ]
 
 
-def digest(path):
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for block in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(block)
-    return h.hexdigest()
-
-
-def load_json(path):
-    with path.open("r", encoding="utf-8-sig") as f:
-        return json.load(f)
-
-
-def save_json(path, obj):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(path.name + ".tmp")
-    with temp.open("w", encoding="utf-8") as f:
-        json.dump(obj, f, indent=2, ensure_ascii=False, sort_keys=True)
-        f.write("\n")
-    os.replace(temp, path)
-
-
-def save_csv(path, fields, rows):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(path.name + ".tmp")
-    with temp.open("w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.DictWriter(f, fieldnames=fields)
-        writer.writeheader()
-        writer.writerows(rows)
-    os.replace(temp, path)
-
-
-def check(condition, message):
+def require(condition, message):
     if not condition:
         raise RuntimeError(message)
 
 
-def previous_evidence(root):
-    folder = root / "data/reports/pattern_256_trigger_event_study"
-    result_file = folder / "event_study_result.json"
-    manifest_file = folder / "event_study_manifest.json"
-    files_file = folder / "event_study_files.csv"
-    events_file = folder / "event_study_events.csv"
+def sha256(path):
+    h = hashlib.sha256()
+    with Path(path).open("rb") as f:
+        for block in iter(
+            lambda: f.read(1024 * 1024),
+            b"",
+        ):
+            h.update(block)
+    return h.hexdigest()
 
-    for path in (
-        result_file, manifest_file, files_file, events_file
-    ):
-        check(path.is_file(), f"Missing input: {path}")
 
-    result = load_json(result_file)
-    manifest = load_json(manifest_file)
+def canonical_hash(data):
+    raw = json.dumps(
+        data,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
 
-    check(result.get("execution") == "PASS", "Previous run failed")
-    check(result.get("jobs") == 870, "Unexpected job count")
-    check(result.get("failed_jobs") == 0, "Previous failures")
-    check(result.get("event_records") == 252600,
-          "Unexpected event record count")
-    check(manifest.get("execution") == "PASS",
-          "Previous manifest failed")
 
-    hashes = manifest.get("output_sha256", {})
-    expected_names = {
+def read_json(path):
+    with Path(path).open(
+        "r", encoding="utf-8-sig"
+    ) as f:
+        return json.load(f)
+
+
+def write_json(path, data):
+    path = Path(path)
+    path.parent.mkdir(
+        parents=True, exist_ok=True
+    )
+    temp = path.with_name(path.name + ".tmp")
+
+    with temp.open(
+        "w", encoding="utf-8"
+    ) as f:
+        json.dump(
+            data,
+            f,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+            allow_nan=False,
+        )
+        f.write("\n")
+
+    os.replace(temp, path)
+
+
+def write_csv(path, fields, rows):
+    path = Path(path)
+    path.parent.mkdir(
+        parents=True, exist_ok=True
+    )
+    temp = path.with_name(path.name + ".tmp")
+
+    with temp.open(
+        "w",
+        encoding="utf-8-sig",
+        newline="",
+    ) as f:
+        writer = csv.DictWriter(
+            f, fieldnames=fields
+        )
+        writer.writeheader()
+        writer.writerows(rows)
+
+    os.replace(temp, path)
+
+
+def utc_ns(value):
+    """Parse both timezone-aware and naive UTC strings."""
+    timestamp = pd.to_datetime(
+        value, utc=True, errors="raise"
+    )
+    require(
+        not pd.isna(timestamp),
+        "Invalid UTC timestamp",
+    )
+    return np.datetime64(
+        timestamp.tz_localize(None).to_datetime64(),
+        "ns",
+    )
+
+
+def utc_string(value):
+    return (
+        pd.Timestamp(value)
+        .tz_localize("UTC")
+        .isoformat()
+    )
+
+
+def verify_previous(root):
+    folder = (
+        root
+        / "data/reports/pattern_256_trigger_event_study"
+    )
+
+    names = [
+        "event_study_result.json",
+        "event_study_manifest.json",
+        "event_study_files.csv",
+        "event_study_events.csv",
+    ]
+
+    for name in names:
+        require(
+            (folder / name).is_file(),
+            f"Missing previous report: {name}",
+        )
+
+    result = read_json(
+        folder / "event_study_result.json"
+    )
+    manifest = read_json(
+        folder / "event_study_manifest.json"
+    )
+
+    require(
+        result.get("execution") == "PASS",
+        "Previous execution not PASS",
+    )
+    require(
+        result.get("jobs") == 870,
+        "Previous jobs not 870",
+    )
+    require(
+        result.get("completed_jobs") == 870,
+        "Previous jobs incomplete",
+    )
+    require(
+        result.get("failed_jobs") == 0,
+        "Previous jobs failed",
+    )
+    require(
+        result.get("event_records") == 252600,
+        "Previous event count changed",
+    )
+    require(
+        manifest.get("execution") == "PASS",
+        "Previous manifest not PASS",
+    )
+
+    hashes = manifest.get(
+        "output_sha256", {}
+    )
+
+    expected = {
         "event_study_result.json",
         "event_study_files.csv",
         "event_study_events.csv",
     }
-    check(set(hashes) == expected_names,
-          "Previous manifest output set differs")
 
-    for name, expected in hashes.items():
-        check(digest(folder / name) == expected.lower(),
-              f"Previous SHA256 mismatch: {name}")
+    require(
+        set(hashes) == expected,
+        "Previous manifest output mismatch",
+    )
+
+    for name in expected:
+        actual = sha256(folder / name)
+        require(
+            actual == str(hashes[name]).lower(),
+            f"Previous SHA256 mismatch: {name}",
+        )
 
     inventory = {}
-    with files_file.open(
-        "r", newline="", encoding="utf-8-sig"
+
+    with (
+        folder / "event_study_files.csv"
+    ).open(
+        "r",
+        encoding="utf-8-sig",
+        newline="",
     ) as f:
         for row in csv.DictReader(f):
-            key = (row["timeframe"], row["market"])
-            check(key not in inventory, f"Duplicate job: {key}")
-            check(row["status"] == "PASS",
-                  f"Previous job not PASS: {key}")
+            key = (
+                row["timeframe"],
+                row["market"],
+            )
+            require(
+                key not in inventory,
+                f"Duplicate previous job: {key}",
+            )
+            require(
+                row["status"] == "PASS",
+                f"Previous job failed: {key}",
+            )
             inventory[key] = row
 
-    check(len(inventory) == 870, "Incomplete inventory")
+    require(
+        len(inventory) == 870,
+        "Previous inventory incomplete",
+    )
 
-    return folder, inventory, digest(manifest_file)
+    return (
+        folder,
+        inventory,
+        sha256(
+            folder / "event_study_manifest.json"
+        ),
+    )
 
 
-def load_ohlcv(path, expected_market):
+def load_source(path, market):
     df = pd.read_csv(
         path,
         encoding="utf-8-sig",
         usecols=[
-            "market", "candle_date_time_utc",
-            "open", "high", "low",
+            "market",
+            "candle_date_time_utc",
+            "open",
+            "high",
+            "low",
         ],
         low_memory=False,
     )
 
-    check(len(df) > 0, f"Empty OHLCV: {path}")
-    check(
-        df["market"].astype(str).eq(expected_market).all(),
+    require(
+        len(df) > 0,
+        f"Empty source: {path}",
+    )
+    require(
+        df["market"].notna().all()
+        and df["market"].astype(str).eq(market).all(),
         f"Market mismatch: {path}",
     )
 
@@ -165,140 +317,252 @@ def load_ohlcv(path, expected_market):
         errors="coerce",
     )
 
-    check(timestamps.notna().all(), f"Invalid time: {path}")
-    check(timestamps.is_monotonic_increasing,
-          f"Unsorted time: {path}")
-    check(not timestamps.duplicated().any(),
-          f"Duplicate time: {path}")
+    require(
+        timestamps.notna().all(),
+        f"Invalid timestamps: {path}",
+    )
+    require(
+        timestamps.is_monotonic_increasing,
+        f"Unsorted timestamps: {path}",
+    )
+    require(
+        not timestamps.duplicated().any(),
+        f"Duplicate timestamps: {path}",
+    )
 
-    times = timestamps.to_numpy(dtype="datetime64[ns]")
+    times = timestamps.to_numpy(
+        dtype="datetime64[ns]"
+    )
+
     opens = pd.to_numeric(
         df["open"], errors="coerce"
-    ).to_numpy(float)
+    ).to_numpy(dtype=float)
+
     highs = pd.to_numeric(
         df["high"], errors="coerce"
-    ).to_numpy(float)
+    ).to_numpy(dtype=float)
+
     lows = pd.to_numeric(
         df["low"], errors="coerce"
-    ).to_numpy(float)
+    ).to_numpy(dtype=float)
 
-    check(
+    require(
         np.isfinite(opens).all()
         and np.isfinite(highs).all()
         and np.isfinite(lows).all()
         and (opens > 0).all()
         and (highs >= lows).all(),
-        f"Invalid prices: {path}",
+        f"Invalid OHLC prices: {path}",
     )
 
     return times, opens, highs
 
 
-def audit_event(row, times, opens, highs, step_hours):
-    step = np.timedelta64(step_hours, "h")
+def audit_event(
+    row,
+    times,
+    opens,
+    highs,
+    step_hours,
+):
+    step = np.timedelta64(
+        step_hours, "h"
+    )
     hour = np.timedelta64(1, "h")
 
-    entry_time = np.datetime64(
-        pd.Timestamp(row["entry_utc"], tz="UTC")
-        .tz_localize(None).to_datetime64(),
-        "ns",
+    signal_time = utc_ns(
+        row["signal_utc"]
     )
-    signal_time = np.datetime64(
-        pd.Timestamp(row["signal_utc"], tz="UTC")
-        .tz_localize(None).to_datetime64(),
-        "ns",
+    entry_time = utc_ns(
+        row["entry_utc"]
     )
 
-    horizon = int(row["horizon_hours"])
-    check(horizon in HORIZONS, "Unexpected horizon")
-    check(horizon % step_hours == 0,
-          "Horizon not divisible by timeframe")
+    horizon = int(
+        row["horizon_hours"]
+    )
 
-    index = int(np.searchsorted(times, entry_time))
-    check(index < len(times), "Entry missing")
-    check(times[index] == entry_time, "Entry timestamp mismatch")
-    check(entry_time - signal_time == step,
-          "Entry is not next regular candle")
+    require(
+        horizon in HORIZONS,
+        "Invalid horizon",
+    )
+    require(
+        horizon % step_hours == 0,
+        "Invalid timeframe/horizon",
+    )
+    require(
+        entry_time - signal_time == step,
+        "Entry is not next regular candle",
+    )
 
-    entry_price = float(row["entry_price"])
-    check(
+    entry_index = int(
+        np.searchsorted(times, entry_time)
+    )
+
+    require(
+        entry_index < len(times)
+        and times[entry_index] == entry_time,
+        "Entry candle not found",
+    )
+
+    entry_price = float(
+        row["entry_price"]
+    )
+
+    require(
+        np.isfinite(entry_price)
+        and entry_price > 0,
+        "Invalid entry price",
+    )
+    require(
         np.isclose(
-            opens[index], entry_price,
-            rtol=1e-10, atol=1e-10,
+            opens[entry_index],
+            entry_price,
+            rtol=1e-10,
+            atol=1e-10,
         ),
         "Entry price mismatch",
     )
 
-    expected = horizon // step_hours
-    deadline = entry_time + np.timedelta64(horizon, "h")
+    expected_count = (
+        horizon // step_hours
+    )
+
+    deadline = (
+        entry_time
+        + np.timedelta64(horizon, "h")
+    )
+
     last_open = deadline - step
 
-    right = int(np.searchsorted(
-        times, last_open, side="right"
-    ))
+    right = int(
+        np.searchsorted(
+            times,
+            last_open,
+            side="right",
+        )
+    )
 
-    observed_times = times[index:right]
-    observed_highs = highs[index:right]
+    observed_times = times[
+        entry_index:right
+    ]
+    observed_highs = highs[
+        entry_index:right
+    ]
 
-    check(len(observed_times) > 0, "Empty observation")
+    require(
+        len(observed_times) > 0,
+        "No observation candles",
+    )
+    require(
+        len(observed_times) <= expected_count,
+        "Unexpected excess candles",
+    )
 
-    # Identify first missing expected candle.
-    # The next expected candle after a valid prefix
-    # must be exactly one timeframe step later.
-    prefix_length = 0
-    first_gap = None
+    # Every observed candle must lie on the
+    # expected timeframe grid.
+    elapsed = (
+        observed_times - entry_time
+    ) / step
 
-    for j, actual_time in enumerate(observed_times):
-        expected_time = entry_time + j * step
-        if actual_time != expected_time:
-            first_gap = expected_time
-            break
-        prefix_length += 1
+    require(
+        np.all(
+            elapsed == np.floor(elapsed)
+        ),
+        "Off-grid candle timestamp",
+    )
 
-    if first_gap is None and prefix_length < expected:
-        first_gap = entry_time + prefix_length * step
+    # First continuous prefix from entry.
+    if len(observed_times) == 1:
+        prefix_count = 1
+    else:
+        differences = np.diff(
+            observed_times
+        )
+        broken = np.flatnonzero(
+            differences != step
+        )
 
-    complete = prefix_length == expected
+        prefix_count = (
+            int(broken[0]) + 1
+            if len(broken)
+            else len(observed_times)
+        )
 
-    # Hits before the first gap remain observable.
-    prefix_highs = observed_highs[:prefix_length]
+    contiguous = (
+        prefix_count == expected_count
+    )
+
+    first_gap = (
+        None
+        if contiguous
+        else (
+            entry_time
+            + prefix_count * step
+        )
+    )
+
+    prefix_highs = observed_highs[
+        :prefix_count
+    ]
+
     hit_indices = np.flatnonzero(
-        prefix_highs >= entry_price * TARGET_MULTIPLIER
+        prefix_highs
+        >= entry_price * TARGET
     )
 
     if len(hit_indices):
-        hit_index = int(hit_indices[0])
+        hit_index = int(
+            hit_indices[0]
+        )
+
         corrected = "HIT"
+
         hit_close = (
-            entry_time + (hit_index + 1) * step
+            entry_time
+            + (hit_index + 1) * step
         )
+
         hours_to_target = float(
-            (hit_close - entry_time) / hour
+            (hit_close - entry_time)
+            / hour
         )
-    elif complete:
+
+    elif contiguous:
         corrected = "MISS"
         hours_to_target = ""
-    elif first_gap is not None and first_gap <= times[-1]:
+
+    elif first_gap <= times[-1]:
         corrected = "GAP_CENSORED"
         hours_to_target = ""
+
     else:
         corrected = "END_CENSORED"
         hours_to_target = ""
 
-    original = row["outcome"]
+    original = str(
+        row["outcome"]
+    ).strip()
 
-    # Only a fully contiguous observation can confirm
-    # the original HIT/MISS classification without
-    # uncertainty from missing candles.
-    agrees = (
-        original == corrected
-        if complete else ""
+    require(
+        original in {
+            "HIT", "MISS", "CENSORED"
+        },
+        "Invalid original outcome",
     )
 
-    missing = expected - len(observed_times)
-    # Missing count from expected total is only a lower
-    # bound if extra irregular timestamps exist.
-    check(missing >= 0, "Unexpected excess candles")
+    # Compare classifications only where
+    # both are definitive.
+    if corrected in {"HIT", "MISS"}:
+        agrees = int(
+            corrected == original
+        )
+    else:
+        agrees = ""
+
+    missing_count = (
+        expected_count
+        - len(observed_times)
+    )
 
     return {
         "timeframe": row["timeframe"],
@@ -310,27 +574,231 @@ def audit_event(row, times, opens, highs, step_hours):
         "original_outcome": original,
         "corrected_outcome": corrected,
         "first_gap_utc": (
-            str(first_gap) if first_gap is not None else ""
+            utc_string(first_gap)
+            if first_gap is not None
+            else ""
         ),
         "hours_to_target": hours_to_target,
-        "observed_candles": len(observed_times),
-        "expected_candles": expected,
-        "missing_candles": missing,
-        "full_window_contiguous": int(complete),
+        "observed_candles": len(
+            observed_times
+        ),
+        "expected_candles": expected_count,
+        "missing_candles": missing_count,
+        "full_window_contiguous": int(
+            contiguous
+        ),
         "original_outcome_agrees": agrees,
     }
 
 
-def run(root):
-    root = root.resolve()
-    folder, inventory, previous_hash = previous_evidence(root)
+def checkpoint_path(folder, tf, market):
+    return (
+        folder
+        / f"{tf}_{market}.json"
+    )
 
-    events_path = folder / "event_study_events.csv"
-    output = root / "data/reports/pattern_256_event_gap_integrity"
-    output.mkdir(parents=True, exist_ok=True)
+
+def read_checkpoint(
+    path,
+    tf,
+    market,
+    source_hash,
+    previous_hash,
+    script_hash,
+    expected_count,
+):
+    if not path.is_file():
+        return None
+
+    try:
+        wrapper = read_json(path)
+        payload = wrapper["payload"]
+
+        require(
+            wrapper.get("payload_sha256")
+            == canonical_hash(payload),
+            "Checkpoint payload hash mismatch",
+        )
+
+        required = {
+            "version": VERSION,
+            "timeframe": tf,
+            "market": market,
+            "source_sha256": source_hash,
+            "previous_manifest_sha256": previous_hash,
+            "script_sha256": script_hash,
+            "status": "PASS",
+        }
+
+        for key, value in required.items():
+            require(
+                payload.get(key) == value,
+                f"Checkpoint field mismatch: {key}",
+            )
+
+        rows = payload["rows"]
+
+        require(
+            isinstance(rows, list),
+            "Invalid checkpoint rows",
+        )
+        require(
+            len(rows) == expected_count,
+            "Checkpoint row count mismatch",
+        )
+        require(
+            all(
+                set(EVENT_FIELDS).issubset(r)
+                for r in rows
+            ),
+            "Checkpoint schema mismatch",
+        )
+
+        return rows
+
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        RuntimeError,
+    ):
+        return None
+
+
+def save_checkpoint(
+    path,
+    tf,
+    market,
+    source_hash,
+    previous_hash,
+    script_hash,
+    rows,
+):
+    payload = {
+        "version": VERSION,
+        "timeframe": tf,
+        "market": market,
+        "source_sha256": source_hash,
+        "previous_manifest_sha256": previous_hash,
+        "script_sha256": script_hash,
+        "status": "PASS",
+        "rows": rows,
+    }
+
+    write_json(
+        path,
+        {
+            "payload": payload,
+            "payload_sha256": canonical_hash(
+                payload
+            ),
+        },
+    )
+
+
+def build_summary(rows):
+    groups = defaultdict(list)
+
+    for row in rows:
+        key = (
+            row["timeframe"],
+            row["period"],
+            int(row["horizon_hours"]),
+        )
+        groups[key].append(row)
+
+    result = []
+
+    for key, items in sorted(
+        groups.items()
+    ):
+        tf, period, horizon = key
+
+        def count_outcome(name):
+            return sum(
+                r["corrected_outcome"] == name
+                for r in items
+            )
+
+        hits = count_outcome("HIT")
+        misses = count_outcome("MISS")
+        gap = count_outcome(
+            "GAP_CENSORED"
+        )
+        end = count_outcome(
+            "END_CENSORED"
+        )
+
+        original_hits = sum(
+            r["original_outcome"] == "HIT"
+            for r in items
+        )
+
+        original_misses = sum(
+            r["original_outcome"] == "MISS"
+            for r in items
+        )
+
+        disagreements = sum(
+            r["original_outcome_agrees"] == 0
+            for r in items
+        )
+
+        known = hits + misses
+        old_known = (
+            original_hits
+            + original_misses
+        )
+
+        result.append({
+            "timeframe": tf,
+            "period": period,
+            "horizon_hours": horizon,
+            "events": len(items),
+            "confirmed_hits": hits,
+            "confirmed_misses": misses,
+            "gap_censored": gap,
+            "end_censored": end,
+            "confirmed_hit_rate_pct": (
+                round(
+                    hits / known * 100,
+                    4,
+                )
+                if known else ""
+            ),
+            "original_hit_rate_pct": (
+                round(
+                    original_hits
+                    / old_known * 100,
+                    4,
+                )
+                if old_known else ""
+            ),
+            "original_outcome_disagreements": disagreements,
+        })
+
+    return result
+
+
+def run(root, force=False):
+    root = Path(root).resolve()
+
+    previous_folder, inventory, previous_hash = (
+        verify_previous(root)
+    )
+
+    script_hash = sha256(
+        Path(__file__).resolve()
+    )
+
+    events_file = (
+        previous_folder
+        / "event_study_events.csv"
+    )
 
     events = pd.read_csv(
-        events_path,
+        events_file,
         encoding="utf-8-sig",
         dtype={
             "timeframe": str,
@@ -343,167 +811,258 @@ def run(root):
         low_memory=False,
     )
 
-    check(len(events) == 252600, "Event count changed")
+    require(
+        len(events) == 252600,
+        "Unexpected event count",
+    )
 
-    expected_columns = {
-        "timeframe", "market", "period", "signal_utc",
-        "entry_utc", "entry_price", "horizon_hours",
+    required_columns = {
+        "timeframe",
+        "market",
+        "period",
+        "signal_utc",
+        "entry_utc",
+        "entry_price",
+        "horizon_hours",
         "outcome",
     }
-    check(
-        expected_columns.issubset(events.columns),
-        "Missing event columns",
+
+    require(
+        required_columns.issubset(
+            events.columns
+        ),
+        "Event CSV schema mismatch",
     )
 
-    grouped = events.groupby(
-        ["timeframe", "market"], sort=True
+    grouped = {
+        key: group
+        for key, group in events.groupby(
+            ["timeframe", "market"],
+            sort=True,
+        )
+    }
+
+    require(
+        set(grouped).issubset(
+            set(inventory)
+        ),
+        "Unknown market/timeframe",
     )
-    check(len(grouped) == 870, "Incomplete event coverage")
+
+    output = (
+        root
+        / "data/reports/pattern_256_event_gap_integrity"
+    )
+
+    checkpoints = (
+        output / "checkpoints"
+    )
+
+    checkpoints.mkdir(
+        parents=True, exist_ok=True
+    )
 
     output_rows = []
     errors = []
+    executed = 0
+    resumed = 0
     completed = 0
 
-    for (tf, market), group in grouped:
+    jobs = sorted(inventory)
+
+    for index, (tf, market) in enumerate(
+        jobs, 1
+    ):
         try:
-            check(tf in STEPS, f"Unknown timeframe: {tf}")
-            key = (tf, market)
-            check(key in inventory, f"Unknown job: {key}")
-
-            source = (
-                root / "data/ohlcv" / tf / f"{market}.csv"
-            )
-            check(source.is_file(), f"Missing OHLCV: {source}")
-
-            before = digest(source)
-            check(
-                before == inventory[key]["ohlcv_sha256"],
-                f"Source hash changed: {tf}/{market}",
+            require(
+                tf in STEPS,
+                f"Unknown timeframe: {tf}",
             )
 
-            times, opens, highs = load_ohlcv(
-                source, market
+            previous = inventory[
+                (tf, market)
+            ]
+
+            group = grouped.get(
+                (tf, market)
             )
 
-            check(
-                len(times) == int(inventory[key]["signal_rows"]),
-                f"Row count changed: {tf}/{market}",
+            expected_count = int(
+                previous["event_records"]
             )
 
-            # Every selected event has one record per horizon.
-            check(
-                len(group) == (
-                    int(inventory[key]["selected_events"]) * 3
-                ),
-                f"Event count mismatch: {tf}/{market}",
-            )
-
-            unique_events = group[
-                ["signal_utc", "entry_utc"]
-            ].drop_duplicates()
-
-            check(
-                len(unique_events) == int(
-                    inventory[key]["selected_events"]
-                ),
-                f"Duplicate event structure: {tf}/{market}",
-            )
-
-            for _, row in group.iterrows():
-                output_rows.append(
-                    audit_event(
-                        row, times, opens, highs, STEPS[tf]
-                    )
+            if group is None:
+                require(
+                    expected_count == 0,
+                    "Missing event group",
+                )
+                group_rows = []
+            else:
+                group_rows = group.to_dict(
+                    orient="records"
                 )
 
-            check(
-                digest(source) == before,
-                f"Source changed during audit: {tf}/{market}",
+            require(
+                len(group_rows)
+                == expected_count,
+                "Event count mismatch",
+            )
+
+            source = (
+                root
+                / "data/ohlcv"
+                / tf
+                / f"{market}.csv"
+            )
+
+            require(
+                source.is_file(),
+                f"Missing source: {source}",
+            )
+
+            source_hash = sha256(
+                source
+            )
+
+            require(
+                source_hash
+                == previous["ohlcv_sha256"],
+                "Source changed since event study",
+            )
+
+            cp = checkpoint_path(
+                checkpoints,
+                tf,
+                market,
+            )
+
+            cached = None
+
+            if not force:
+                cached = read_checkpoint(
+                    cp,
+                    tf,
+                    market,
+                    source_hash,
+                    previous_hash,
+                    script_hash,
+                    expected_count,
+                )
+
+            if cached is not None:
+                corrected_rows = cached
+                resumed += 1
+
+            else:
+                corrected_rows = []
+
+                if group_rows:
+                    times, opens, highs = (
+                        load_source(
+                            source, market
+                        )
+                    )
+
+                    require(
+                        len(times)
+                        == int(
+                            previous["signal_rows"]
+                        ),
+                        "Source row count changed",
+                    )
+
+                    for row in group_rows:
+                        corrected_rows.append(
+                            audit_event(
+                                row,
+                                times,
+                                opens,
+                                highs,
+                                STEPS[tf],
+                            )
+                        )
+
+                require(
+                    sha256(source)
+                    == source_hash,
+                    "Source changed during audit",
+                )
+
+                save_checkpoint(
+                    cp,
+                    tf,
+                    market,
+                    source_hash,
+                    previous_hash,
+                    script_hash,
+                    corrected_rows,
+                )
+
+                executed += 1
+
+            output_rows.extend(
+                corrected_rows
             )
 
             completed += 1
 
         except Exception as exc:
-            message = f"{tf}/{market}: {type(exc).__name__}: {exc}"
-            errors.append(message)
-            print("[FAIL]", message, flush=True)
+            message = (
+                f"{tf}/{market}: "
+                f"{type(exc).__name__}: {exc}"
+            )
 
-        if completed % 25 == 0 and completed > 0:
+            errors.append(message)
+
             print(
-                f"[PROGRESS] completed={completed}/870 "
+                f"[FAIL] {message}",
+                flush=True,
+            )
+
+        if (
+            index % 25 == 0
+            or index == len(jobs)
+        ):
+            print(
+                f"[PROGRESS] "
+                f"{index}/{len(jobs)} "
+                f"completed={completed} "
+                f"executed={executed} "
+                f"resumed={resumed} "
                 f"errors={len(errors)}",
                 flush=True,
             )
 
-    # Prevent incomplete results from being accepted.
     success = (
         completed == 870
         and not errors
-        and len(output_rows) == len(events)
+        and len(output_rows) == 252600
     )
 
-    aggregates = defaultdict(list)
-    for row in output_rows:
-        key = (
-            row["timeframe"],
-            row["period"],
-            row["horizon_hours"],
-        )
-        aggregates[key].append(row)
+    summary = build_summary(
+        output_rows
+    )
 
-    summary = []
-    for (tf, period, horizon), rows in sorted(
-        aggregates.items()
-    ):
-        hits = sum(
-            r["corrected_outcome"] == "HIT" for r in rows
-        )
-        misses = sum(
-            r["corrected_outcome"] == "MISS" for r in rows
-        )
-        gap = sum(
-            r["corrected_outcome"] == "GAP_CENSORED"
-            for r in rows
-        )
-        end = sum(
-            r["corrected_outcome"] == "END_CENSORED"
-            for r in rows
+    def outcome_count(name):
+        return sum(
+            r["corrected_outcome"] == name
+            for r in output_rows
         )
 
-        old_hits = sum(
-            r["original_outcome"] == "HIT" for r in rows
-        )
-        old_misses = sum(
-            r["original_outcome"] == "MISS" for r in rows
-        )
+    hits = outcome_count("HIT")
+    misses = outcome_count("MISS")
+    gap = outcome_count(
+        "GAP_CENSORED"
+    )
+    end = outcome_count(
+        "END_CENSORED"
+    )
 
-        known = hits + misses
-        old_known = old_hits + old_misses
-
-        disagreements = sum(
-            r["original_outcome_agrees"] is False
-            for r in rows
-        )
-
-        summary.append({
-            "timeframe": tf,
-            "period": period,
-            "horizon_hours": horizon,
-            "events": len(rows),
-            "confirmed_hits": hits,
-            "confirmed_misses": misses,
-            "gap_censored": gap,
-            "end_censored": end,
-            "confirmed_hit_rate_pct": (
-                round(100 * hits / known, 4)
-                if known else ""
-            ),
-            "original_hit_rate_pct": (
-                round(100 * old_hits / old_known, 4)
-                if old_known else ""
-            ),
-            "original_outcome_disagreements": disagreements,
-        })
+    require(
+        hits + misses + gap + end
+        == len(output_rows),
+        "Outcome totals inconsistent",
+    )
 
     result = {
         "audit": "pattern_256_event_gap_integrity",
@@ -511,27 +1070,27 @@ def run(root):
         "created_utc": datetime.now(
             timezone.utc
         ).isoformat(),
-        "execution": "PASS" if success else "REVIEW_REQUIRED",
-        "jobs": len(grouped),
+        "execution": (
+            "PASS"
+            if success
+            else "REVIEW_REQUIRED"
+        ),
+        "jobs": 870,
         "completed_jobs": completed,
+        "executed_jobs": executed,
+        "resumed_jobs": resumed,
         "failed_jobs": len(errors),
         "errors": errors[:100],
         "original_event_records": len(events),
-        "audited_event_records": len(output_rows),
-        "confirmed_hits": sum(
-            r["corrected_outcome"] == "HIT"
-            for r in output_rows
+        "audited_event_records": len(
+            output_rows
         ),
-        "confirmed_misses": sum(
-            r["corrected_outcome"] == "MISS"
-            for r in output_rows
-        ),
-        "gap_censored": sum(
-            r["corrected_outcome"] == "GAP_CENSORED"
-            for r in output_rows
-        ),
-        "end_censored": sum(
-            r["corrected_outcome"] == "END_CENSORED"
+        "confirmed_hits": hits,
+        "confirmed_misses": misses,
+        "gap_censored": gap,
+        "end_censored": end,
+        "original_outcome_disagreements": sum(
+            r["original_outcome_agrees"] == 0
             for r in output_rows
         ),
         "summary": summary,
@@ -543,66 +1102,132 @@ def run(root):
         "live_trading_approved": False,
         "research_decision": "HOLD",
         "limitations": [
-            "Historical study, not independent OOS.",
-            "Gap-censored events are not confirmed misses.",
-            "Intracandle target touches are not executable trades.",
-            "Timeframe and market event dependence remains.",
-            "Source data cannot reveal unrecorded price paths.",
-            "No fees, spread, slippage or liquidity modeling.",
+            "Retrospective research, not independent OOS.",
+            "Missing candles may reflect no trading or data gaps.",
+            "Gap-censored observations are not confirmed misses.",
+            "High-price touches are not verified trade fills.",
+            "No fees, spread, slippage or liquidity model.",
+            "Market and timeframe dependence remains.",
+            "Upstream feature causality is not independently proven.",
         ],
     }
 
-    details_file = output / "gap_integrity_events.csv"
-    summary_file = output / "gap_integrity_summary.csv"
-    result_file = output / "gap_integrity_result.json"
-    manifest_file = output / "gap_integrity_manifest.json"
+    details_file = (
+        output / "gap_integrity_events.csv"
+    )
+    summary_file = (
+        output / "gap_integrity_summary.csv"
+    )
+    result_file = (
+        output / "gap_integrity_result.json"
+    )
+    manifest_file = (
+        output / "gap_integrity_manifest.json"
+    )
 
-    save_csv(details_file, OUTPUT_COLUMNS, output_rows)
-    save_csv(summary_file, SUMMARY_COLUMNS, summary)
-    save_json(result_file, result)
+    write_csv(
+        details_file,
+        EVENT_FIELDS,
+        output_rows,
+    )
 
-    save_json(manifest_file, {
-        "audit": result["audit"],
-        "version": VERSION,
-        "execution": result["execution"],
-        "script_sha256": digest(
-            Path(__file__).resolve()
-        ),
-        "previous_manifest_sha256": previous_hash,
-        "output_sha256": {
-            details_file.name: digest(details_file),
-            summary_file.name: digest(summary_file),
-            result_file.name: digest(result_file),
+    write_csv(
+        summary_file,
+        SUMMARY_FIELDS,
+        summary,
+    )
+
+    write_json(
+        result_file,
+        result,
+    )
+
+    write_json(
+        manifest_file,
+        {
+            "audit": result["audit"],
+            "version": VERSION,
+            "execution": result["execution"],
+            "script_sha256": script_hash,
+            "previous_manifest_sha256": previous_hash,
+            "output_sha256": {
+                details_file.name: sha256(
+                    details_file
+                ),
+                summary_file.name: sha256(
+                    summary_file
+                ),
+                result_file.name: sha256(
+                    result_file
+                ),
+            },
         },
-    })
+    )
 
-    print(json.dumps({
-        "execution": result["execution"],
-        "completed_jobs": completed,
-        "audited_events": len(output_rows),
-        "confirmed_hits": result["confirmed_hits"],
-        "confirmed_misses": result["confirmed_misses"],
-        "gap_censored": result["gap_censored"],
-        "end_censored": result["end_censored"],
-        "research_decision": "HOLD",
-    }, ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            {
+                "execution": result["execution"],
+                "jobs": result["jobs"],
+                "completed": completed,
+                "executed": executed,
+                "resumed": resumed,
+                "failed": len(errors),
+                "audited_events": len(
+                    output_rows
+                ),
+                "confirmed_hits": hits,
+                "confirmed_misses": misses,
+                "gap_censored": gap,
+                "end_censored": end,
+                "research_decision": "HOLD",
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        flush=True,
+    )
 
     return 0 if success else 1
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--root", default=".")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Pattern 256 event gap integrity audit"
+        )
+    )
+
+    parser.add_argument(
+        "--root",
+        default=".",
+    )
+
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Ignore existing checkpoints",
+    )
+
     args = parser.parse_args()
 
     try:
-        return run(Path(args.root))
+        return run(
+            Path(args.root),
+            force=args.force,
+        )
+
     except KeyboardInterrupt:
-        print("[STOP] Interrupted", file=sys.stderr)
+        print(
+            "[STOP] Interrupted",
+            file=sys.stderr,
+        )
         return 130
+
     except Exception as exc:
         print(
-            f"[FAIL] {type(exc).__name__}: {exc}",
+            f"[FAIL] "
+            f"{type(exc).__name__}: {exc}",
             file=sys.stderr,
         )
         return 1
