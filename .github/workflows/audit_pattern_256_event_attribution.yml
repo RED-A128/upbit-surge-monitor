@@ -38,7 +38,7 @@ jobs:
             "audit_pattern_256_event_attribution.py"
 
           if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
-            throw "Missing audit Python script: $script"
+            throw "Audit script missing: $script"
           }
 
           $sources = @(
@@ -53,47 +53,47 @@ jobs:
               throw "Missing source: $path"
             }
 
-            $file = Get-Item -LiteralPath $path
+            $item = Get-Item -LiteralPath $path
 
-            Write-Host "[SOURCE] $relative"
-            Write-Host "Bytes: $($file.Length)"
+            Write-Host "[OK] $relative"
+            Write-Host "Bytes: $($item.Length)"
           }
 
           & py --version
 
           if ($LASTEXITCODE -ne 0) {
-            throw "Python is unavailable"
+            throw "Python unavailable"
           }
 
           & py -c "import ast,pathlib,sys; ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8-sig'))" $script
 
           if ($LASTEXITCODE -ne 0) {
-            throw "Python syntax check failed"
+            throw "Python syntax verification failed"
           }
 
-          Write-Host "[PASS] Environment verified"
+          Write-Host "[PASS] Environment"
 
       - name: Prepare isolated output
         run: |
           $ErrorActionPreference = "Stop"
 
-          $output = Join-Path $env:RUNNER_TEMP `
-            "pattern256_attribution_${env:GITHUB_RUN_ID}_${env:GITHUB_RUN_ATTEMPT}"
+          $folder = "pattern256_attribution_v002_${env:GITHUB_RUN_ID}_${env:GITHUB_RUN_ATTEMPT}"
+
+          $output = Join-Path $env:RUNNER_TEMP $folder
 
           if (Test-Path -LiteralPath $output) {
-            throw "Run output directory already exists: $output"
+            throw "Output directory already exists"
           }
 
-          New-Item -ItemType Directory `
-            -Path $output | Out-Null
+          New-Item -ItemType Directory -Path $output |
+            Out-Null
 
           "ATTRIBUTION_OUTPUT=$output" |
-            Out-File $env:GITHUB_ENV `
-              -Append -Encoding utf8
+            Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
-          Write-Host "Output: $output"
+          Write-Host "[OK] Isolated output prepared"
 
-      - name: Execute event attribution
+      - name: Execute horizon-aware attribution
         id: audit
         continue-on-error: true
         run: |
@@ -108,12 +108,10 @@ jobs:
             --max-issues 100
 
           if ($LASTEXITCODE -ne 0) {
-            throw "Event attribution execution failed"
+            throw "Horizon-aware audit failed"
           }
 
-          Write-Host "[PASS] Audit execution"
-
-      - name: Verify results and SHA256
+      - name: Verify output and SHA256
         id: verify
         if: always()
         continue-on-error: true
@@ -121,49 +119,47 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           if ("${{ steps.audit.outcome }}" -ne "success") {
-            throw "Audit execution failed"
+            throw "Python execution did not succeed"
           }
 
           $out = $env:ATTRIBUTION_OUTPUT
 
           $resultPath = Join-Path $out `
-            "attribution_result.json"
+            "attribution_v002_result.json"
 
           $manifestPath = Join-Path $out `
-            "attribution_manifest.json"
+            "attribution_v002_manifest.json"
 
-          $summaryPath = Join-Path $out `
-            "attribution_timeframes.csv"
+          $names = @(
+            "attribution_v002_result.json",
+            "attribution_v002_timeframes.csv",
+            "attribution_v002_period_pairs.csv",
+            "attribution_v002_issues.csv"
+          )
 
-          $issuesPath = Join-Path $out `
-            "attribution_issues.csv"
+          foreach ($name in ($names + @(
+            "attribution_v002_manifest.json"
+          ))) {
+            $path = Join-Path $out $name
 
-          foreach ($path in @(
-            $resultPath,
-            $manifestPath,
-            $summaryPath,
-            $issuesPath
-          )) {
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-              throw "Missing report: $path"
+              throw "Missing report: $name"
             }
           }
 
-          $result = Get-Content `
-            -LiteralPath $resultPath -Raw |
-            ConvertFrom-Json
+          $result = Get-Content -LiteralPath $resultPath `
+            -Raw | ConvertFrom-Json
 
-          $manifest = Get-Content `
-            -LiteralPath $manifestPath -Raw |
-            ConvertFrom-Json
+          $manifest = Get-Content -LiteralPath $manifestPath `
+            -Raw | ConvertFrom-Json
 
           if ($result.execution -ne "PASS" -or
               $manifest.execution -ne "PASS") {
             throw "Execution status mismatch"
           }
 
-          if ($result.version -ne "Clean V001" -or
-              $manifest.version -ne "Clean V001") {
+          if ($result.version -ne "Clean V002" -or
+              $manifest.version -ne "Clean V002") {
             throw "Version mismatch"
           }
 
@@ -184,16 +180,12 @@ jobs:
           ).Hash.ToLowerInvariant()
 
           if ($scriptHash -ne (
-              [string]$manifest.script_sha256
-            ).ToLowerInvariant()) {
+            [string]$manifest.script_sha256
+          ).ToLowerInvariant()) {
             throw "Script SHA256 mismatch"
           }
 
-          foreach ($name in @(
-            "attribution_result.json",
-            "attribution_timeframes.csv",
-            "attribution_issues.csv"
-          )) {
+          foreach ($name in $names) {
             $path = Join-Path $out $name
 
             $actual = (
@@ -210,11 +202,11 @@ jobs:
           }
 
           foreach ($source in @(
-            $result.sources.gap_integrity,
-            $result.sources.independent_detail
+            $result.sources.gap,
+            $result.sources.independent
           )) {
             $relative = (
-              [string]$source.relative_path
+              [string]$source.path
             ).Replace("/", "\")
 
             $path = Join-Path $env:DATA_ROOT $relative
@@ -232,22 +224,25 @@ jobs:
             }
           }
 
-          $rows = @(Import-Csv -LiteralPath $summaryPath)
+          $tfPath = Join-Path $out `
+            "attribution_v002_timeframes.csv"
+
+          $rows = @(Import-Csv -LiteralPath $tfPath)
 
           if ($rows.Count -ne 3) {
-            throw "Timeframe summary row count mismatch"
+            throw "Expected three timeframe rows"
           }
 
-          $timeframes = @(
+          $actualTF = @(
             $rows | ForEach-Object { $_.timeframe } |
               Sort-Object
-          )
+          ) -join ","
 
-          if (($timeframes -join ",") -ne "d1,h1,h4") {
-            throw "Unexpected timeframe summary"
+          if ($actualTF -ne "d1,h1,h4") {
+            throw "Unexpected timeframe values"
           }
 
-          Write-Host "[PASS] Report and SHA256 verification"
+          Write-Host "[PASS] SHA256 and report verification"
 
       - name: Publish summary
         if: always()
@@ -256,68 +251,74 @@ jobs:
           $verify = "${{ steps.verify.outcome }}"
 
           @"
-          ## Pattern 256 Event-Level Attribution
+          ## Pattern 256 Horizon-Aware Attribution
 
           | Check | Result |
           |---|---|
-          | Version | Clean V001 |
-          | Python execution | $audit |
-          | SHA256 verification | $verify |
+          | Version | Clean V002 |
+          | Execution | $audit |
+          | Verification | $verify |
           | Research decision | HOLD |
 
           "@ | Out-File $env:GITHUB_STEP_SUMMARY `
             -Append -Encoding utf8
 
-          if ($audit -ne "success" -or $verify -ne "success") {
-            "Audit failed. Inspect logs and diagnostic artifact." |
+          if ($audit -ne "success" -or
+              $verify -ne "success") {
+            "Audit failed; inspect execution logs." |
               Out-File $env:GITHUB_STEP_SUMMARY `
                 -Append -Encoding utf8
-
             exit 0
           }
 
-          $resultPath = Join-Path $env:ATTRIBUTION_OUTPUT `
-            "attribution_result.json"
+          $path = Join-Path $env:ATTRIBUTION_OUTPUT `
+            "attribution_v002_result.json"
 
-          $result = Get-Content `
-            -LiteralPath $resultPath -Raw |
-            ConvertFrom-Json
+          $result = Get-Content -LiteralPath $path `
+            -Raw | ConvertFrom-Json
 
-          $totals = $result.totals
+          $t = $result.totals
 
           @"
-          ### Event matching results
+          ### Horizon-aware matching
 
           | Check | Count |
           |---|---:|
-          | Gap unique events | $($totals.gap_unique_events) |
-          | Independent unique events | $($totals.independent_unique_events) |
-          | Matched events | $($totals.matched_events) |
-          | Unmatched gap events | $($totals.unmatched_gap_events) |
-          | Unmatched independent events | $($totals.unmatched_independent_events) |
-          | Ambiguous duplicate matches | $($totals.ambiguous_duplicate_matches) |
-          | Period mismatches | $($totals.period_mismatches) |
-          | Original status mismatches | $($totals.original_status_mismatches) |
-          | Corrected status differences | $($totals.corrected_status_differences) |
-          | Hit flag mismatches | $($totals.hit_flag_mismatches) |
+          | Gap unique keys | $($t.gap_unique_keys) |
+          | Independent unique keys | $($t.independent_unique_keys) |
+          | Base identity overlap | $($t.base_identity_overlap) |
+          | Exact horizon matches | $($t.exact_horizon_matches) |
+          | Comparable matches | $($t.comparable_matches) |
+          | Unmatched gap keys | $($t.unmatched_gap_keys) |
+          | Unmatched independent keys | $($t.unmatched_independent_keys) |
+          | Gap duplicate keys | $($t.gap_duplicate_keys) |
+          | Independent duplicate keys | $($t.independent_duplicate_keys) |
+          | Conflicting duplicate matches | $($t.conflicting_duplicate_matches) |
+          | Different period labels | $($t.different_period_labels) |
+          | Original status differences | $($t.original_status_differences) |
+          | Corrected status differences | $($t.corrected_status_differences) |
+          | Hit flag differences | $($t.hit_flag_differences) |
 
-          ### Important limitations
+          ### Interpretation
 
-          - Audit PASS does not prove event attribution.
-          - Corrected outcomes may intentionally differ from original outcomes.
-          - Duplicate event keys are not resolved.
-          - Independent OOS and executable profitability remain unverified.
-          - Research decision remains HOLD.
+          - Horizons are matched numerically without unit conversion.
+          - Different period labels are reported separately.
+          - Conflicting duplicate keys are not trusted.
+          - PASS means the diagnostic audit completed.
+          - Event-level attribution and independent OOS remain unproven.
+          - Research decision: HOLD.
 
           "@ | Out-File $env:GITHUB_STEP_SUMMARY `
             -Append -Encoding utf8
 
-      - name: Upload attribution reports
+      - name: Upload audit reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pattern-256-event-attribution-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/pattern256_attribution_${{ github.run_id }}_${{ github.run_attempt }}/
+          name: pattern256-attribution-v002-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/pattern256_attribution_v002_${{ github.run_id }}_${{ github.run_attempt }}/attribution_v002_*.json
+            ${{ runner.temp }}/pattern256_attribution_v002_${{ github.run_id }}_${{ github.run_attempt }}/attribution_v002_*.csv
           if-no-files-found: warn
           retention-days: 30
 
@@ -325,12 +326,12 @@ jobs:
         if: always()
         run: |
           if ("${{ steps.audit.outcome }}" -ne "success") {
-            throw "Event attribution Python execution failed"
+            throw "Attribution audit execution failed"
           }
 
           if ("${{ steps.verify.outcome }}" -ne "success") {
-            throw "Event attribution SHA256 verification failed"
+            throw "Attribution audit verification failed"
           }
 
-          Write-Host "[PASS] Event attribution audit completed"
+          Write-Host "[PASS] Clean V002 completed"
           Write-Host "Research decision: HOLD"
