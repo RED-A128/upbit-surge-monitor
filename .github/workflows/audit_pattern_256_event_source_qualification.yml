@@ -1,0 +1,315 @@
+
+name: audit_pattern_256_event_source_qualification.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern-256-event-source-qualification
+  cancel-in-progress: false
+
+jobs:
+  event-source-qualification:
+    name: event-source-qualification
+    runs-on:
+      - self-hosted
+      - Windows
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      DATA_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+      INVENTORY_REL: 'data\reports\pattern_256_event_source_inventory\inventory_files.csv'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_event_source_qualification.py"
+
+          $inventory = Join-Path $env:DATA_ROOT `
+            $env:INVENTORY_REL
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Missing Python script: $script"
+          }
+
+          if (-not (Test-Path -LiteralPath $inventory -PathType Leaf)) {
+            throw "Missing inventory CSV: $inventory"
+          }
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          & py -c "import ast,pathlib,sys; ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8-sig'))" $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax check failed"
+          }
+
+          Write-Host "[PASS] Environment"
+
+      - name: Prepare isolated output
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $out = Join-Path $env:RUNNER_TEMP `
+            "pattern256_qualification_$env:GITHUB_RUN_ID"
+
+          New-Item -ItemType Directory `
+            -Path $out -Force | Out-Null
+
+          "QUAL_OUTPUT=$out" |
+            Out-File $env:GITHUB_ENV `
+              -Append -Encoding utf8
+
+          Write-Host "Output: $out"
+
+      - name: Execute source qualification
+        id: audit
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_event_source_qualification.py"
+
+          $inventory = Join-Path $env:DATA_ROOT `
+            $env:INVENTORY_REL
+
+          & py -u $script `
+            --root $env:DATA_ROOT `
+            --inventory $inventory `
+            --output $env:QUAL_OUTPUT `
+            --sample-rows 2000
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Qualification Python execution failed"
+          }
+
+          Write-Host "[PASS] Qualification execution"
+
+      - name: Verify output and SHA256
+        id: verify
+        if: always()
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "Python execution did not succeed"
+          }
+
+          $out = $env:QUAL_OUTPUT
+
+          $resultPath = Join-Path $out `
+            "qualification_result.json"
+
+          $manifestPath = Join-Path $out `
+            "qualification_manifest.json"
+
+          $csvPath = Join-Path $out `
+            "qualification_sources.csv"
+
+          foreach ($path in @(
+            $resultPath,
+            $manifestPath,
+            $csvPath
+          )) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing output: $path"
+            }
+          }
+
+          $result = Get-Content `
+            -LiteralPath $resultPath -Raw |
+            ConvertFrom-Json
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath -Raw |
+            ConvertFrom-Json
+
+          if ($result.execution -ne "PASS" -or
+              $manifest.execution -ne "PASS") {
+            throw "Execution result mismatch"
+          }
+
+          if ($result.version -ne "Clean V001" -or
+              $manifest.version -ne "Clean V001") {
+            throw "Version mismatch"
+          }
+
+          if ([int]$result.target_count -ne 5 -or
+              [int]$result.qualified_files -ne 5) {
+            throw "Qualification target count mismatch"
+          }
+
+          if ($result.research_decision -ne "HOLD" -or
+              $result.event_level_attribution_proven -ne $false -or
+              $result.independent_oos_proven -ne $false -or
+              $result.train_approved -ne $false -or
+              $result.live_trading_approved -ne $false) {
+            throw "Research safety gate failed"
+          }
+
+          $script = Join-Path $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_event_source_qualification.py"
+
+          $actualScriptHash = (
+            Get-FileHash -LiteralPath $script -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if ($actualScriptHash -ne (
+              [string]$manifest.script_sha256
+            ).ToLowerInvariant()) {
+            throw "Script SHA256 mismatch"
+          }
+
+          $inventory = Join-Path $env:DATA_ROOT `
+            $env:INVENTORY_REL
+
+          $inventoryHash = (
+            Get-FileHash -LiteralPath $inventory -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if ($inventoryHash -ne (
+              [string]$result.inventory_csv_sha256
+            ).ToLowerInvariant()) {
+            throw "Inventory SHA256 mismatch"
+          }
+
+          foreach ($name in @(
+            "qualification_result.json",
+            "qualification_sources.csv"
+          )) {
+            $path = Join-Path $out $name
+
+            $actual = (
+              Get-FileHash -LiteralPath $path -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            $expected = (
+              [string]$manifest.output_sha256.$name
+            ).ToLowerInvariant()
+
+            if ($actual -ne $expected) {
+              throw "Output SHA256 mismatch: $name"
+            }
+          }
+
+          $rows = @(Import-Csv -LiteralPath $csvPath)
+
+          if ($rows.Count -ne 5) {
+            throw "Qualification CSV row count mismatch"
+          }
+
+          Write-Host "[PASS] Output and SHA256"
+
+      - name: Publish summary
+        if: always()
+        run: |
+          $audit = "${{ steps.audit.outcome }}"
+          $verify = "${{ steps.verify.outcome }}"
+
+          @"
+          ## Pattern 256 Event Source Qualification
+
+          | Check | Result |
+          |---|---|
+          | Version | Clean V001 |
+          | Execution | $audit |
+          | Verification | $verify |
+          | Research decision | HOLD |
+
+          "@ | Out-File $env:GITHUB_STEP_SUMMARY `
+            -Append -Encoding utf8
+
+          if ($audit -ne "success" -or $verify -ne "success") {
+            "Qualification failed. Inspect job logs and artifact." |
+              Out-File $env:GITHUB_STEP_SUMMARY `
+                -Append -Encoding utf8
+
+            exit 0
+          }
+
+          $resultPath = Join-Path $env:QUAL_OUTPUT `
+            "qualification_result.json"
+
+          $result = Get-Content `
+            -LiteralPath $resultPath -Raw |
+            ConvertFrom-Json
+
+          @"
+          ### Source qualification
+
+          | Check | Result |
+          |---|---|
+          | Targets | $($result.target_count) |
+          | Qualified files | $($result.qualified_files) |
+          | Errors | $(@($result.errors).Count) |
+          | Event attribution proven | False |
+          | Independent OOS proven | False |
+
+          "@ | Out-File $env:GITHUB_STEP_SUMMARY `
+            -Append -Encoding utf8
+
+          $csvPath = Join-Path $env:QUAL_OUTPUT `
+            "qualification_sources.csv"
+
+          @"
+          ### Qualified source candidates
+
+          | Role | Qualification | Sample rows |
+          |---|---|---:|
+          "@ | Out-File $env:GITHUB_STEP_SUMMARY `
+            -Append -Encoding utf8
+
+          foreach ($row in (Import-Csv $csvPath)) {
+            "| $($row.role) | $($row.qualification) | $($row.sample_rows) |" |
+              Out-File $env:GITHUB_STEP_SUMMARY `
+                -Append -Encoding utf8
+          }
+
+          @"
+
+          These results verify schemas and bounded samples only.
+          Full event-level attribution remains unproven.
+          "@ | Out-File $env:GITHUB_STEP_SUMMARY `
+            -Append -Encoding utf8
+
+      - name: Upload qualification reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-event-source-qualification
+          path: ${{ runner.temp }}/pattern256_qualification_${{ github.run_id }}/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Final status gate
+        if: always()
+        run: |
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "Source qualification execution failed"
+          }
+
+          if ("${{ steps.verify.outcome }}" -ne "success") {
+            throw "Source qualification verification failed"
+          }
+
+          Write-Host "[PASS] Event source qualification"
+          Write-Host "Research decision: HOLD"
