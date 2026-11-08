@@ -1,0 +1,336 @@
+
+name: audit_pattern_256_event_attribution.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern-256-event-attribution
+  cancel-in-progress: false
+
+jobs:
+  event-attribution:
+    name: event-attribution
+    runs-on:
+      - self-hosted
+      - Windows
+    timeout-minutes: 60
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      DATA_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_event_attribution.py"
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Missing audit Python script: $script"
+          }
+
+          $sources = @(
+            "data\reports\pattern_256_event_gap_integrity\gap_integrity_events.csv",
+            "data\reports\pattern_256_accumulation_independent\independent_detail.csv"
+          )
+
+          foreach ($relative in $sources) {
+            $path = Join-Path $env:DATA_ROOT $relative
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing source: $path"
+            }
+
+            $file = Get-Item -LiteralPath $path
+
+            Write-Host "[SOURCE] $relative"
+            Write-Host "Bytes: $($file.Length)"
+          }
+
+          & py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python is unavailable"
+          }
+
+          & py -c "import ast,pathlib,sys; ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8-sig'))" $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax check failed"
+          }
+
+          Write-Host "[PASS] Environment verified"
+
+      - name: Prepare isolated output
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $output = Join-Path $env:RUNNER_TEMP `
+            "pattern256_attribution_${env:GITHUB_RUN_ID}_${env:GITHUB_RUN_ATTEMPT}"
+
+          if (Test-Path -LiteralPath $output) {
+            throw "Run output directory already exists: $output"
+          }
+
+          New-Item -ItemType Directory `
+            -Path $output | Out-Null
+
+          "ATTRIBUTION_OUTPUT=$output" |
+            Out-File $env:GITHUB_ENV `
+              -Append -Encoding utf8
+
+          Write-Host "Output: $output"
+
+      - name: Execute event attribution
+        id: audit
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_event_attribution.py"
+
+          & py -u $script `
+            --root $env:DATA_ROOT `
+            --output $env:ATTRIBUTION_OUTPUT `
+            --max-issues 100
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Event attribution execution failed"
+          }
+
+          Write-Host "[PASS] Audit execution"
+
+      - name: Verify results and SHA256
+        id: verify
+        if: always()
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "Audit execution failed"
+          }
+
+          $out = $env:ATTRIBUTION_OUTPUT
+
+          $resultPath = Join-Path $out `
+            "attribution_result.json"
+
+          $manifestPath = Join-Path $out `
+            "attribution_manifest.json"
+
+          $summaryPath = Join-Path $out `
+            "attribution_timeframes.csv"
+
+          $issuesPath = Join-Path $out `
+            "attribution_issues.csv"
+
+          foreach ($path in @(
+            $resultPath,
+            $manifestPath,
+            $summaryPath,
+            $issuesPath
+          )) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing report: $path"
+            }
+          }
+
+          $result = Get-Content `
+            -LiteralPath $resultPath -Raw |
+            ConvertFrom-Json
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath -Raw |
+            ConvertFrom-Json
+
+          if ($result.execution -ne "PASS" -or
+              $manifest.execution -ne "PASS") {
+            throw "Execution status mismatch"
+          }
+
+          if ($result.version -ne "Clean V001" -or
+              $manifest.version -ne "Clean V001") {
+            throw "Version mismatch"
+          }
+
+          if ($result.research_decision -ne "HOLD" -or
+              $manifest.research_decision -ne "HOLD" -or
+              $result.event_level_attribution_proven -ne $false -or
+              $result.independent_oos_proven -ne $false -or
+              $result.train_approved -ne $false -or
+              $result.live_trading_approved -ne $false) {
+            throw "Research safety gate failed"
+          }
+
+          $script = Join-Path $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_event_attribution.py"
+
+          $scriptHash = (
+            Get-FileHash -LiteralPath $script -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if ($scriptHash -ne (
+              [string]$manifest.script_sha256
+            ).ToLowerInvariant()) {
+            throw "Script SHA256 mismatch"
+          }
+
+          foreach ($name in @(
+            "attribution_result.json",
+            "attribution_timeframes.csv",
+            "attribution_issues.csv"
+          )) {
+            $path = Join-Path $out $name
+
+            $actual = (
+              Get-FileHash -LiteralPath $path -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            $expected = (
+              [string]$manifest.output_sha256.$name
+            ).ToLowerInvariant()
+
+            if ($actual -ne $expected) {
+              throw "Output SHA256 mismatch: $name"
+            }
+          }
+
+          foreach ($source in @(
+            $result.sources.gap_integrity,
+            $result.sources.independent_detail
+          )) {
+            $relative = (
+              [string]$source.relative_path
+            ).Replace("/", "\")
+
+            $path = Join-Path $env:DATA_ROOT $relative
+
+            $actual = (
+              Get-FileHash -LiteralPath $path -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            $expected = (
+              [string]$source.sha256
+            ).ToLowerInvariant()
+
+            if ($actual -ne $expected) {
+              throw "Source SHA256 mismatch: $relative"
+            }
+          }
+
+          $rows = @(Import-Csv -LiteralPath $summaryPath)
+
+          if ($rows.Count -ne 3) {
+            throw "Timeframe summary row count mismatch"
+          }
+
+          $timeframes = @(
+            $rows | ForEach-Object { $_.timeframe } |
+              Sort-Object
+          )
+
+          if (($timeframes -join ",") -ne "d1,h1,h4") {
+            throw "Unexpected timeframe summary"
+          }
+
+          Write-Host "[PASS] Report and SHA256 verification"
+
+      - name: Publish summary
+        if: always()
+        run: |
+          $audit = "${{ steps.audit.outcome }}"
+          $verify = "${{ steps.verify.outcome }}"
+
+          @"
+          ## Pattern 256 Event-Level Attribution
+
+          | Check | Result |
+          |---|---|
+          | Version | Clean V001 |
+          | Python execution | $audit |
+          | SHA256 verification | $verify |
+          | Research decision | HOLD |
+
+          "@ | Out-File $env:GITHUB_STEP_SUMMARY `
+            -Append -Encoding utf8
+
+          if ($audit -ne "success" -or $verify -ne "success") {
+            "Audit failed. Inspect logs and diagnostic artifact." |
+              Out-File $env:GITHUB_STEP_SUMMARY `
+                -Append -Encoding utf8
+
+            exit 0
+          }
+
+          $resultPath = Join-Path $env:ATTRIBUTION_OUTPUT `
+            "attribution_result.json"
+
+          $result = Get-Content `
+            -LiteralPath $resultPath -Raw |
+            ConvertFrom-Json
+
+          $totals = $result.totals
+
+          @"
+          ### Event matching results
+
+          | Check | Count |
+          |---|---:|
+          | Gap unique events | $($totals.gap_unique_events) |
+          | Independent unique events | $($totals.independent_unique_events) |
+          | Matched events | $($totals.matched_events) |
+          | Unmatched gap events | $($totals.unmatched_gap_events) |
+          | Unmatched independent events | $($totals.unmatched_independent_events) |
+          | Ambiguous duplicate matches | $($totals.ambiguous_duplicate_matches) |
+          | Period mismatches | $($totals.period_mismatches) |
+          | Original status mismatches | $($totals.original_status_mismatches) |
+          | Corrected status differences | $($totals.corrected_status_differences) |
+          | Hit flag mismatches | $($totals.hit_flag_mismatches) |
+
+          ### Important limitations
+
+          - Audit PASS does not prove event attribution.
+          - Corrected outcomes may intentionally differ from original outcomes.
+          - Duplicate event keys are not resolved.
+          - Independent OOS and executable profitability remain unverified.
+          - Research decision remains HOLD.
+
+          "@ | Out-File $env:GITHUB_STEP_SUMMARY `
+            -Append -Encoding utf8
+
+      - name: Upload attribution reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-event-attribution-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pattern256_attribution_${{ github.run_id }}_${{ github.run_attempt }}/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Final status gate
+        if: always()
+        run: |
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "Event attribution Python execution failed"
+          }
+
+          if ("${{ steps.verify.outcome }}" -ne "success") {
+            throw "Event attribution SHA256 verification failed"
+          }
+
+          Write-Host "[PASS] Event attribution audit completed"
+          Write-Host "Research decision: HOLD"
