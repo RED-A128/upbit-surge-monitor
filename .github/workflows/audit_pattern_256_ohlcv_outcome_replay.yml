@@ -1,0 +1,313 @@
+
+name: audit_pattern_256_ohlcv_outcome_replay.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern256-ohlcv-outcome-replay
+  cancel-in-progress: false
+
+jobs:
+  outcome-replay:
+    name: outcome-replay
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 120
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      DATA_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify inputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_ohlcv_outcome_replay.py"
+
+          if (-not (Test-Path -LiteralPath $script)) {
+            throw "Missing replay script"
+          }
+
+          $required = @(
+            "data\ohlcv\h1",
+            "data\ohlcv\h4",
+            "data\ohlcv\d1"
+          )
+
+          foreach ($relative in $required) {
+            $path = Join-Path $env:DATA_ROOT $relative
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Missing OHLCV directory: $path"
+            }
+          }
+
+          & py -c "import ast,pathlib,sys; ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8-sig'))" $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax check failed"
+          }
+
+      - name: Locate verified horizon inputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $candidates = @(
+            Get-ChildItem `
+              -LiteralPath $env:RUNNER_TEMP `
+              -Directory `
+              -Filter "pattern256_horizon_*" |
+            Sort-Object LastWriteTimeUtc -Descending
+          )
+
+          $selected = $null
+
+          foreach ($folder in $candidates) {
+            $samples = Join-Path $folder.FullName `
+              "horizon_samples.csv"
+
+            $manifest = Join-Path $folder.FullName `
+              "horizon_manifest.json"
+
+            if ((Test-Path -LiteralPath $samples) -and
+                (Test-Path -LiteralPath $manifest)) {
+              $selected = $folder.FullName
+              break
+            }
+          }
+
+          if (-not $selected) {
+            throw "Verified horizon inputs not found in RUNNER_TEMP. Download the prior horizon artifact and extract it into a pattern256_horizon_* folder under RUNNER_TEMP."
+          }
+
+          "HORIZON_INPUT=$selected" |
+            Out-File $env:GITHUB_ENV `
+              -Append -Encoding utf8
+
+          Write-Host "Selected horizon input: $selected"
+
+      - name: Prepare isolated output
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $folder = "pattern256_replay_${env:GITHUB_RUN_ID}_${env:GITHUB_RUN_ATTEMPT}"
+
+          $output = Join-Path $env:RUNNER_TEMP $folder
+
+          if (Test-Path -LiteralPath $output) {
+            throw "Replay output already exists"
+          }
+
+          "REPLAY_OUTPUT=$output" |
+            Out-File $env:GITHUB_ENV `
+              -Append -Encoding utf8
+
+      - name: Execute OHLCV replay
+        id: replay
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_ohlcv_outcome_replay.py"
+
+          $samples = Join-Path $env:HORIZON_INPUT `
+            "horizon_samples.csv"
+
+          $manifest = Join-Path $env:HORIZON_INPUT `
+            "horizon_manifest.json"
+
+          & py -u $script `
+            --root $env:DATA_ROOT `
+            --samples $samples `
+            --manifest $manifest `
+            --output $env:REPLAY_OUTPUT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "OHLCV replay failed"
+          }
+
+      - name: Verify SHA256
+        id: verify
+        if: always()
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ steps.replay.outcome }}" -ne "success") {
+            throw "Replay did not succeed"
+          }
+
+          $out = $env:REPLAY_OUTPUT
+
+          $resultPath = Join-Path $out `
+            "replay_result.json"
+
+          $manifestPath = Join-Path $out `
+            "replay_manifest.json"
+
+          $result = Get-Content $resultPath `
+            -Raw | ConvertFrom-Json
+
+          $manifest = Get-Content $manifestPath `
+            -Raw | ConvertFrom-Json
+
+          if ($result.execution -ne "PASS") {
+            throw "Result execution mismatch"
+          }
+
+          if ($manifest.execution -ne "PASS") {
+            throw "Manifest execution mismatch"
+          }
+
+          if ($result.version -ne "Clean V001") {
+            throw "Version mismatch"
+          }
+
+          if ($result.research_decision -ne "HOLD" -or
+              $result.train_approved -ne $false -or
+              $result.live_trading_approved -ne $false -or
+              $result.independent_oos_proven -ne $false) {
+            throw "Research safety gate failed"
+          }
+
+          $script = Join-Path $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_ohlcv_outcome_replay.py"
+
+          $actualScript = (
+            Get-FileHash $script -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          $expectedScript = (
+            [string]$manifest.script_sha256
+          ).ToLowerInvariant()
+
+          if ($actualScript -ne $expectedScript) {
+            throw "Script SHA256 mismatch"
+          }
+
+          $outputs = @(
+            "replay_result.json",
+            "replay_details.csv"
+          )
+
+          foreach ($name in $outputs) {
+            $path = Join-Path $out $name
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Missing output: $name"
+            }
+
+            $actual = (
+              Get-FileHash $path -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            $expected = (
+              [string]$manifest.output_sha256.$name
+            ).ToLowerInvariant()
+
+            if ($actual -ne $expected) {
+              throw "SHA256 mismatch: $name"
+            }
+          }
+
+          Write-Host "[PASS] Replay SHA256 verification"
+
+      - name: Publish summary
+        if: always()
+        run: |
+          $execution = "${{ steps.replay.outcome }}"
+          $verification = "${{ steps.verify.outcome }}"
+
+          @"
+          ## Pattern 256 OHLCV Outcome Replay
+
+          | Check | Result |
+          |---|---|
+          | Version | Clean V001 |
+          | Execution | $execution |
+          | SHA256 verification | $verification |
+          | Research decision | HOLD |
+
+          "@ | Out-File $env:GITHUB_STEP_SUMMARY `
+            -Append -Encoding utf8
+
+          if ($execution -ne "success" -or
+              $verification -ne "success") {
+            exit 0
+          }
+
+          $path = Join-Path $env:REPLAY_OUTPUT `
+            "replay_result.json"
+
+          $result = Get-Content $path `
+            -Raw | ConvertFrom-Json
+
+          @"
+          ### Replay coverage
+
+          | Check | Count |
+          |---|---:|
+          | Sampled events | $($result.sampled_events) |
+          | Processed events | $($result.processed_events) |
+          | Market/timeframe pairs | $($result.market_timeframe_pairs) |
+
+          ### Outcome statuses
+
+          "@ | Out-File $env:GITHUB_STEP_SUMMARY `
+            -Append -Encoding utf8
+
+          foreach ($property in $result.status_counts.PSObject.Properties) {
+            "- $($property.Name): $($property.Value)" |
+              Out-File $env:GITHUB_STEP_SUMMARY `
+                -Append -Encoding utf8
+          }
+
+          @"
+
+          Gap and independent horizons remain separate.
+          Entry candle convention is provisional.
+          Research decision: HOLD.
+          "@ | Out-File $env:GITHUB_STEP_SUMMARY `
+            -Append -Encoding utf8
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern256-replay-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/pattern256_replay_${{ github.run_id }}_${{ github.run_attempt }}/replay_result.json
+            ${{ runner.temp }}/pattern256_replay_${{ github.run_id }}_${{ github.run_attempt }}/replay_details.csv
+            ${{ runner.temp }}/pattern256_replay_${{ github.run_id }}_${{ github.run_attempt }}/replay_manifest.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Final status gate
+        if: always()
+        run: |
+          if ("${{ steps.replay.outcome }}" -ne "success") {
+            throw "OHLCV replay failed"
+          }
+
+          if ("${{ steps.verify.outcome }}" -ne "success") {
+            throw "SHA256 verification failed"
+          }
+
+          Write-Host "[PASS] OHLCV outcome replay"
+          Write-Host "Research decision: HOLD"
