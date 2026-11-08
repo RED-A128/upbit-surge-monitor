@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: pattern256-ohlcv-outcome-replay
@@ -27,6 +28,8 @@ jobs:
 
     env:
       DATA_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+      GH_REPOSITORY: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
 
     steps:
       - name: Checkout repository
@@ -39,20 +42,14 @@ jobs:
           $script = Join-Path $env:GITHUB_WORKSPACE `
             "audit_pattern_256_ohlcv_outcome_replay.py"
 
-          if (-not (Test-Path -LiteralPath $script)) {
-            throw "Missing replay script"
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Missing Python replay script: $script"
           }
 
-          $required = @(
-            "data\ohlcv\h1",
-            "data\ohlcv\h4",
-            "data\ohlcv\d1"
-          )
+          foreach ($tf in @("h1", "h4", "d1")) {
+            $path = Join-Path $env:DATA_ROOT "data\ohlcv\$tf"
 
-          foreach ($relative in $required) {
-            $path = Join-Path $env:DATA_ROOT $relative
-
-            if (-not (Test-Path -LiteralPath $path)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Container)) {
               throw "Missing OHLCV directory: $path"
             }
           }
@@ -60,46 +57,263 @@ jobs:
           & py -c "import ast,pathlib,sys; ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8-sig'))" $script
 
           if ($LASTEXITCODE -ne 0) {
-            throw "Python syntax check failed"
+            throw "Python syntax verification failed"
           }
 
-      - name: Locate verified horizon inputs
+          Write-Host "[PASS] Replay script and OHLCV directories"
+
+      - name: Download verified horizon artifact
+        id: horizon
         run: |
           $ErrorActionPreference = "Stop"
 
-          $candidates = @(
-            Get-ChildItem `
-              -LiteralPath $env:RUNNER_TEMP `
-              -Directory `
-              -Filter "pattern256_horizon_*" |
-            Sort-Object LastWriteTimeUtc -Descending
-          )
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = "application/vnd.github+json"
+            "X-GitHub-Api-Version" = "2022-11-28"
+          }
+
+          $api = "https://api.github.com/repos/$env:GH_REPOSITORY"
+
+          $base = Join-Path $env:RUNNER_TEMP `
+            "pattern256_horizon_input_${env:GITHUB_RUN_ID}_${env:GITHUB_RUN_ATTEMPT}"
+
+          if (Test-Path -LiteralPath $base) {
+            throw "Input directory already exists: $base"
+          }
+
+          New-Item -ItemType Directory -Path $base -Force |
+            Out-Null
 
           $selected = $null
+          $selectedArtifact = $null
+          $selectedRun = $null
+          $examined = 0
 
-          foreach ($folder in $candidates) {
-            $samples = Join-Path $folder.FullName `
-              "horizon_samples.csv"
+          # Search recent artifacts. Do not depend on files
+          # remaining in RUNNER_TEMP from a previous run.
+          for ($page = 1; $page -le 5; $page++) {
+            $url = "$api/actions/artifacts?per_page=100&page=$page"
 
-            $manifest = Join-Path $folder.FullName `
-              "horizon_manifest.json"
+            Write-Host "Searching artifact page $page"
 
-            if ((Test-Path -LiteralPath $samples) -and
-                (Test-Path -LiteralPath $manifest)) {
-              $selected = $folder.FullName
+            $response = Invoke-RestMethod `
+              -Uri $url `
+              -Headers $headers `
+              -Method Get
+
+            $artifacts = @($response.artifacts)
+
+            if ($artifacts.Count -eq 0) {
+              break
+            }
+
+            $candidates = @(
+              $artifacts |
+                Where-Object {
+                  -not $_.expired -and
+                  $_.name -match "(?i)horizon|semantics"
+                } |
+                Sort-Object created_at -Descending
+            )
+
+            foreach ($artifact in $candidates) {
+              $examined++
+
+              Write-Host "Checking artifact: $($artifact.name)"
+              Write-Host "Artifact ID: $($artifact.id)"
+
+              $candidateDir = Join-Path $base `
+                "artifact_$($artifact.id)"
+
+              New-Item -ItemType Directory `
+                -Path $candidateDir -Force |
+                Out-Null
+
+              $zipPath = Join-Path $candidateDir `
+                "artifact.zip"
+
+              $extractDir = Join-Path $candidateDir `
+                "extracted"
+
+              try {
+                $downloadUrl = "$api/actions/artifacts/$($artifact.id)/zip"
+
+                Invoke-WebRequest `
+                  -Uri $downloadUrl `
+                  -Headers $headers `
+                  -OutFile $zipPath `
+                  -UseBasicParsing
+
+                Expand-Archive `
+                  -LiteralPath $zipPath `
+                  -DestinationPath $extractDir `
+                  -Force
+
+                $sampleFiles = @(
+                  Get-ChildItem `
+                    -LiteralPath $extractDir `
+                    -Recurse `
+                    -File `
+                    -Filter "horizon_samples.csv"
+                )
+
+                foreach ($sample in $sampleFiles) {
+                  $folder = $sample.DirectoryName
+
+                  $manifestPath = Join-Path $folder `
+                    "horizon_manifest.json"
+
+                  if (-not (Test-Path -LiteralPath $manifestPath)) {
+                    continue
+                  }
+
+                  $manifest = Get-Content `
+                    -LiteralPath $manifestPath `
+                    -Raw |
+                    ConvertFrom-Json
+
+                  if ($manifest.audit -ne "pattern_256_horizon_semantics") {
+                    Write-Host "Skipped: unexpected audit type"
+                    continue
+                  }
+
+                  if ($manifest.execution -ne "PASS") {
+                    Write-Host "Skipped: prior audit did not pass"
+                    continue
+                  }
+
+                  if ($manifest.version -ne "Clean V001") {
+                    Write-Host "Skipped: unexpected version"
+                    continue
+                  }
+
+                  if ($manifest.research_decision -ne "HOLD") {
+                    Write-Host "Skipped: unexpected research decision"
+                    continue
+                  }
+
+                  $expectedHash = [string](
+                    $manifest.output_sha256."horizon_samples.csv"
+                  )
+
+                  if ([string]::IsNullOrWhiteSpace($expectedHash)) {
+                    Write-Host "Skipped: missing sample SHA256"
+                    continue
+                  }
+
+                  $actualHash = (
+                    Get-FileHash `
+                      -LiteralPath $sample.FullName `
+                      -Algorithm SHA256
+                  ).Hash
+
+                  if ($actualHash.ToLowerInvariant() -ne
+                      $expectedHash.ToLowerInvariant()) {
+                    Write-Host "Skipped: sample SHA256 mismatch"
+                    continue
+                  }
+
+                  $resultPath = Join-Path $folder `
+                    "horizon_result.json"
+
+                  if (-not (Test-Path -LiteralPath $resultPath)) {
+                    Write-Host "Skipped: missing horizon_result.json"
+                    continue
+                  }
+
+                  $expectedResultHash = [string](
+                    $manifest.output_sha256."horizon_result.json"
+                  )
+
+                  $actualResultHash = (
+                    Get-FileHash `
+                      -LiteralPath $resultPath `
+                      -Algorithm SHA256
+                  ).Hash
+
+                  if ($actualResultHash.ToLowerInvariant() -ne
+                      $expectedResultHash.ToLowerInvariant()) {
+                    Write-Host "Skipped: result SHA256 mismatch"
+                    continue
+                  }
+
+                  $priorResult = Get-Content `
+                    -LiteralPath $resultPath `
+                    -Raw |
+                    ConvertFrom-Json
+
+                  if ($priorResult.execution -ne "PASS" -or
+                      $priorResult.valid_events -ne 550148 -or
+                      $priorResult.sampled_events -ne 600 -or
+                      $priorResult.horizon_unit_verified -ne $false) {
+                    Write-Host "Skipped: horizon result does not match expected research baseline"
+                    continue
+                  }
+
+                  $selected = $folder
+                  $selectedArtifact = $artifact.id
+                  $selectedRun = $artifact.workflow_run.id
+
+                  break
+                }
+
+                if ($selected) {
+                  break
+                }
+              }
+              catch {
+                Write-Host "Artifact inspection failed: $($_.Exception.Message)"
+              }
+            }
+
+            if ($selected) {
+              break
+            }
+
+            if ($artifacts.Count -lt 100) {
               break
             }
           }
 
           if (-not $selected) {
-            throw "Verified horizon inputs not found in RUNNER_TEMP. Download the prior horizon artifact and extract it into a pattern256_horizon_* folder under RUNNER_TEMP."
+            throw @"
+          No valid horizon artifact was found.
+          Searched artifact candidates: $examined
+          Required files:
+            horizon_samples.csv
+            horizon_result.json
+            horizon_manifest.json
+          Required audit: pattern_256_horizon_semantics
+          Required result: PASS / 550148 valid / 600 sampled
+          Required SHA256: matching manifest values
+          Check whether the earlier horizon workflow uploaded
+          its artifact and whether artifact retention has expired.
+          "@
           }
 
           "HORIZON_INPUT=$selected" |
-            Out-File $env:GITHUB_ENV `
-              -Append -Encoding utf8
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Append `
+              -Encoding utf8
 
-          Write-Host "Selected horizon input: $selected"
+          "HORIZON_ARTIFACT_ID=$selectedArtifact" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Append `
+              -Encoding utf8
+
+          "HORIZON_RUN_ID=$selectedRun" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Append `
+              -Encoding utf8
+
+          Write-Host "[PASS] Verified horizon input"
+          Write-Host "Artifact ID: $selectedArtifact"
+          Write-Host "Source run: $selectedRun"
+          Write-Host "Input folder: $selected"
 
       - name: Prepare isolated output
         run: |
@@ -110,12 +324,16 @@ jobs:
           $output = Join-Path $env:RUNNER_TEMP $folder
 
           if (Test-Path -LiteralPath $output) {
-            throw "Replay output already exists"
+            throw "Output directory already exists: $output"
           }
 
           "REPLAY_OUTPUT=$output" |
-            Out-File $env:GITHUB_ENV `
-              -Append -Encoding utf8
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Append `
+              -Encoding utf8
+
+          Write-Host "Replay output: $output"
 
       - name: Execute OHLCV replay
         id: replay
@@ -139,10 +357,10 @@ jobs:
             --output $env:REPLAY_OUTPUT
 
           if ($LASTEXITCODE -ne 0) {
-            throw "OHLCV replay failed"
+            throw "Python OHLCV replay failed"
           }
 
-      - name: Verify SHA256
+      - name: Verify output and SHA256
         id: verify
         if: always()
         continue-on-error: true
@@ -150,10 +368,14 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           if ("${{ steps.replay.outcome }}" -ne "success") {
-            throw "Replay did not succeed"
+            throw "Replay execution did not succeed"
           }
 
           $out = $env:REPLAY_OUTPUT
+
+          if ([string]::IsNullOrWhiteSpace($out)) {
+            throw "Replay output path is empty"
+          }
 
           $resultPath = Join-Path $out `
             "replay_result.json"
@@ -161,60 +383,76 @@ jobs:
           $manifestPath = Join-Path $out `
             "replay_manifest.json"
 
-          $result = Get-Content $resultPath `
-            -Raw | ConvertFrom-Json
-
-          $manifest = Get-Content $manifestPath `
-            -Raw | ConvertFrom-Json
-
-          if ($result.execution -ne "PASS") {
-            throw "Result execution mismatch"
+          if (-not (Test-Path -LiteralPath $resultPath)) {
+            throw "Missing replay_result.json"
           }
 
-          if ($manifest.execution -ne "PASS") {
-            throw "Manifest execution mismatch"
+          if (-not (Test-Path -LiteralPath $manifestPath)) {
+            throw "Missing replay_manifest.json"
+          }
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw |
+            ConvertFrom-Json
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw |
+            ConvertFrom-Json
+
+          if ($result.execution -ne "PASS" -or
+              $manifest.execution -ne "PASS") {
+            throw "Replay execution result is not PASS"
           }
 
           if ($result.version -ne "Clean V001") {
-            throw "Version mismatch"
+            throw "Unexpected Python replay version"
           }
 
           if ($result.research_decision -ne "HOLD" -or
               $result.train_approved -ne $false -or
               $result.live_trading_approved -ne $false -or
               $result.independent_oos_proven -ne $false) {
-            throw "Research safety gate failed"
+            throw "Research safety verification failed"
           }
 
-          $script = Join-Path $env:GITHUB_WORKSPACE `
+          if ($result.sampled_events -ne 600 -or
+              $result.processed_events -ne 600) {
+            throw "Unexpected sample or processed count"
+          }
+
+          $scriptPath = Join-Path $env:GITHUB_WORKSPACE `
             "audit_pattern_256_ohlcv_outcome_replay.py"
 
-          $actualScript = (
-            Get-FileHash $script -Algorithm SHA256
+          $actualScriptHash = (
+            Get-FileHash `
+              -LiteralPath $scriptPath `
+              -Algorithm SHA256
           ).Hash.ToLowerInvariant()
 
-          $expectedScript = (
+          $expectedScriptHash = (
             [string]$manifest.script_sha256
           ).ToLowerInvariant()
 
-          if ($actualScript -ne $expectedScript) {
-            throw "Script SHA256 mismatch"
+          if ($actualScriptHash -ne $expectedScriptHash) {
+            throw "Replay Python script SHA256 mismatch"
           }
 
-          $outputs = @(
+          foreach ($name in @(
             "replay_result.json",
             "replay_details.csv"
-          )
-
-          foreach ($name in $outputs) {
+          )) {
             $path = Join-Path $out $name
 
             if (-not (Test-Path -LiteralPath $path)) {
-              throw "Missing output: $name"
+              throw "Missing replay output: $name"
             }
 
             $actual = (
-              Get-FileHash $path -Algorithm SHA256
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
             ).Hash.ToLowerInvariant()
 
             $expected = (
@@ -222,11 +460,11 @@ jobs:
             ).ToLowerInvariant()
 
             if ($actual -ne $expected) {
-              throw "SHA256 mismatch: $name"
+              throw "Output SHA256 mismatch: $name"
             }
           }
 
-          Write-Host "[PASS] Replay SHA256 verification"
+          Write-Host "[PASS] Replay outputs verified"
 
       - name: Publish summary
         if: always()
@@ -239,13 +477,16 @@ jobs:
 
           | Check | Result |
           |---|---|
-          | Version | Clean V001 |
+          | Workflow version | Clean V002 |
+          | Python version | Clean V001 |
           | Execution | $execution |
           | SHA256 verification | $verification |
           | Research decision | HOLD |
 
-          "@ | Out-File $env:GITHUB_STEP_SUMMARY `
-            -Append -Encoding utf8
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Append `
+            -Encoding utf8
 
           if ($execution -ne "success" -or
               $verification -ne "success") {
@@ -255,8 +496,10 @@ jobs:
           $path = Join-Path $env:REPLAY_OUTPUT `
             "replay_result.json"
 
-          $result = Get-Content $path `
-            -Raw | ConvertFrom-Json
+          $result = Get-Content `
+            -LiteralPath $path `
+            -Raw |
+            ConvertFrom-Json
 
           @"
           ### Replay coverage
@@ -269,22 +512,30 @@ jobs:
 
           ### Outcome statuses
 
-          "@ | Out-File $env:GITHUB_STEP_SUMMARY `
-            -Append -Encoding utf8
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Append `
+            -Encoding utf8
 
           foreach ($property in $result.status_counts.PSObject.Properties) {
             "- $($property.Name): $($property.Value)" |
-              Out-File $env:GITHUB_STEP_SUMMARY `
-                -Append -Encoding utf8
+              Out-File `
+                -FilePath $env:GITHUB_STEP_SUMMARY `
+                -Append `
+                -Encoding utf8
           }
 
           @"
 
+          This is a sampled OHLCV replay.
           Gap and independent horizons remain separate.
-          Entry candle convention is provisional.
+          Entry-candle convention is provisional.
+          This does not establish trading profitability.
           Research decision: HOLD.
-          "@ | Out-File $env:GITHUB_STEP_SUMMARY `
-            -Append -Encoding utf8
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Append `
+            -Encoding utf8
 
       - name: Upload reports
         if: always()
@@ -301,12 +552,16 @@ jobs:
       - name: Final status gate
         if: always()
         run: |
+          if ("${{ steps.horizon.outcome }}" -ne "success") {
+            throw "Verified horizon artifact acquisition failed"
+          }
+
           if ("${{ steps.replay.outcome }}" -ne "success") {
-            throw "OHLCV replay failed"
+            throw "OHLCV replay execution failed"
           }
 
           if ("${{ steps.verify.outcome }}" -ne "success") {
-            throw "SHA256 verification failed"
+            throw "OHLCV replay SHA256 verification failed"
           }
 
           Write-Host "[PASS] OHLCV outcome replay"
