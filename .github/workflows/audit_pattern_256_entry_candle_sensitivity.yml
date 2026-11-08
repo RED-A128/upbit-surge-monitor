@@ -1,0 +1,425 @@
+
+name: audit_pattern_256_entry_candle_sensitivity.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: pattern256-entry-candle-sensitivity
+  cancel-in-progress: false
+
+jobs:
+  entry-candle-sensitivity:
+    name: entry-candle-sensitivity
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 120
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPOSITORY: ${{ github.repository }}
+      LOCAL_PROJECT_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_entry_candle_sensitivity.py"
+
+          if (-not (Test-Path -LiteralPath $script)) {
+            throw "Missing Python script"
+          }
+
+          $ohlcv = Join-Path $env:LOCAL_PROJECT_ROOT `
+            "data\ohlcv"
+
+          foreach ($tf in @("h1", "h4", "d1")) {
+            $folder = Join-Path $ohlcv $tf
+
+            if (-not (Test-Path -LiteralPath $folder)) {
+              throw "Missing OHLCV directory: $folder"
+            }
+          }
+
+          & py -c "import ast,pathlib,sys;ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8-sig'))" $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax check failed"
+          }
+
+          Write-Host "[PASS] Environment verified"
+
+      - name: Download verified replay artifact
+        id: download
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = "application/vnd.github+json"
+            "X-GitHub-Api-Version" = "2022-11-28"
+          }
+
+          $api = "https://api.github.com/repos/$env:GH_REPOSITORY"
+
+          $base = Join-Path $env:RUNNER_TEMP `
+            "pattern256_entry_input_${env:GITHUB_RUN_ID}_${env:GITHUB_RUN_ATTEMPT}"
+
+          New-Item -ItemType Directory `
+            -Path $base -Force | Out-Null
+
+          $selected = $null
+
+          for ($page = 1; $page -le 5; $page++) {
+            $response = Invoke-RestMethod `
+              -Uri "$api/actions/artifacts?per_page=100&page=$page" `
+              -Headers $headers `
+              -Method Get
+
+            $artifacts = @(
+              $response.artifacts |
+                Where-Object {
+                  -not $_.expired -and
+                  $_.name -match "^pattern256-replay-"
+                } |
+                Sort-Object created_at -Descending
+            )
+
+            foreach ($artifact in $artifacts) {
+              $folder = Join-Path $base `
+                "artifact_$($artifact.id)"
+
+              New-Item -ItemType Directory `
+                -Path $folder -Force | Out-Null
+
+              $zip = Join-Path $folder "artifact.zip"
+              $extract = Join-Path $folder "extracted"
+
+              try {
+                Invoke-WebRequest `
+                  -Uri "$api/actions/artifacts/$($artifact.id)/zip" `
+                  -Headers $headers `
+                  -OutFile $zip `
+                  -UseBasicParsing
+
+                Expand-Archive `
+                  -LiteralPath $zip `
+                  -DestinationPath $extract `
+                  -Force
+
+                $manifests = @(
+                  Get-ChildItem `
+                    -LiteralPath $extract `
+                    -Filter "replay_manifest.json" `
+                    -Recurse `
+                    -File
+                )
+
+                foreach ($file in $manifests) {
+                  $dir = $file.DirectoryName
+
+                  $resultPath = Join-Path $dir "replay_result.json"
+                  $detailPath = Join-Path $dir "replay_details.csv"
+
+                  if (-not (Test-Path $resultPath) -or
+                      -not (Test-Path $detailPath)) {
+                    continue
+                  }
+
+                  $manifest = Get-Content `
+                    -LiteralPath $file.FullName `
+                    -Raw | ConvertFrom-Json
+
+                  $result = Get-Content `
+                    -LiteralPath $resultPath `
+                    -Raw | ConvertFrom-Json
+
+                  if ($manifest.audit -ne "pattern_256_ohlcv_outcome_replay" -or
+                      $manifest.execution -ne "PASS" -or
+                      $result.execution -ne "PASS" -or
+                      $result.processed_events -ne 600 -or
+                      $result.research_decision -ne "HOLD") {
+                    continue
+                  }
+
+                  $valid = $true
+
+                  foreach ($name in @(
+                    "replay_details.csv",
+                    "replay_result.json"
+                  )) {
+                    $path = Join-Path $dir $name
+
+                    $actual = (
+                      Get-FileHash `
+                        -LiteralPath $path `
+                        -Algorithm SHA256
+                    ).Hash.ToLowerInvariant()
+
+                    $expected = (
+                      [string]$manifest.output_sha256.$name
+                    ).ToLowerInvariant()
+
+                    if ($actual -ne $expected) {
+                      $valid = $false
+                      break
+                    }
+                  }
+
+                  if ($valid) {
+                    $selected = $dir
+                    Write-Host "[PASS] Artifact ID: $($artifact.id)"
+                    break
+                  }
+                }
+
+                if ($selected) {
+                  break
+                }
+              }
+              catch {
+                Write-Host "[SKIP] $($_.Exception.Message)"
+              }
+            }
+
+            if ($selected) {
+              break
+            }
+
+            if (@($response.artifacts).Count -lt 100) {
+              break
+            }
+          }
+
+          if (-not $selected) {
+            throw "Verified replay artifact not found"
+          }
+
+          "ENTRY_INPUT=$selected" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Append `
+              -Encoding utf8
+
+      - name: Prepare isolated output
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $folder = "pattern256_entry_${env:GITHUB_RUN_ID}_${env:GITHUB_RUN_ATTEMPT}"
+          $output = Join-Path $env:RUNNER_TEMP $folder
+
+          if (Test-Path -LiteralPath $output) {
+            throw "Output already exists"
+          }
+
+          "ENTRY_OUTPUT=$output" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Append `
+              -Encoding utf8
+
+      - name: Execute entry candle sensitivity
+        id: audit
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_entry_candle_sensitivity.py"
+
+          $ohlcv = Join-Path $env:LOCAL_PROJECT_ROOT `
+            "data\ohlcv"
+
+          & py -u $script `
+            --input $env:ENTRY_INPUT `
+            --ohlcv-root $ohlcv `
+            --output $env:ENTRY_OUTPUT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Entry candle sensitivity failed"
+          }
+
+      - name: Verify SHA256
+        id: verify
+        if: always()
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "Audit execution failed"
+          }
+
+          $manifestPath = Join-Path $env:ENTRY_OUTPUT `
+            "entry_sensitivity_manifest.json"
+
+          $resultPath = Join-Path $env:ENTRY_OUTPUT `
+            "entry_sensitivity_result.json"
+
+          if (-not (Test-Path $manifestPath) -or
+              -not (Test-Path $resultPath)) {
+            throw "Output missing"
+          }
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw | ConvertFrom-Json
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw | ConvertFrom-Json
+
+          if ($manifest.execution -ne "PASS" -or
+              $result.execution -ne "PASS" -or
+              $result.sampled_events -ne 600 -or
+              $result.research_decision -ne "HOLD") {
+            throw "Result verification failed"
+          }
+
+          $script = Join-Path $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_entry_candle_sensitivity.py"
+
+          $actualScript = (
+            Get-FileHash `
+              -LiteralPath $script `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if ($actualScript -ne
+              ([string]$manifest.script_sha256).ToLowerInvariant()) {
+            throw "Script SHA256 mismatch"
+          }
+
+          foreach ($name in @(
+            "entry_sensitivity_detail.csv",
+            "entry_sensitivity_result.json"
+          )) {
+            $path = Join-Path $env:ENTRY_OUTPUT $name
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            $expected = (
+              [string]$manifest.output_sha256.$name
+            ).ToLowerInvariant()
+
+            if ($actual -ne $expected) {
+              throw "SHA256 mismatch: $name"
+            }
+          }
+
+          Write-Host "[PASS] SHA256 verification"
+
+      - name: Publish summary
+        if: always()
+        run: |
+          $execution = "${{ steps.audit.outcome }}"
+          $verification = "${{ steps.verify.outcome }}"
+
+          @"
+          ## Pattern 256 Entry Candle Sensitivity
+
+          | Check | Result |
+          |---|---|
+          | Version | Clean V001 |
+          | Execution | $execution |
+          | Verification | $verification |
+          | Research decision | HOLD |
+
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Append `
+            -Encoding utf8
+
+          $path = Join-Path $env:ENTRY_OUTPUT `
+            "entry_sensitivity_result.json"
+
+          if (-not (Test-Path $path)) {
+            exit 0
+          }
+
+          $result = Get-Content `
+            -LiteralPath $path `
+            -Raw | ConvertFrom-Json
+
+          @"
+          ### Results
+
+          Sampled events: $($result.sampled_events)
+
+          Market/timeframe pairs: $($result.market_timeframe_pairs)
+
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Append `
+            -Encoding utf8
+
+          foreach (
+            $item in $result.classification_counts.PSObject.Properties
+          ) {
+            "- $($item.Name): $($item.Value)" |
+              Out-File `
+                -FilePath $env:GITHUB_STEP_SUMMARY `
+                -Append `
+                -Encoding utf8
+          }
+
+          @"
+
+          This is a sensitivity analysis.
+          It does not establish the original entry convention.
+
+          Research decision: HOLD.
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Append `
+            -Encoding utf8
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern256-entry-sensitivity-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/pattern256_entry_${{ github.run_id }}_${{ github.run_attempt }}/entry_sensitivity_detail.csv
+            ${{ runner.temp }}/pattern256_entry_${{ github.run_id }}_${{ github.run_attempt }}/entry_sensitivity_result.json
+            ${{ runner.temp }}/pattern256_entry_${{ github.run_id }}_${{ github.run_attempt }}/entry_sensitivity_manifest.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Final status gate
+        if: always()
+        run: |
+          if ("${{ steps.download.outcome }}" -ne "success") {
+            throw "Replay artifact download failed"
+          }
+
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "Sensitivity audit failed"
+          }
+
+          if ("${{ steps.verify.outcome }}" -ne "success") {
+            throw "SHA256 verification failed"
+          }
+
+          Write-Host "[PASS] Entry candle sensitivity"
+          Write-Host "Research decision: HOLD"
