@@ -3,18 +3,18 @@
 # -*- coding: utf-8 -*-
 
 """
-Pattern 256 Event-Level Attribution Audit
-Clean V001
+Pattern 256 Event Attribution - Horizon-Aware Audit
+Clean V002
 
-Read-only audit of:
-- gap_integrity_events.csv
-- independent_detail.csv
+Purpose:
+- Diagnose the matching-key problem in Clean V001.
+- Preserve evaluation horizon in every event key.
+- Identify duplicate keys and conflicting records.
+- Compare outcomes only for unambiguous exact matches.
+- Report period naming differences separately.
 
-Uses SQLite for disk-backed event matching.
-Does not modify OHLCV, source reports or trading signals.
-
-PASS means audit execution succeeded.
-It does NOT mean attribution was proven.
+This script is read-only with respect to source files.
+It does not authorize model training or trading.
 """
 
 import argparse
@@ -29,547 +29,592 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-VERSION = "Clean V001"
+VERSION = "Clean V002"
 AUDIT = "pattern_256_event_attribution"
 
-GAP_REL = (
+GAP_SOURCE = (
     "data/reports/pattern_256_event_gap_integrity/"
     "gap_integrity_events.csv"
 )
 
-INDEPENDENT_REL = (
+INDEPENDENT_SOURCE = (
     "data/reports/pattern_256_accumulation_independent/"
     "independent_detail.csv"
 )
 
-GAP_REQUIRED = {
+GAP_COLUMNS = {
     "timeframe", "market", "signal_utc", "entry_utc",
-    "original_outcome", "corrected_outcome",
-    "missing_candles", "period",
+    "horizon_hours", "period", "original_outcome",
+    "corrected_outcome", "missing_candles",
 }
 
-INDEPENDENT_REQUIRED = {
+INDEPENDENT_COLUMNS = {
     "timeframe", "market", "signal_timestamp",
-    "entry_timestamp", "status", "hit_30pct", "period",
+    "entry_timestamp", "horizon", "period",
+    "status", "hit_30pct",
 }
 
+TIMEFRAMES = ("h1", "h4", "d1")
 
-def sha256_file(path):
+
+def sha256(path):
     digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(
-            lambda: stream.read(1024 * 1024), b""
-        ):
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1048576), b""):
             digest.update(block)
     return digest.hexdigest()
 
 
-def write_json(path, value):
+def save_json(path, data):
     path.write_text(
         json.dumps(
-            value, ensure_ascii=False,
-            indent=2, sort_keys=True
+            data, ensure_ascii=False, indent=2,
+            sort_keys=True,
         ) + "\n",
         encoding="utf-8",
     )
 
 
-def utc_epoch(value):
-    """
-    Normalize timestamp to UTC seconds.
+def timestamp(value):
+    value = str(value).strip()
 
-    Naive ISO timestamps are interpreted as UTC.
-    Invalid timestamps raise ValueError.
-    """
-    text = str(value).strip()
+    if re.fullmatch(r"\d{10}(?:\.\d+)?", value):
+        return round(float(value), 3)
 
-    if not text:
+    if re.fullmatch(r"\d{13}", value):
+        return round(int(value) / 1000, 3)
+
+    if not value:
         raise ValueError("empty timestamp")
 
-    if re.fullmatch(r"\d{10}(?:\.\d+)?", text):
-        return round(float(text), 3)
+    try:
+        parsed = datetime.fromisoformat(
+            value.replace("Z", "+00:00")
+        )
+    except ValueError as exc:
+        raise ValueError(
+            f"unsupported timestamp: {value[:60]}"
+        ) from exc
 
-    if re.fullmatch(r"\d{13}", text):
-        return round(int(text) / 1000, 3)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
 
-    normalized = text.replace("Z", "+00:00")
+    return round(parsed.timestamp(), 3)
+
+
+def positive_number(value):
+    value = str(value).strip()
 
     try:
-        dt = datetime.fromisoformat(normalized)
-    except ValueError:
-        formats = (
-            "%Y-%m-%d %H:%M:%S",
-            "%Y-%m-%d %H:%M",
-            "%Y-%m-%d",
+        number = float(value)
+    except ValueError as exc:
+        raise ValueError(
+            f"invalid horizon: {value}"
+        ) from exc
+
+    if not 0 < number <= 100000:
+        raise ValueError(
+            f"horizon out of range: {value}"
         )
-        dt = None
-        for fmt in formats:
-            try:
-                dt = datetime.strptime(text, fmt)
-                break
-            except ValueError:
-                pass
-        if dt is None:
-            raise ValueError(
-                f"unsupported timestamp: {text[:60]}"
-            )
 
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-
-    return round(
-        dt.astimezone(timezone.utc).timestamp(), 3
-    )
+    return round(number, 6)
 
 
-def event_key(row, signal_column, entry_column):
-    timeframe = row.get("timeframe", "").strip().lower()
-    market = row.get("market", "").strip().upper()
+def normalize_status(value):
+    value = str(value).strip().upper()
 
-    if timeframe not in {"h1", "h4", "d1"}:
-        raise ValueError("invalid timeframe")
+    if value in {"HIT", "MISS"}:
+        return value
 
-    if not market.startswith("KRW-"):
-        raise ValueError("invalid market")
-
-    signal = utc_epoch(row.get(signal_column, ""))
-    entry = utc_epoch(row.get(entry_column, ""))
-
-    if entry < signal:
-        raise ValueError("entry precedes signal")
-
-    return timeframe, market, signal, entry
-
-
-def normalized_status(value):
-    status = str(value).strip().upper()
-
-    if status == "HIT":
-        return "HIT"
-    if status == "MISS":
-        return "MISS"
-    if status in {
-        "CENSORED", "END_CENSORED",
-        "GAP_CENSORED",
+    if value in {
+        "CENSORED", "GAP_CENSORED", "END_CENSORED",
     }:
         return "CENSORED"
 
     return "UNKNOWN"
 
 
-def open_csv(path, required):
-    stream = path.open(
+def event_identity(row, signal_col, entry_col):
+    tf = str(row.get("timeframe", "")).strip().lower()
+    market = str(row.get("market", "")).strip().upper()
+
+    if tf not in TIMEFRAMES:
+        raise ValueError(f"invalid timeframe: {tf}")
+
+    if not market.startswith("KRW-"):
+        raise ValueError(f"invalid market: {market}")
+
+    signal = timestamp(row.get(signal_col, ""))
+    entry = timestamp(row.get(entry_col, ""))
+
+    if entry < signal:
+        raise ValueError("entry precedes signal")
+
+    return tf, market, signal, entry
+
+
+def read_csv(path, required):
+    handle = path.open(
         "r", encoding="utf-8-sig", newline=""
     )
-    reader = csv.DictReader(stream)
+    reader = csv.DictReader(handle)
+    columns = set(reader.fieldnames or [])
+    missing = required - columns
 
-    columns = reader.fieldnames or []
-
-    if not required.issubset(set(columns)):
-        stream.close()
-        missing = sorted(required - set(columns))
+    if missing:
+        handle.close()
         raise RuntimeError(
-            f"Missing columns in {path.name}: {missing}"
+            f"{path.name}: missing columns {sorted(missing)}"
         )
 
-    return stream, reader
+    return handle, reader
 
 
-def prepare_database(path):
+def prepare_db(path):
     conn = sqlite3.connect(str(path))
     conn.execute("PRAGMA journal_mode=DELETE")
-    conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA temp_store=FILE")
 
     conn.executescript("""
-        CREATE TABLE independent (
-            timeframe TEXT NOT NULL,
+        CREATE TABLE gap_events (
+            tf TEXT NOT NULL,
             market TEXT NOT NULL,
-            signal_epoch REAL NOT NULL,
-            entry_epoch REAL NOT NULL,
-            period TEXT NOT NULL,
-            status TEXT NOT NULL,
-            hit TEXT NOT NULL,
+            signal REAL NOT NULL,
+            entry REAL NOT NULL,
+            horizon REAL NOT NULL,
+            period TEXT,
+            original TEXT,
+            corrected TEXT,
+            missing TEXT,
             occurrences INTEGER NOT NULL DEFAULT 1,
-            PRIMARY KEY (
-                timeframe, market,
-                signal_epoch, entry_epoch
-            )
+            conflicts INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(tf, market, signal, entry, horizon)
         );
 
-        CREATE TABLE gap_events (
-            timeframe TEXT NOT NULL,
+        CREATE TABLE independent_events (
+            tf TEXT NOT NULL,
             market TEXT NOT NULL,
-            signal_epoch REAL NOT NULL,
-            entry_epoch REAL NOT NULL,
-            period TEXT NOT NULL,
-            original_status TEXT NOT NULL,
-            corrected_status TEXT NOT NULL,
-            missing_candles TEXT NOT NULL,
+            signal REAL NOT NULL,
+            entry REAL NOT NULL,
+            horizon REAL NOT NULL,
+            period TEXT,
+            status TEXT,
+            hit TEXT,
             occurrences INTEGER NOT NULL DEFAULT 1,
-            PRIMARY KEY (
-                timeframe, market,
-                signal_epoch, entry_epoch
-            )
+            conflicts INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(tf, market, signal, entry, horizon)
         );
+
+        CREATE INDEX idx_gap_base
+        ON gap_events(tf, market, signal, entry);
+
+        CREATE INDEX idx_independent_base
+        ON independent_events(tf, market, signal, entry);
     """)
     return conn
 
 
-def add_issue(issues, max_issues, kind, row_number, detail):
-    if len(issues) < max_issues:
-        issues.append({
-            "kind": kind,
-            "row_number": row_number,
-            "detail": str(detail)[:400],
-        })
-
-
-def load_independent(conn, path, issues, max_issues):
-    counts = Counter()
-    stream, reader = open_csv(
-        path, INDEPENDENT_REQUIRED
+def ingest(conn, path, kind, issues, limit):
+    is_gap = kind == "gap"
+    required = (
+        GAP_COLUMNS if is_gap else INDEPENDENT_COLUMNS
     )
+    table = (
+        "gap_events" if is_gap else "independent_events"
+    )
+
+    counts = Counter()
+    horizons = Counter()
+    periods = Counter()
+
+    handle, reader = read_csv(path, required)
 
     try:
         with conn:
-            for number, row in enumerate(reader, 2):
-                counts["rows"] += 1
+            for line, row in enumerate(reader, 2):
+                counts["source_rows"] += 1
 
                 try:
-                    tf, market, signal, entry = event_key(
-                        row,
-                        "signal_timestamp",
-                        "entry_timestamp",
+                    tf, market, signal, entry = (
+                        event_identity(
+                            row,
+                            "signal_utc" if is_gap
+                            else "signal_timestamp",
+                            "entry_utc" if is_gap
+                            else "entry_timestamp",
+                        )
+                    )
+
+                    horizon = positive_number(
+                        row.get(
+                            "horizon_hours" if is_gap
+                            else "horizon", ""
+                        )
                     )
                 except ValueError as exc:
-                    counts["invalid_keys"] += 1
-                    add_issue(
-                        issues, max_issues,
-                        "INDEPENDENT_INVALID_KEY",
-                        number, exc,
-                    )
+                    counts["invalid_rows"] += 1
+                    if len(issues) < limit:
+                        issues.append({
+                            "kind": f"{kind}_invalid",
+                            "line": line,
+                            "detail": str(exc),
+                        })
                     continue
 
-                status = normalized_status(
-                    row.get("status", "")
-                )
-                period = row.get("period", "").strip()
-                hit = row.get("hit_30pct", "").strip()
+                period = str(
+                    row.get("period", "")
+                ).strip().upper()
 
-                if status == "UNKNOWN":
-                    counts["unknown_status"] += 1
+                horizons[str(horizon)] += 1
+                periods[period] += 1
 
-                cursor = conn.execute("""
-                    INSERT OR IGNORE INTO independent (
-                        timeframe, market, signal_epoch,
-                        entry_epoch, period, status, hit
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    tf, market, signal, entry,
-                    period, status, hit,
-                ))
-
-                if cursor.rowcount == 0:
-                    counts["duplicate_keys"] += 1
-                    conn.execute("""
-                        UPDATE independent
-                        SET occurrences = occurrences + 1
-                        WHERE timeframe=? AND market=?
-                          AND signal_epoch=? AND entry_epoch=?
-                    """, (tf, market, signal, entry))
+                if is_gap:
+                    values = (
+                        period,
+                        normalize_status(
+                            row.get("original_outcome", "")
+                        ),
+                        normalize_status(
+                            row.get("corrected_outcome", "")
+                        ),
+                        str(
+                            row.get("missing_candles", "")
+                        ).strip(),
+                    )
+                    columns = (
+                        "period,original,corrected,missing"
+                    )
                 else:
-                    counts["unique_keys"] += 1
+                    values = (
+                        period,
+                        normalize_status(
+                            row.get("status", "")
+                        ),
+                        str(
+                            row.get("hit_30pct", "")
+                        ).strip(),
+                    )
+                    columns = "period,status,hit"
 
-                if counts["rows"] % 50000 == 0:
+                key = (
+                    tf, market, signal, entry, horizon
+                )
+
+                placeholders = ",".join(
+                    "?" for _ in range(5 + len(values))
+                )
+
+                statement = (
+                    f"INSERT OR IGNORE INTO {table} "
+                    f"(tf,market,signal,entry,horizon,"
+                    f"{columns}) VALUES ({placeholders})"
+                )
+
+                inserted = conn.execute(
+                    statement, key + values
+                ).rowcount
+
+                if inserted:
+                    counts["unique_keys"] += 1
+                else:
+                    counts["duplicate_rows"] += 1
+
+                    compare_columns = (
+                        ["period", "original",
+                         "corrected", "missing"]
+                        if is_gap else
+                        ["period", "status", "hit"]
+                    )
+
+                    old = conn.execute(
+                        f"SELECT {','.join(compare_columns)} "
+                        f"FROM {table} WHERE tf=? AND market=? "
+                        f"AND signal=? AND entry=? "
+                        f"AND horizon=?",
+                        key,
+                    ).fetchone()
+
+                    conflict = tuple(values) != tuple(old)
+
+                    conn.execute(
+                        f"UPDATE {table} "
+                        f"SET occurrences=occurrences+1, "
+                        f"conflicts=conflicts+? "
+                        f"WHERE tf=? AND market=? "
+                        f"AND signal=? AND entry=? "
+                        f"AND horizon=?",
+                        (int(conflict),) + key,
+                    )
+
+                    if conflict:
+                        counts["conflicting_rows"] += 1
+
+                if counts["source_rows"] % 50000 == 0:
                     print(
-                        "[INDEPENDENT] rows:",
-                        counts["rows"],
+                        f"[{kind}] "
+                        f"{counts['source_rows']:,} rows",
                         flush=True,
                     )
     finally:
-        stream.close()
+        handle.close()
 
-    return dict(counts)
-
-
-def load_gap(conn, path, issues, max_issues):
-    counts = Counter()
-    stream, reader = open_csv(
-        path, GAP_REQUIRED
-    )
-
-    try:
-        with conn:
-            for number, row in enumerate(reader, 2):
-                counts["rows"] += 1
-
-                try:
-                    tf, market, signal, entry = event_key(
-                        row, "signal_utc", "entry_utc"
-                    )
-                except ValueError as exc:
-                    counts["invalid_keys"] += 1
-                    add_issue(
-                        issues, max_issues,
-                        "GAP_INVALID_KEY",
-                        number, exc,
-                    )
-                    continue
-
-                original = normalized_status(
-                    row.get("original_outcome", "")
-                )
-                corrected = normalized_status(
-                    row.get("corrected_outcome", "")
-                )
-
-                if (
-                    original == "UNKNOWN"
-                    or corrected == "UNKNOWN"
-                ):
-                    counts["unknown_status"] += 1
-
-                cursor = conn.execute("""
-                    INSERT OR IGNORE INTO gap_events (
-                        timeframe, market, signal_epoch,
-                        entry_epoch, period,
-                        original_status, corrected_status,
-                        missing_candles
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    tf, market, signal, entry,
-                    row.get("period", "").strip(),
-                    original, corrected,
-                    row.get("missing_candles", "").strip(),
-                ))
-
-                if cursor.rowcount == 0:
-                    counts["duplicate_keys"] += 1
-                    conn.execute("""
-                        UPDATE gap_events
-                        SET occurrences = occurrences + 1
-                        WHERE timeframe=? AND market=?
-                          AND signal_epoch=? AND entry_epoch=?
-                    """, (tf, market, signal, entry))
-                else:
-                    counts["unique_keys"] += 1
-
-                if counts["rows"] % 50000 == 0:
-                    print(
-                        "[GAP] rows:",
-                        counts["rows"],
-                        flush=True,
-                    )
-    finally:
-        stream.close()
-
-    return dict(counts)
+    return {
+        "counts": dict(counts),
+        "horizon_values": dict(
+            sorted(horizons.items())
+        ),
+        "period_values": dict(
+            sorted(periods.items())
+        ),
+    }
 
 
-def analyze(conn, issues, max_issues):
+def analyze(conn, issues, limit):
     totals = Counter()
-    by_timeframe = {}
-
-    for tf in ("h1", "h4", "d1"):
-        by_timeframe[tf] = Counter()
+    by_tf = {
+        tf: Counter() for tf in TIMEFRAMES
+    }
+    period_pairs = Counter()
 
     query = """
         SELECT
-            g.timeframe,
-            g.market,
-            g.signal_epoch,
-            g.entry_epoch,
-            g.period,
-            g.original_status,
-            g.corrected_status,
-            g.missing_candles,
-            g.occurrences,
-            i.period,
-            i.status,
-            i.hit,
-            i.occurrences
+            g.tf, g.market, g.signal, g.entry,
+            g.horizon, g.period, g.original,
+            g.corrected, g.occurrences, g.conflicts,
+            i.period, i.status, i.hit,
+            i.occurrences, i.conflicts
         FROM gap_events g
-        LEFT JOIN independent i
-          ON g.timeframe=i.timeframe
+        JOIN independent_events i
+          ON g.tf=i.tf
          AND g.market=i.market
-         AND g.signal_epoch=i.signal_epoch
-         AND g.entry_epoch=i.entry_epoch
+         AND g.signal=i.signal
+         AND g.entry=i.entry
+         AND g.horizon=i.horizon
     """
 
-    for row in conn.execute(query):
+    for record in conn.execute(query):
         (
-            tf, market, signal, entry,
+            tf, market, signal, entry, horizon,
             gap_period, original, corrected,
-            missing, gap_occurrences,
-            independent_period, independent_status,
-            independent_hit, independent_occurrences,
-        ) = row
+            gap_occurrences, gap_conflicts,
+            ind_period, status, hit,
+            ind_occurrences, ind_conflicts,
+        ) = record
 
-        local = by_timeframe[tf]
-        totals["gap_unique_events"] += 1
-        local["gap_unique_events"] += 1
+        totals["exact_horizon_matches"] += 1
+        by_tf[tf]["exact_horizon_matches"] += 1
 
-        if independent_status is None:
-            totals["unmatched_gap_events"] += 1
-            local["unmatched_gap_events"] += 1
-            continue
+        period_pairs[
+            (gap_period, ind_period)
+        ] += 1
 
-        totals["matched_events"] += 1
-        local["matched_events"] += 1
+        if gap_period != ind_period:
+            totals["different_period_labels"] += 1
+            by_tf[tf]["different_period_labels"] += 1
 
-        if gap_occurrences > 1 or independent_occurrences > 1:
-            totals["ambiguous_duplicate_matches"] += 1
-            local["ambiguous_duplicate_matches"] += 1
-
-        if gap_period != independent_period:
-            totals["period_mismatches"] += 1
-            local["period_mismatches"] += 1
-
-        if original != independent_status:
-            totals["original_status_mismatches"] += 1
-            local["original_status_mismatches"] += 1
-
-            add_issue(
-                issues, max_issues,
-                "ORIGINAL_STATUS_MISMATCH",
-                0,
-                (
-                    f"{tf}/{market} signal={signal} "
-                    f"entry={entry} gap={original} "
-                    f"independent={independent_status}"
-                ),
-            )
-
-        if corrected != independent_status:
-            totals["corrected_status_differences"] += 1
-            local["corrected_status_differences"] += 1
-
-        if independent_status in {"HIT", "MISS"}:
-            expected_hit = (
-                "1" if independent_status == "HIT" else "0"
-            )
-
-            if independent_hit != expected_hit:
-                totals["hit_flag_mismatches"] += 1
-                local["hit_flag_mismatches"] += 1
-
-        if missing:
-            try:
-                if float(missing) > 0:
-                    totals["matched_events_with_gaps"] += 1
-                    local["matched_events_with_gaps"] += 1
-            except ValueError:
-                totals["invalid_missing_counts"] += 1
-
-    for tf, count in conn.execute("""
-        SELECT timeframe, COUNT(*)
-        FROM independent
-        GROUP BY timeframe
-    """):
-        by_timeframe[tf]["independent_unique_events"] = count
-
-    totals["independent_unique_events"] = conn.execute(
-        "SELECT COUNT(*) FROM independent"
-    ).fetchone()[0]
-
-    totals["unmatched_independent_events"] = (
-        conn.execute("""
-            SELECT COUNT(*)
-            FROM independent i
-            LEFT JOIN gap_events g
-              ON g.timeframe=i.timeframe
-             AND g.market=i.market
-             AND g.signal_epoch=i.signal_epoch
-             AND g.entry_epoch=i.entry_epoch
-            WHERE g.market IS NULL
-        """).fetchone()[0]
-    )
-
-    for tf in ("h1", "h4", "d1"):
-        local = by_timeframe[tf]
-        local["unmatched_independent_events"] = (
-            local["independent_unique_events"]
-            - local["matched_events"]
+        ambiguous = (
+            gap_conflicts > 0 or ind_conflicts > 0
         )
 
-    return dict(totals), {
-        tf: dict(value)
-        for tf, value in by_timeframe.items()
-    }
+        if ambiguous:
+            totals["conflicting_duplicate_matches"] += 1
+            by_tf[tf][
+                "conflicting_duplicate_matches"
+            ] += 1
+            continue
+
+        totals["comparable_matches"] += 1
+        by_tf[tf]["comparable_matches"] += 1
+
+        if original != status:
+            totals["original_status_differences"] += 1
+            by_tf[tf][
+                "original_status_differences"
+            ] += 1
+
+            if len(issues) < limit:
+                issues.append({
+                    "kind": "original_status_difference",
+                    "line": 0,
+                    "detail": (
+                        f"{tf}/{market} signal={signal} "
+                        f"entry={entry} horizon={horizon} "
+                        f"gap={original} independent={status}"
+                    ),
+                })
+
+        if corrected != status:
+            totals["corrected_status_differences"] += 1
+            by_tf[tf][
+                "corrected_status_differences"
+            ] += 1
+
+        if status in {"HIT", "MISS"}:
+            expected = (
+                "1" if status == "HIT" else "0"
+            )
+
+            if hit != expected:
+                totals["hit_flag_differences"] += 1
+                by_tf[tf][
+                    "hit_flag_differences"
+                ] += 1
+
+    for table, prefix in (
+        ("gap_events", "gap"),
+        ("independent_events", "independent"),
+    ):
+        for tf, unique, duplicates, conflicts in (
+            conn.execute(
+                f"SELECT tf,COUNT(*),"
+                f"SUM(CASE WHEN occurrences>1 "
+                f"THEN 1 ELSE 0 END),"
+                f"SUM(CASE WHEN conflicts>0 "
+                f"THEN 1 ELSE 0 END) "
+                f"FROM {table} GROUP BY tf"
+            )
+        ):
+            by_tf[tf][f"{prefix}_unique_keys"] = unique
+            by_tf[tf][
+                f"{prefix}_duplicate_keys"
+            ] = duplicates
+            by_tf[tf][
+                f"{prefix}_conflicting_keys"
+            ] = conflicts
+
+            totals[f"{prefix}_unique_keys"] += unique
+            totals[f"{prefix}_duplicate_keys"] += duplicates
+            totals[f"{prefix}_conflicting_keys"] += conflicts
+
+    totals["unmatched_gap_keys"] = (
+        totals["gap_unique_keys"]
+        - totals["exact_horizon_matches"]
+    )
+
+    totals["unmatched_independent_keys"] = (
+        totals["independent_unique_keys"]
+        - totals["exact_horizon_matches"]
+    )
+
+    for tf in TIMEFRAMES:
+        local = by_tf[tf]
+        local["unmatched_gap_keys"] = (
+            local["gap_unique_keys"]
+            - local["exact_horizon_matches"]
+        )
+        local["unmatched_independent_keys"] = (
+            local["independent_unique_keys"]
+            - local["exact_horizon_matches"]
+        )
+
+    # Diagnostic only: same event identity, regardless of horizon.
+    # This is NOT an outcome match.
+    base_overlap = conn.execute("""
+        SELECT COUNT(*)
+        FROM (
+            SELECT DISTINCT
+                g.tf, g.market, g.signal, g.entry
+            FROM gap_events g
+            WHERE EXISTS (
+                SELECT 1 FROM independent_events i
+                WHERE i.tf=g.tf
+                  AND i.market=g.market
+                  AND i.signal=g.signal
+                  AND i.entry=g.entry
+            )
+        )
+    """).fetchone()[0]
+
+    totals["base_identity_overlap"] = base_overlap
+
+    return (
+        dict(totals),
+        {
+            tf: dict(by_tf[tf])
+            for tf in TIMEFRAMES
+        },
+        [
+            {
+                "gap_period": a,
+                "independent_period": b,
+                "matches": count,
+            }
+            for (a, b), count in sorted(
+                period_pairs.items()
+            )
+        ],
+    )
 
 
 def main():
     parser = argparse.ArgumentParser()
-
     parser.add_argument("--root", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument(
         "--max-issues", type=int, default=100
     )
-
     args = parser.parse_args()
 
     if not 1 <= args.max_issues <= 1000:
-        raise RuntimeError("max-issues must be 1..1000")
+        raise RuntimeError("Invalid max-issues")
 
     root = Path(args.root).resolve()
     output = Path(args.output).resolve()
 
     if not root.is_dir():
-        raise RuntimeError("Data root does not exist")
+        raise RuntimeError("Data root missing")
 
-    # Prevent placing audit output inside the source tree.
-    try:
-        output.relative_to(root)
+    if output == root or root in output.parents:
         raise RuntimeError(
-            "Output must be outside data root"
+            "Output must be outside the data root"
         )
-    except ValueError:
-        pass
 
-    gap_path = (root / GAP_REL).resolve()
-    independent_path = (
-        root / INDEPENDENT_REL
+    gap = (root / GAP_SOURCE).resolve()
+    independent = (
+        root / INDEPENDENT_SOURCE
     ).resolve()
 
-    for path in (gap_path, independent_path):
-        path.relative_to(root)
-
+    for path in (gap, independent):
         if not path.is_file():
             raise RuntimeError(
-                f"Required source missing: {path}"
+                f"Missing source: {path}"
+            )
+
+        if root not in path.parents:
+            raise RuntimeError(
+                "Source path escaped data root"
             )
 
     output.mkdir(parents=True, exist_ok=True)
 
-    issues = []
-    db_path = output / "attribution_work.sqlite3"
+    db_path = output / "attribution_v002.sqlite3"
 
     if db_path.exists():
         raise RuntimeError(
-            "Output directory already contains audit DB"
+            "Output database already exists"
         )
 
-    conn = prepare_database(db_path)
+    issues = []
+    conn = prepare_db(db_path)
 
     try:
-        independent_counts = load_independent(
-            conn, independent_path,
+        gap_info = ingest(
+            conn, gap, "gap",
             issues, args.max_issues,
         )
 
-        gap_counts = load_gap(
-            conn, gap_path,
+        independent_info = ingest(
+            conn, independent, "independent",
             issues, args.max_issues,
         )
 
-        totals, timeframes = analyze(
+        totals, by_tf, pairs = analyze(
             conn, issues, args.max_issues
         )
     finally:
         conn.close()
 
+    # This is a diagnostic audit, not proof of attribution.
     result = {
         "audit": AUDIT,
         "version": VERSION,
@@ -578,42 +623,38 @@ def main():
             timezone.utc
         ).isoformat(),
         "sources": {
-            "gap_integrity": {
-                "relative_path": GAP_REL,
-                "size_bytes": gap_path.stat().st_size,
-                "sha256": sha256_file(gap_path),
-                "counts": gap_counts,
+            "gap": {
+                "path": GAP_SOURCE,
+                "sha256": sha256(gap),
+                **gap_info,
             },
-            "independent_detail": {
-                "relative_path": INDEPENDENT_REL,
-                "size_bytes": independent_path.stat().st_size,
-                "sha256": sha256_file(independent_path),
-                "counts": independent_counts,
+            "independent": {
+                "path": INDEPENDENT_SOURCE,
+                "sha256": sha256(independent),
+                **independent_info,
             },
         },
         "matching_key": [
-            "timeframe",
-            "market",
-            "signal_utc_epoch",
-            "entry_utc_epoch",
+            "timeframe", "market",
+            "signal_timestamp_utc",
+            "entry_timestamp_utc",
+            "horizon",
         ],
-        "timestamp_assumption": (
-            "Timezone-naive timestamps interpreted as UTC"
+        "horizon_rule": (
+            "Numeric exact match only; "
+            "no automatic bars-to-hours conversion"
         ),
         "totals": totals,
-        "by_timeframe": timeframes,
+        "by_timeframe": by_tf,
+        "period_label_pairs": pairs,
         "sample_issues": issues,
-        "sample_issues_truncated": (
-            len(issues) >= args.max_issues
-        ),
         "limitations": [
-            "Duplicates are counted but not resolved",
-            "Matching does not prove causal attribution",
-            "Original outcome and corrected outcome "
-            "have different meanings",
+            "Horizon units have not been independently verified",
+            "Different period names do not prove errors",
+            "Conflicting duplicates remain unresolved",
+            "Event matching does not prove causality",
             "No independent OHLCV replay",
-            "No independent OOS validation",
-            "No executable trading simulation",
+            "No independent OOS or profitability proof",
         ],
         "event_level_attribution_proven": False,
         "independent_oos_proven": False,
@@ -622,75 +663,91 @@ def main():
         "research_decision": "HOLD",
     }
 
-    result_path = output / "attribution_result.json"
-    summary_path = output / "attribution_timeframes.csv"
-    issues_path = output / "attribution_issues.csv"
-    manifest_path = output / "attribution_manifest.json"
+    result_path = output / "attribution_v002_result.json"
+    tf_path = output / "attribution_v002_timeframes.csv"
+    pairs_path = output / "attribution_v002_period_pairs.csv"
+    issues_path = output / "attribution_v002_issues.csv"
+    manifest_path = output / "attribution_v002_manifest.json"
 
-    write_json(result_path, result)
+    save_json(result_path, result)
 
     fields = [
         "timeframe",
-        "gap_unique_events",
-        "independent_unique_events",
-        "matched_events",
-        "unmatched_gap_events",
-        "unmatched_independent_events",
-        "ambiguous_duplicate_matches",
-        "period_mismatches",
-        "original_status_mismatches",
+        "gap_unique_keys",
+        "independent_unique_keys",
+        "exact_horizon_matches",
+        "comparable_matches",
+        "unmatched_gap_keys",
+        "unmatched_independent_keys",
+        "gap_duplicate_keys",
+        "independent_duplicate_keys",
+        "gap_conflicting_keys",
+        "independent_conflicting_keys",
+        "conflicting_duplicate_matches",
+        "different_period_labels",
+        "original_status_differences",
         "corrected_status_differences",
-        "hit_flag_mismatches",
-        "matched_events_with_gaps",
+        "hit_flag_differences",
     ]
 
-    with summary_path.open(
+    with tf_path.open(
         "w", encoding="utf-8", newline=""
-    ) as stream:
+    ) as handle:
         writer = csv.DictWriter(
-            stream, fieldnames=fields
+            handle, fieldnames=fields
         )
         writer.writeheader()
 
-        for tf in ("h1", "h4", "d1"):
+        for tf in TIMEFRAMES:
             writer.writerow({
                 "timeframe": tf,
-                **timeframes[tf],
+                **by_tf[tf],
             })
+
+    with pairs_path.open(
+        "w", encoding="utf-8", newline=""
+    ) as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "gap_period",
+                "independent_period",
+                "matches",
+            ],
+        )
+        writer.writeheader()
+        writer.writerows(pairs)
 
     with issues_path.open(
         "w", encoding="utf-8", newline=""
-    ) as stream:
+    ) as handle:
         writer = csv.DictWriter(
-            stream,
-            fieldnames=[
-                "kind", "row_number", "detail"
-            ],
+            handle,
+            fieldnames=["kind", "line", "detail"],
         )
         writer.writeheader()
         writer.writerows(issues)
 
-    output_files = [
-        result_path,
-        summary_path,
-        issues_path,
+    files = [
+        result_path, tf_path,
+        pairs_path, issues_path,
     ]
 
     manifest = {
         "audit": AUDIT,
         "version": VERSION,
         "execution": "PASS",
-        "script_sha256": sha256_file(
+        "script_sha256": sha256(
             Path(__file__).resolve()
         ),
         "output_sha256": {
-            path.name: sha256_file(path)
-            for path in output_files
+            path.name: sha256(path)
+            for path in files
         },
         "research_decision": "HOLD",
     }
 
-    write_json(manifest_path, manifest)
+    save_json(manifest_path, manifest)
 
     print(
         json.dumps(
@@ -705,12 +762,10 @@ def main():
         flush=True,
     )
 
-    return 0
-
 
 if __name__ == "__main__":
     try:
-        sys.exit(main())
+        main()
     except Exception as exc:
         print(
             f"[FAIL] {type(exc).__name__}: {exc}",
