@@ -1,0 +1,248 @@
+
+name: audit_pattern_256_ohlcv_replay_preflight.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern256-ohlcv-replay-preflight
+  cancel-in-progress: false
+
+jobs:
+  ohlcv-replay-preflight:
+    name: ohlcv-replay-preflight
+    runs-on:
+      - self-hosted
+      - Windows
+    timeout-minutes: 90
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      DATA_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify inputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_ohlcv_replay_preflight.py"
+
+          if (-not (Test-Path $script)) {
+            throw "Audit script missing"
+          }
+
+          $sources = @(
+            "data\reports\pattern_256_event_gap_integrity\gap_integrity_events.csv",
+            "data\reports\pattern_256_accumulation_independent\independent_detail.csv"
+          )
+
+          foreach ($relative in $sources) {
+            $path = Join-Path $env:DATA_ROOT $relative
+
+            if (-not (Test-Path $path)) {
+              throw "Missing source: $path"
+            }
+          }
+
+          & py -c "import ast,pathlib,sys; ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8-sig'))" $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax verification failed"
+          }
+
+      - name: Prepare isolated output
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $folder = "pattern256_preflight_${env:GITHUB_RUN_ID}_${env:GITHUB_RUN_ATTEMPT}"
+
+          $output = Join-Path $env:RUNNER_TEMP $folder
+
+          if (Test-Path $output) {
+            throw "Output already exists"
+          }
+
+          "PREFLIGHT_OUTPUT=$output" |
+            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Execute preflight
+        id: preflight
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_ohlcv_replay_preflight.py"
+
+          & py -u $script `
+            --root $env:DATA_ROOT `
+            --output $env:PREFLIGHT_OUTPUT `
+            --sample-per-source 100
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Preflight execution failed"
+          }
+
+      - name: Verify reports
+        id: verify
+        if: always()
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ steps.preflight.outcome }}" -ne "success") {
+            throw "Preflight did not succeed"
+          }
+
+          $out = $env:PREFLIGHT_OUTPUT
+
+          $resultPath = Join-Path $out `
+            "preflight_result.json"
+
+          $manifestPath = Join-Path $out `
+            "preflight_manifest.json"
+
+          $result = Get-Content $resultPath `
+            -Raw | ConvertFrom-Json
+
+          $manifest = Get-Content $manifestPath `
+            -Raw | ConvertFrom-Json
+
+          if ($result.execution -ne "PASS" -or
+              $manifest.execution -ne "PASS") {
+            throw "Execution mismatch"
+          }
+
+          if ($result.version -ne "Clean V001" -or
+              $manifest.version -ne "Clean V001") {
+            throw "Version mismatch"
+          }
+
+          if ($result.research_decision -ne "HOLD" -or
+              $result.outcome_replay_performed -ne $false -or
+              $result.train_approved -ne $false -or
+              $result.live_trading_approved -ne $false) {
+            throw "Research safety gate failed"
+          }
+
+          $script = Join-Path $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_ohlcv_replay_preflight.py"
+
+          $actualScript = (
+            Get-FileHash $script -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if ($actualScript -ne (
+            [string]$manifest.script_sha256
+          ).ToLowerInvariant()) {
+            throw "Script hash mismatch"
+          }
+
+          $names = @(
+            "preflight_result.json",
+            "preflight_ohlcv.json",
+            "preflight_events.json"
+          )
+
+          foreach ($name in $names) {
+            $path = Join-Path $out $name
+
+            if (-not (Test-Path $path)) {
+              throw "Missing output: $name"
+            }
+
+            $actual = (
+              Get-FileHash $path -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            $expected = (
+              [string]$manifest.output_sha256.$name
+            ).ToLowerInvariant()
+
+            if ($actual -ne $expected) {
+              throw "SHA256 mismatch: $name"
+            }
+          }
+
+          Write-Host "[PASS] Report verification"
+
+      - name: Publish summary
+        if: always()
+        run: |
+          $execution = "${{ steps.preflight.outcome }}"
+          $verification = "${{ steps.verify.outcome }}"
+
+          @"
+          ## Pattern 256 OHLCV Replay Preflight
+
+          | Check | Result |
+          |---|---|
+          | Version | Clean V001 |
+          | Execution | $execution |
+          | Verification | $verification |
+          | Research decision | HOLD |
+
+          "@ | Out-File $env:GITHUB_STEP_SUMMARY `
+            -Append -Encoding utf8
+
+          if ($execution -ne "success" -or
+              $verification -ne "success") {
+            exit 0
+          }
+
+          $path = Join-Path $env:PREFLIGHT_OUTPUT `
+            "preflight_result.json"
+
+          $result = Get-Content $path `
+            -Raw | ConvertFrom-Json
+
+          @"
+          ### Data inspection
+
+          | Check | Count |
+          |---|---:|
+          | Sampled events | $($result.sampled_events) |
+          | OHLCV market pairs | $($result.ohlcv_market_pairs) |
+          | Entry timestamp covered | $($result.sampled_event_start_covered) |
+          | Assumed horizon end covered | $($result.sampled_assumed_end_covered) |
+
+          Horizon units remain unverified.
+          No outcome replay was performed.
+
+          Research decision: HOLD.
+          "@ | Out-File $env:GITHUB_STEP_SUMMARY `
+            -Append -Encoding utf8
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern256-preflight-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/pattern256_preflight_${{ github.run_id }}_${{ github.run_attempt }}/preflight_*.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Final status gate
+        if: always()
+        run: |
+          if ("${{ steps.preflight.outcome }}" -ne "success") {
+            throw "Preflight failed"
+          }
+
+          if ("${{ steps.verify.outcome }}" -ne "success") {
+            throw "Preflight verification failed"
+          }
+
+          Write-Host "[PASS] OHLCV preflight"
+          Write-Host "Research decision: HOLD"
