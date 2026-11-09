@@ -18,70 +18,149 @@ jobs:
 
     defaults:
       run:
-        shell: pwsh
+        shell: powershell
+
+    env:
+      RESEARCH_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+      REPORT_FOLDER: 'data\reports\pattern_256_outcomes_full_market'
+      CHECKPOINT_FOLDER: 'data\reports\pattern_256_accumulation_30pct\checkpoints'
+      AUDIT_SCRIPT: 'verify_pattern_256_outcomes_full_market.py'
 
     steps:
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Verify environment
+        id: environment
+        shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
-          $script = Join-Path $env:GITHUB_WORKSPACE "verify_pattern_256_outcomes_full_market.py"
+          Write-Host "===================================="
+          Write-Host "Pattern 256 Independent Verification"
+          Write-Host "Workflow Clean V002"
+          Write-Host "===================================="
 
-          if (-not (Test-Path -LiteralPath $script)) {
-            throw "Python audit script missing"
+          Write-Host "Runner identity:"
+          whoami
+
+          Write-Host "PowerShell version:"
+          $PSVersionTable.PSVersion.ToString()
+
+          Write-Host "Repository:"
+          Write-Host $env:GITHUB_WORKSPACE
+
+          Write-Host "Research root:"
+          Write-Host $env:RESEARCH_ROOT
+
+          if (-not (Test-Path -LiteralPath $env:RESEARCH_ROOT -PathType Container)) {
+            throw "Research root missing: $env:RESEARCH_ROOT"
           }
 
-          foreach ($tf in @("h1", "h4", "d1")) {
-            $cp = Join-Path $root "data\reports\pattern_256_accumulation_30pct\checkpoints\$tf"
-            $ohlcv = Join-Path $root "data\ohlcv\$tf"
+          $script = Join-Path $env:GITHUB_WORKSPACE $env:AUDIT_SCRIPT
 
-            if (-not (Test-Path -LiteralPath $cp)) {
-              throw "Missing checkpoint directory: $cp"
-            }
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Audit script missing: $script"
+          }
 
-            if (-not (Test-Path -LiteralPath $ohlcv)) {
-              throw "Missing OHLCV directory: $ohlcv"
-            }
+          Write-Host "Audit script found:"
+          Write-Host $script
+
+          $python = Get-Command py -ErrorAction SilentlyContinue
+
+          if ($null -eq $python) {
+            throw "Python launcher py not found"
           }
 
           py --version
 
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python version check failed"
+          }
+
+          foreach ($tf in @("h1", "h4", "d1")) {
+
+            $cp = Join-Path $env:RESEARCH_ROOT "$env:CHECKPOINT_FOLDER\$tf"
+            $ohlcv = Join-Path $env:RESEARCH_ROOT "data\ohlcv\$tf"
+
+            if (-not (Test-Path -LiteralPath $cp -PathType Container)) {
+              throw "Missing checkpoint directory: $cp"
+            }
+
+            if (-not (Test-Path -LiteralPath $ohlcv -PathType Container)) {
+              throw "Missing OHLCV directory: $ohlcv"
+            }
+
+            $checkpointCount = @(
+              Get-ChildItem -LiteralPath $cp -Filter "KRW-*.csv" -File
+            ).Count
+
+            $ohlcvCount = @(
+              Get-ChildItem -LiteralPath $ohlcv -Filter "KRW-*.csv" -File
+            ).Count
+
+            Write-Host "------------------------------------"
+            Write-Host "Timeframe: $tf"
+            Write-Host "Checkpoints: $checkpointCount"
+            Write-Host "OHLCV files: $ohlcvCount"
+
+            if ($checkpointCount -eq 0) {
+              throw "No checkpoint files found for $tf"
+            }
+
+            if ($ohlcvCount -eq 0) {
+              throw "No OHLCV files found for $tf"
+            }
+          }
+
+          Write-Host "Environment verification PASS"
+
       - name: Execute independent verification
         id: audit
-        continue-on-error: true
+        if: steps.environment.outcome == 'success'
+        shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
-          $script = Join-Path $env:GITHUB_WORKSPACE "verify_pattern_256_outcomes_full_market.py"
+          $script = Join-Path $env:GITHUB_WORKSPACE $env:AUDIT_SCRIPT
 
-          py -u $script --root $root
+          Write-Host "Starting independent OHLCV replay..."
+          Write-Host "Script: $script"
+          Write-Host "Root: $env:RESEARCH_ROOT"
 
-          if ($LASTEXITCODE -ne 0) {
-            throw "Independent verification execution failed"
+          py -u $script --root $env:RESEARCH_ROOT
+
+          $exitCode = $LASTEXITCODE
+
+          Write-Host "Python exit code: $exitCode"
+
+          if ($exitCode -ne 0) {
+            throw "Independent verification failed with exit code $exitCode"
           }
+
+          Write-Host "Independent verification completed"
 
       - name: Verify reports and SHA256
         id: verify
-        if: always()
-        continue-on-error: true
+        if: steps.audit.outcome == 'success'
+        shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
-          $dir = Join-Path $root "data\reports\pattern_256_outcomes_full_market"
+          $dir = Join-Path $env:RESEARCH_ROOT $env:REPORT_FOLDER
 
           $resultFile = Join-Path $dir "outcome_verification_result.json"
           $detailFile = Join-Path $dir "outcome_verification_detail.csv"
           $manifestFile = Join-Path $dir "outcome_verification_manifest.json"
 
-          foreach ($file in @($resultFile, $detailFile, $manifestFile)) {
-            if (-not (Test-Path -LiteralPath $file)) {
-              throw "Report missing: $file"
+          foreach ($file in @(
+            $resultFile,
+            $detailFile,
+            $manifestFile
+          )) {
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+              throw "Required report missing: $file"
             }
           }
 
@@ -91,105 +170,241 @@ jobs:
           $manifest = Get-Content -LiteralPath $manifestFile -Raw |
             ConvertFrom-Json
 
-          $expectedResult = $manifest.outputs.'outcome_verification_result.json'
-          $expectedDetail = $manifest.outputs.'outcome_verification_detail.csv'
-
-          $actualResult = (Get-FileHash -LiteralPath $resultFile -Algorithm SHA256).Hash.ToLowerInvariant()
-          $actualDetail = (Get-FileHash -LiteralPath $detailFile -Algorithm SHA256).Hash.ToLowerInvariant()
-
-          if ($actualResult -ne $expectedResult) {
-            throw "Result SHA256 mismatch"
+          if ($result.audit -ne "pattern_256_outcomes_full_market") {
+            throw "Unexpected audit identity"
           }
 
-          if ($actualDetail -ne $expectedDetail) {
-            throw "Detail SHA256 mismatch"
+          if ($result.version -ne "Clean V001") {
+            throw "Unexpected Python audit version"
           }
 
           if ($result.execution -ne "PASS") {
-            throw "Audit execution not PASS"
+            throw "Audit execution did not complete"
           }
 
-          Write-Host "SHA256 verification successful"
+          $expectedResult = [string]$manifest.outputs.'outcome_verification_result.json'
+          $expectedDetail = [string]$manifest.outputs.'outcome_verification_detail.csv'
+
+          if ([string]::IsNullOrWhiteSpace($expectedResult)) {
+            throw "Result hash missing from manifest"
+          }
+
+          if ([string]::IsNullOrWhiteSpace($expectedDetail)) {
+            throw "Detail hash missing from manifest"
+          }
+
+          $actualResult = (
+            Get-FileHash -LiteralPath $resultFile -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          $actualDetail = (
+            Get-FileHash -LiteralPath $detailFile -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if ($actualResult -ne $expectedResult.ToLowerInvariant()) {
+            throw "Result SHA256 mismatch"
+          }
+
+          if ($actualDetail -ne $expectedDetail.ToLowerInvariant()) {
+            throw "Detail SHA256 mismatch"
+          }
+
+          Write-Host "===================================="
+          Write-Host "Report SHA256 verification PASS"
+          Write-Host "===================================="
+          Write-Host "Classification: $($result.classification)"
+          Write-Host "Rows checked: $($result.rows_checked)"
+          Write-Host "Files discovered: $($result.files_discovered)"
+          Write-Host "Files resumed: $($result.files_resumed)"
 
       - name: Publish summary
         if: always()
+        shell: powershell
         run: |
-          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
-          $file = Join-Path $root "data\reports\pattern_256_outcomes_full_market\outcome_verification_result.json"
+          $ErrorActionPreference = "Stop"
 
-          @(
+          $summary = $env:GITHUB_STEP_SUMMARY
+
+          $lines = @(
             "## Pattern 256 Independent Outcome Verification"
             ""
             "| Check | Result |"
             "|---|---|"
-            "| Version | Clean V001 |"
+            "| Workflow version | Clean V002 |"
+            "| Python version | Clean V001 |"
+            "| Environment | ${{ steps.environment.outcome }} |"
             "| Python execution | ${{ steps.audit.outcome }} |"
             "| SHA256 verification | ${{ steps.verify.outcome }} |"
-          ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+            "| Research decision | HOLD |"
+            ""
+          )
 
-          if (Test-Path -LiteralPath $file) {
-            $r = Get-Content -LiteralPath $file -Raw |
-              ConvertFrom-Json
+          $lines | Out-File -FilePath $summary -Encoding utf8 -Append
 
+          if ("${{ steps.audit.outcome }}" -ne "success") {
             @(
-              "| Research decision | $($r.research_decision) |"
-              "| Classification | $($r.classification) |"
-              "| Files discovered | $($r.files_discovered) |"
-              "| Rows checked | $($r.rows_checked) |"
-              "| Resumed files | $($r.files_resumed) |"
+              "### Execution status"
               ""
-              "### Classification counts"
-            ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-
-            foreach ($p in $r.classification_counts.PSObject.Properties) {
-              "- $($p.Name): $($p.Value)" |
-                Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-            }
-
-            @(
+              "Python audit did not complete successfully."
+              "Review the failed step logs."
               ""
-              "This verification does not approve training or live trading."
-            ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+            ) | Out-File -FilePath $summary -Encoding utf8 -Append
+
+            exit 0
           }
 
+          $file = Join-Path $env:RESEARCH_ROOT "$env:REPORT_FOLDER\outcome_verification_result.json"
+
+          if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+            "Result JSON is missing." |
+              Out-File -FilePath $summary -Encoding utf8 -Append
+
+            exit 0
+          }
+
+          $r = Get-Content -LiteralPath $file -Raw |
+            ConvertFrom-Json
+
+          @(
+            "### Verification results"
+            ""
+            "| Metric | Value |"
+            "|---|---|"
+            "| Execution | $($r.execution) |"
+            "| Classification | $($r.classification) |"
+            "| Files discovered | $($r.files_discovered) |"
+            "| Files resumed | $($r.files_resumed) |"
+            "| Rows checked | $($r.rows_checked) |"
+            ""
+            "### Classification counts"
+            ""
+          ) | Out-File -FilePath $summary -Encoding utf8 -Append
+
+          if ($null -ne $r.classification_counts) {
+            foreach ($p in $r.classification_counts.PSObject.Properties) {
+              "- $($p.Name): $($p.Value)" |
+                Out-File -FilePath $summary -Encoding utf8 -Append
+            }
+          }
+
+          if ($null -ne $r.errors -and @($r.errors).Count -gt 0) {
+            @(
+              ""
+              "### Errors"
+              ""
+            ) | Out-File -FilePath $summary -Encoding utf8 -Append
+
+            foreach ($err in @($r.errors) | Select-Object -First 30) {
+              "- $err" |
+                Out-File -FilePath $summary -Encoding utf8 -Append
+            }
+          }
+
+          @(
+            ""
+            "### Limitations"
+            ""
+            "This is an independent OHLCV consistency audit."
+            ""
+            "It does not prove independent OOS performance or profitability."
+            ""
+            "Training and live trading remain unapproved."
+          ) | Out-File -FilePath $summary -Encoding utf8 -Append
+
       - name: Stage reports
-        if: always()
+        id: stage
+        if: steps.audit.outcome == 'success' && steps.verify.outcome == 'success'
+        shell: powershell
         run: |
-          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
-          $source = Join-Path $root "data\reports\pattern_256_outcomes_full_market"
+          $ErrorActionPreference = "Stop"
+
+          $source = Join-Path $env:RESEARCH_ROOT $env:REPORT_FOLDER
           $dest = Join-Path $env:GITHUB_WORKSPACE "outcome_audit_artifacts"
 
-          New-Item -ItemType Directory -Force -Path $dest |
+          if (-not (Test-Path -LiteralPath $source -PathType Container)) {
+            throw "Report directory missing"
+          }
+
+          if (Test-Path -LiteralPath $dest) {
+            Remove-Item -LiteralPath $dest -Recurse -Force
+          }
+
+          New-Item -ItemType Directory -Path $dest -Force |
             Out-Null
 
-          foreach ($name in @(
+          $names = @(
             "outcome_verification_result.json",
             "outcome_verification_detail.csv",
             "outcome_verification_manifest.json"
-          )) {
-            $file = Join-Path $source $name
+          )
 
-            if (Test-Path -LiteralPath $file) {
-              Copy-Item -LiteralPath $file -Destination $dest -Force
+          foreach ($name in $names) {
+
+            $src = Join-Path $source $name
+            $dst = Join-Path $dest $name
+
+            if (-not (Test-Path -LiteralPath $src -PathType Leaf)) {
+              throw "Report missing during staging: $name"
             }
+
+            Copy-Item -LiteralPath $src -Destination $dst -Force
+
+            $sourceHash = (
+              Get-FileHash -LiteralPath $src -Algorithm SHA256
+            ).Hash
+
+            $stagedHash = (
+              Get-FileHash -LiteralPath $dst -Algorithm SHA256
+            ).Hash
+
+            if ($sourceHash -ne $stagedHash) {
+              throw "Staged file hash mismatch: $name"
+            }
+
+            Write-Host "[STAGED] $name"
           }
 
+          Write-Host "Report staging PASS"
+
       - name: Upload reports
-        if: always()
+        id: upload
+        if: steps.stage.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: pattern-256-outcome-verification
           path: outcome_audit_artifacts/
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 30
 
       - name: Final status gate
         if: always()
+        shell: powershell
         run: |
-          if ("${{ steps.audit.outcome }}" -ne "success") {
-            throw "Python execution failed"
+          $ErrorActionPreference = "Stop"
+
+          $checks = @(
+            @{ Name = "Environment"; Status = "${{ steps.environment.outcome }}" },
+            @{ Name = "Python audit"; Status = "${{ steps.audit.outcome }}" },
+            @{ Name = "SHA256 verification"; Status = "${{ steps.verify.outcome }}" },
+            @{ Name = "Report staging"; Status = "${{ steps.stage.outcome }}" },
+            @{ Name = "Artifact upload"; Status = "${{ steps.upload.outcome }}" }
+          )
+
+          $failed = $false
+
+          foreach ($check in $checks) {
+            Write-Host "$($check.Name): $($check.Status)"
+
+            if ($check.Status -ne "success") {
+              $failed = $true
+            }
           }
 
-          if ("${{ steps.verify.outcome }}" -ne "success") {
-            throw "Report verification failed"
+          if ($failed) {
+            throw "Full-market outcome verification workflow failed"
           }
+
+          Write-Host "===================================="
+          Write-Host "WORKFLOW EXECUTION PASS"
+          Write-Host "Research decision remains HOLD"
+          Write-Host "===================================="
