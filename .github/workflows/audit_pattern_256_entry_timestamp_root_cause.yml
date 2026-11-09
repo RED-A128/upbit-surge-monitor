@@ -1,0 +1,224 @@
+
+name: audit_pattern_256_entry_timestamp_root_cause.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern256-entry-timestamp-audit
+  cancel-in-progress: false
+
+jobs:
+  entry-timestamp-audit:
+    name: entry-timestamp-audit
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 45
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      RESEARCH_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify required inputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_entry_timestamp_root_cause.py"
+
+          $result = Join-Path `
+            $env:RESEARCH_ROOT `
+            "data\reports\pattern_256_event_key_schema\event_key_schema_result.json"
+
+          $detail = Join-Path `
+            $env:RESEARCH_ROOT `
+            "data\reports\pattern_256_event_key_schema\event_key_schema_detail.csv"
+
+          foreach ($path in @(
+            $script,
+            $result,
+            $detail
+          )) {
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Required file missing: $path"
+            }
+          }
+
+          & py -m py_compile $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python compile failed"
+          }
+
+          Write-Host "[PASS] Required inputs found"
+
+      - name: Execute root cause audit
+        id: audit
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_entry_timestamp_root_cause.py"
+
+          & py -u $script `
+            --root $env:RESEARCH_ROOT `
+            --code-root $env:GITHUB_WORKSPACE
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Root cause audit requires review"
+          }
+
+      - name: Verify report hashes
+        id: verify
+        if: steps.audit.outcome == 'success'
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $dir = Join-Path `
+            $env:RESEARCH_ROOT `
+            "data\reports\pattern_256_entry_timestamp_root_cause"
+
+          $manifestPath = Join-Path `
+            $dir `
+            "entry_timestamp_root_cause_manifest.json"
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw | ConvertFrom-Json
+
+          foreach (
+            $item in $manifest.output_sha256.PSObject.Properties
+          ) {
+            $file = Join-Path $dir $item.Name
+
+            if (-not (Test-Path -LiteralPath $file)) {
+              throw "Missing report: $file"
+            }
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $file `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            $expected = (
+              [string]$item.Value
+            ).ToLowerInvariant()
+
+            if ($actual -ne $expected) {
+              throw "SHA256 mismatch: $file"
+            }
+          }
+
+          Write-Host "[PASS] Report SHA256 verified"
+
+      - name: Publish audit summary
+        if: steps.verify.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $path = Join-Path `
+            $env:RESEARCH_ROOT `
+            "data\reports\pattern_256_entry_timestamp_root_cause\entry_timestamp_root_cause_result.json"
+
+          $r = Get-Content `
+            -LiteralPath $path `
+            -Raw | ConvertFrom-Json
+
+          $missingTimestamp = `
+            $r.field_missing_counts.entry_timestamp
+
+          $missingPrice = `
+            $r.field_missing_counts.entry_price
+
+          $lines = @(
+            "## Pattern 256 Entry Timestamp Root Cause Audit",
+            "",
+            "| Check | Result |",
+            "|---|---|",
+            "| Version | Clean V001 |",
+            "| Execution | $($r.execution) |",
+            "| Checked events | $($r.checked_events) |",
+            "| Source files | $($r.source_files) |",
+            "| Missing entry timestamp | $missingTimestamp |",
+            "| Missing entry price | $missingPrice |",
+            "| Python files inspected | $($r.python_files_inspected) |",
+            "| Code locations found | $($r.code_locations_found) |",
+            "| Diagnosis | $($r.diagnosis) |",
+            "| Research decision | HOLD |",
+            "",
+            "### Status counts",
+            ""
+          )
+
+          foreach (
+            $item in $r.status_counts.PSObject.Properties
+          ) {
+            $lines += "- $($item.Name): $($item.Value)"
+          }
+
+          $lines += ""
+          $lines += "### Diagnostic categories"
+          $lines += ""
+
+          foreach (
+            $item in $r.diagnostic_category_counts.PSObject.Properties
+          ) {
+            $lines += "- $($item.Name): $($item.Value)"
+          }
+
+          $lines += ""
+          $lines += "No original source data was modified."
+          $lines += ""
+          $lines += "No training or trading approval."
+
+          $lines | Out-File `
+            -LiteralPath $env:GITHUB_STEP_SUMMARY `
+            -Encoding UTF8 `
+            -Append
+
+      - name: Upload audit artifacts
+        if: steps.verify.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern256-entry-timestamp-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_entry_timestamp_root_cause\entry_timestamp_root_cause_detail.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_entry_timestamp_root_cause\entry_timestamp_root_cause_result.json
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_entry_timestamp_root_cause\entry_timestamp_code_locations.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_entry_timestamp_root_cause\entry_timestamp_root_cause_manifest.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Final status gate
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "Entry timestamp audit failed"
+          }
+
+          if ("${{ steps.verify.outcome }}" -ne "success") {
+            throw "Report verification failed"
+          }
+
+          Write-Host "[PASS] Entry timestamp audit"
+          Write-Host "Research decision: HOLD"
