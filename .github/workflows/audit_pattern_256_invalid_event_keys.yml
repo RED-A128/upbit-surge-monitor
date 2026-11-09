@@ -1,0 +1,269 @@
+
+name: audit_pattern_256_invalid_event_keys.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern256-invalid-event-keys
+  cancel-in-progress: false
+
+jobs:
+  invalid-event-key-audit:
+    name: invalid-event-key-audit
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 60
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      RESEARCH_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_invalid_event_keys.py"
+
+          $inventory = Join-Path `
+            $env:RESEARCH_ROOT `
+            "data\reports\pattern_256_population_inventory"
+
+          if (-not (Test-Path -LiteralPath $script)) {
+            throw "Audit Python script missing"
+          }
+
+          if (-not (Test-Path -LiteralPath $inventory)) {
+            throw "Population inventory reports missing"
+          }
+
+          & py -c "import ast,pathlib,sys;ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8-sig'))" $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax validation failed"
+          }
+
+          Write-Host "[PASS] Environment"
+
+      - name: Execute root cause audit
+        id: audit
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_invalid_event_keys.py"
+
+          & py -u $script --root $env:RESEARCH_ROOT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Invalid event key audit failed"
+          }
+
+      - name: Verify output SHA256
+        id: verify
+        if: always()
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $output = Join-Path `
+            $env:RESEARCH_ROOT `
+            "data\reports\pattern_256_invalid_event_keys"
+
+          $manifestPath = Join-Path `
+            $output `
+            "invalid_event_key_manifest.json"
+
+          if (-not (Test-Path -LiteralPath $manifestPath)) {
+            throw "Manifest missing"
+          }
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw | ConvertFrom-Json
+
+          foreach (
+            $property in $manifest.output_sha256.PSObject.Properties
+          ) {
+            $file = Join-Path $output $property.Name
+
+            if (-not (Test-Path -LiteralPath $file)) {
+              throw "Missing report: $file"
+            }
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $file `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            $expected = (
+              [string]$property.Value
+            ).ToLowerInvariant()
+
+            if ($actual -ne $expected) {
+              throw "SHA256 mismatch: $file"
+            }
+          }
+
+          if ($manifest.research_decision -ne "HOLD") {
+            throw "Invalid research decision"
+          }
+
+          Write-Host "[PASS] SHA256 verification"
+
+      - name: Publish summary
+        id: summary
+        if: always()
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $lines = New-Object System.Collections.Generic.List[string]
+
+          $lines.Add("## Pattern 256 Invalid Event Key Root Cause")
+          $lines.Add("")
+          $lines.Add("| Check | Result |")
+          $lines.Add("|---|---|")
+          $lines.Add("| Version | Clean V001 |")
+          $lines.Add("| Execution | ${{ steps.audit.outcome }} |")
+          $lines.Add("| SHA256 | ${{ steps.verify.outcome }} |")
+          $lines.Add("| Research decision | HOLD |")
+          $lines.Add("")
+
+          $path = Join-Path `
+            $env:RESEARCH_ROOT `
+            "data\reports\pattern_256_invalid_event_keys\invalid_event_key_result.json"
+
+          if (Test-Path -LiteralPath $path) {
+            $r = Get-Content `
+              -LiteralPath $path `
+              -Raw | ConvertFrom-Json
+
+            $lines.Add("### Root cause diagnostics")
+            $lines.Add("")
+            $lines.Add("| Metric | Value |")
+            $lines.Add("|---|---:|")
+            $lines.Add("| Classification | $($r.execution) |")
+            $lines.Add("| Source issues | $($r.source_inventory_issues) |")
+            $lines.Add("| Files with issues | $($r.source_files_with_issues) |")
+            $lines.Add("| Hash verified files | $($r.source_files_hash_verified) |")
+            $lines.Add("| Inspected rows | $($r.rows_inspected) |")
+            $lines.Add("| Errors | $(@($r.errors).Count) |")
+            $lines.Add("")
+
+            $lines.Add("### Diagnosis counts")
+            $lines.Add("")
+
+            foreach (
+              $item in $r.diagnosis_counts.PSObject.Properties
+            ) {
+              $lines.Add("- $($item.Name): $($item.Value)")
+            }
+
+            $lines.Add("")
+            $lines.Add("### Timeframe counts")
+            $lines.Add("")
+
+            foreach (
+              $item in $r.timeframe_counts.PSObject.Properties
+            ) {
+              $lines.Add("- $($item.Name): $($item.Value)")
+            }
+
+            $lines.Add("")
+          } else {
+            $lines.Add("Result JSON unavailable.")
+            $lines.Add("")
+          }
+
+          $lines.Add("Source data is never modified.")
+          $lines.Add("")
+          $lines.Add("This is a diagnostic audit, not an OOS proof.")
+          $lines.Add("")
+          $lines.Add("Research decision: HOLD.")
+
+          $lines | Out-File `
+            -LiteralPath $env:GITHUB_STEP_SUMMARY `
+            -Encoding UTF8 `
+            -Append
+
+      - name: Upload reports
+        id: upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern256-invalid-event-keys-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_invalid_event_keys\invalid_event_key_diagnosis.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_invalid_event_keys\invalid_event_key_result.json
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_invalid_event_keys\invalid_event_key_manifest.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Final status gate
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $audit = "${{ steps.audit.outcome }}"
+          $verify = "${{ steps.verify.outcome }}"
+          $summary = "${{ steps.summary.outcome }}"
+          $upload = "${{ steps.upload.outcome }}"
+
+          Write-Host "Audit: $audit"
+          Write-Host "Verify: $verify"
+          Write-Host "Summary: $summary"
+          Write-Host "Upload: $upload"
+
+          if ($audit -ne "success") {
+            throw "Root cause audit failed"
+          }
+
+          if ($verify -ne "success") {
+            throw "SHA256 verification failed"
+          }
+
+          if ($summary -ne "success") {
+            throw "Summary publication failed"
+          }
+
+          if ($upload -ne "success") {
+            throw "Artifact upload failed"
+          }
+
+          $path = Join-Path `
+            $env:RESEARCH_ROOT `
+            "data\reports\pattern_256_invalid_event_keys\invalid_event_key_result.json"
+
+          $r = Get-Content `
+            -LiteralPath $path `
+            -Raw | ConvertFrom-Json
+
+          if ($r.execution -eq "FAIL") {
+            throw "Root cause audit incomplete"
+          }
+
+          if ($r.execution -ne "REVIEW") {
+            throw "Unexpected audit classification"
+          }
+
+          Write-Host "[REVIEW] Diagnostic audit completed"
+          Write-Host "Research decision: HOLD"
