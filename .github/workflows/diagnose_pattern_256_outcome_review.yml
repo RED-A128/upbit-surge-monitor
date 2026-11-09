@@ -1,0 +1,239 @@
+
+name: diagnose_pattern_256_outcome_review.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern-256-review-diagnostics
+  cancel-in-progress: false
+
+jobs:
+  diagnose-review:
+    name: diagnose-review
+    runs-on: [self-hosted, Windows]
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      RESEARCH_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+      REPORT_RELATIVE: 'data\reports\pattern_256_outcome_review_diagnostics'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment
+        id: environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "diagnose_pattern_256_outcome_review.py"
+
+          if (-not (Test-Path -LiteralPath $script)) {
+            throw "Diagnostic script missing"
+          }
+
+          if (-not (Test-Path -LiteralPath $env:RESEARCH_ROOT)) {
+            throw "Research root missing"
+          }
+
+          $source = Join-Path `
+            $env:RESEARCH_ROOT `
+            "data\reports\pattern_256_outcomes_full_market"
+
+          foreach ($name in @(
+            "outcome_verification_result.json",
+            "outcome_verification_detail.csv",
+            "outcome_verification_manifest.json"
+          )) {
+            $path = Join-Path $source $name
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Source file missing: $path"
+            }
+          }
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          Write-Host "Environment PASS"
+
+      - name: Execute REVIEW diagnostics
+        id: diagnostics
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "diagnose_pattern_256_outcome_review.py"
+
+          & py -u $script --root $env:RESEARCH_ROOT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "REVIEW diagnostics failed"
+          }
+
+      - name: Verify diagnostic outputs
+        id: integrity
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $folder = Join-Path `
+            $env:RESEARCH_ROOT `
+            $env:REPORT_RELATIVE
+
+          $manifestPath = Join-Path `
+            $folder `
+            "review_diagnostics_manifest.json"
+
+          $resultPath = Join-Path `
+            $folder `
+            "review_diagnostics_result.json"
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          if ($manifest.audit -ne "pattern_256_outcome_review_diagnostics") {
+            throw "Unexpected diagnostic manifest"
+          }
+
+          if ($result.audit -ne $manifest.audit) {
+            throw "Audit mismatch"
+          }
+
+          if ($result.version -ne "Clean V001") {
+            throw "Unexpected diagnostic version"
+          }
+
+          if ($result.execution -ne "PASS") {
+            throw "Diagnostic execution failed"
+          }
+
+          if ($result.rows_checked -ne 7949826) {
+            throw "Unexpected source row count"
+          }
+
+          if ($result.research_decision -ne "HOLD") {
+            throw "Research decision mismatch"
+          }
+
+          if ($result.train_approved -ne $false) {
+            throw "Unexpected training approval"
+          }
+
+          if ($result.live_trading_approved -ne $false) {
+            throw "Unexpected trading approval"
+          }
+
+          foreach ($item in $manifest.outputs.PSObject.Properties) {
+            $name = $item.Name
+            $expected = [string]$item.Value
+
+            $path = Join-Path $folder $name
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Output missing: $name"
+            }
+
+            $actual = (
+              Get-FileHash -LiteralPath $path -Algorithm SHA256
+            ).Hash
+
+            if ($actual.ToLowerInvariant() -ne $expected.ToLowerInvariant()) {
+              throw "SHA256 mismatch: $name"
+            }
+
+            Write-Host "[SHA256 PASS] $name"
+          }
+
+          Write-Host "Diagnostic integrity PASS"
+
+      - name: Publish summary
+        if: always()
+        run: |
+          $folder = Join-Path `
+            $env:RESEARCH_ROOT `
+            $env:REPORT_RELATIVE
+
+          $resultPath = Join-Path `
+            $folder `
+            "review_diagnostics_result.json"
+
+          @(
+            "## Pattern 256 REVIEW Diagnostics",
+            "",
+            "| Step | Result |",
+            "|---|---|",
+            "| Environment | ${{ steps.environment.outcome }} |",
+            "| Diagnostics | ${{ steps.diagnostics.outcome }} |",
+            "| Integrity | ${{ steps.integrity.outcome }} |"
+          ) | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Encoding utf8 -Append
+
+          if (
+            "${{ steps.integrity.outcome }}" -eq "success" -and
+            (Test-Path -LiteralPath $resultPath)
+          ) {
+            $r = Get-Content `
+              -LiteralPath $resultPath `
+              -Raw -Encoding UTF8 | ConvertFrom-Json
+
+            @(
+              "",
+              "| Rows checked | $($r.rows_checked) |",
+              "| Review rows | $($r.review_rows) |",
+              "| Review percentage | $($r.review_pct)% |",
+              "| Classification | REVIEW |",
+              "| Research decision | HOLD |"
+            ) | Out-File `
+              -FilePath $env:GITHUB_STEP_SUMMARY `
+              -Encoding utf8 -Append
+          }
+
+      - name: Upload compact reports
+        id: upload
+        if: steps.integrity.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-review-diagnostics-${{ github.run_number }}
+          path: C:/Users/USER/Documents/upbit-surge-monitor/data/reports/pattern_256_outcome_review_diagnostics/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Final status gate
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $results = @(
+            "${{ steps.environment.outcome }}",
+            "${{ steps.diagnostics.outcome }}",
+            "${{ steps.integrity.outcome }}",
+            "${{ steps.upload.outcome }}"
+          )
+
+          foreach ($result in $results) {
+            if ($result -ne "success") {
+              throw "Required step did not succeed: $result"
+            }
+          }
+
+          Write-Host "WORKFLOW PASS"
+          Write-Host "RESEARCH DECISION: HOLD"
