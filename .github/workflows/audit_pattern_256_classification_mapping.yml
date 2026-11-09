@@ -1,0 +1,193 @@
+
+name: audit_pattern_256_classification_mapping.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern256-classification-mapping
+  cancel-in-progress: false
+
+jobs:
+  classification-mapping:
+    name: classification-mapping
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      RESEARCH_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify inputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_classification_mapping.py"
+
+          $inputFile = Join-Path `
+            $env:RESEARCH_ROOT `
+            "data\reports\pattern_256_event_key_reconciliation\event_key_reconciliation_detail.csv"
+
+          foreach ($path in @($script, $inputFile)) {
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Required file missing: $path"
+            }
+          }
+
+          & py -c "import ast,pathlib,sys;ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8-sig'))" $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax verification failed"
+          }
+
+      - name: Execute classification mapping audit
+        id: audit
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_classification_mapping.py"
+
+          & py -u $script `
+            --root $env:RESEARCH_ROOT `
+            --code-root $env:GITHUB_WORKSPACE
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Classification mapping audit requires review"
+          }
+
+      - name: Verify reports and SHA256
+        id: verify
+        if: steps.audit.outcome == 'success'
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $dir = Join-Path `
+            $env:RESEARCH_ROOT `
+            "data\reports\pattern_256_classification_mapping"
+
+          $manifestPath = Join-Path `
+            $dir `
+            "classification_mapping_manifest.json"
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw | ConvertFrom-Json
+
+          foreach (
+            $entry in $manifest.output_sha256.PSObject.Properties
+          ) {
+            $path = Join-Path $dir $entry.Name
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            $expected = (
+              [string]$entry.Value
+            ).ToLowerInvariant()
+
+            if ($actual -ne $expected) {
+              throw "SHA256 mismatch: $path"
+            }
+          }
+
+          Write-Host "[PASS] SHA256 verified"
+
+      - name: Publish summary
+        if: steps.verify.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $path = Join-Path `
+            $env:RESEARCH_ROOT `
+            "data\reports\pattern_256_classification_mapping\classification_mapping_result.json"
+
+          $r = Get-Content `
+            -LiteralPath $path `
+            -Raw | ConvertFrom-Json
+
+          $lines = @(
+            "## Pattern 256 Classification Mapping Audit",
+            "",
+            "| Check | Result |",
+            "|---|---|",
+            "| Version | Clean V001 |",
+            "| Execution | $($r.execution) |",
+            "| Input events | $($r.input_events) |",
+            "| Checked events | $($r.checked_events) |",
+            "| Source files | $($r.source_files) |",
+            "| Python files inspected | $($r.python_files_inspected) |",
+            "| Code locations found | $($r.code_locations_found) |",
+            "| Classification mapping consistent | $($r.classification_mapping_consistent) |",
+            "| Research decision | HOLD |",
+            "",
+            "### Status counts",
+            ""
+          )
+
+          foreach (
+            $item in $r.status_counts.PSObject.Properties
+          ) {
+            $lines += "- $($item.Name): $($item.Value)"
+          }
+
+          $lines += ""
+          $lines += "No source data was modified."
+          $lines += ""
+          $lines += "No training or trading approval."
+
+          $lines | Out-File `
+            -LiteralPath $env:GITHUB_STEP_SUMMARY `
+            -Encoding UTF8 `
+            -Append
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern256-classification-mapping-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_classification_mapping\classification_mapping_detail.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_classification_mapping\classification_mapping_result.json
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_classification_mapping\classification_mapping_code_locations.json
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_classification_mapping\classification_mapping_manifest.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Final status gate
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "Audit execution failed or requires review"
+          }
+
+          if ("${{ steps.verify.outcome }}" -ne "success") {
+            throw "SHA256 verification failed"
+          }
+
+          Write-Host "[PASS] Classification mapping audit"
+          Write-Host "Research decision: HOLD"
