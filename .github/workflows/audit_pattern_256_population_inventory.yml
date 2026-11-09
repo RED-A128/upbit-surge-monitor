@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       force:
-        description: "Ignore existing checkpoints"
+        description: "Ignore verified checkpoints"
         required: false
         type: boolean
         default: false
@@ -50,53 +50,73 @@ jobs:
             $root `
             "data\reports\pattern_256_accumulation_30pct\checkpoints"
 
-          if (-not (Test-Path -LiteralPath $script)) {
-            throw "Python audit script not found: $script"
+          $output = Join-Path `
+            $root `
+            "data\reports\pattern_256_population_inventory"
+
+          $stageName = "population_inventory_" +
+            $env:GITHUB_RUN_ID + "_" +
+            $env:GITHUB_RUN_ATTEMPT
+
+          $stage = Join-Path `
+            $env:RUNNER_TEMP `
+            $stageName
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Python script missing: $script"
           }
 
-          if (-not (Test-Path -LiteralPath $source)) {
-            throw "Source checkpoint directory missing: $source"
+          if (-not (Test-Path -LiteralPath $source -PathType Container)) {
+            throw "Source directory missing: $source"
           }
 
           $files = @(
             Get-ChildItem `
               -LiteralPath $source `
-              -Filter "KRW-*.csv" `
-              -File -Recurse
+              -Recurse `
+              -File `
+              -Filter "KRW-*.csv"
           )
 
           if ($files.Count -eq 0) {
-            throw "No checkpoint CSV files discovered"
+            throw "No source checkpoint CSV files found"
           }
 
           & py -c "import ast,pathlib,sys;ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8-sig'))" $script
 
           if ($LASTEXITCODE -ne 0) {
-            throw "Python syntax validation failed"
+            throw "Python syntax check failed"
           }
 
-          $output = Join-Path `
-            $root `
-            "data\reports\pattern_256_population_inventory"
+          New-Item `
+            -ItemType Directory `
+            -Path $stage `
+            -Force | Out-Null
 
-          $stage = Join-Path `
-            $env:RUNNER_TEMP `
-            "population_inventory_$($env:GITHUB_RUN_ID)_$($env:GITHUB_RUN_ATTEMPT)"
+          $startedUtc = [DateTime]::UtcNow.ToString("o")
 
-          "POP_ROOT=$root" |
-            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          $variables = @{
+            POP_ROOT = $root
+            POP_SCRIPT = $script
+            POP_SOURCE = $source
+            POP_OUTPUT = $output
+            POP_STAGE = $stage
+            POP_STARTED_UTC = $startedUtc
+          }
 
-          "POP_SCRIPT=$script" |
-            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          foreach ($entry in $variables.GetEnumerator()) {
+            $line = $entry.Key + "=" + $entry.Value
 
-          "POP_OUTPUT=$output" |
-            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            Add-Content `
+              -LiteralPath $env:GITHUB_ENV `
+              -Value $line `
+              -Encoding UTF8
+          }
 
-          "POP_STAGE=$stage" |
-            Out-File $env:GITHUB_ENV -Append -Encoding utf8
-
-          Write-Host "[PASS] Environment"
-          Write-Host "CSV files: $($files.Count)"
+          Write-Host "[PASS] Environment verified"
+          Write-Host "Source files: $($files.Count)"
+          Write-Host "Source: $source"
+          Write-Host "Output: $output"
 
       - name: Execute population inventory
         id: audit
@@ -105,11 +125,11 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           $arguments = @(
-            "-u",
-            $env:POP_SCRIPT,
-            "--root",
-            $env:POP_ROOT,
-            "--output",
+            "-u"
+            $env:POP_SCRIPT
+            "--root"
+            $env:POP_ROOT
+            "--output"
             $env:POP_OUTPUT
           )
 
@@ -124,7 +144,7 @@ jobs:
           Write-Host "Python exit code: $exitCode"
 
           if ($exitCode -ne 0) {
-            throw "Population inventory Python execution failed"
+            throw "Population inventory returned exit code $exitCode"
           }
 
       - name: Verify reports and SHA256
@@ -135,7 +155,7 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           if (-not $env:POP_OUTPUT) {
-            throw "Output directory was not configured"
+            throw "Output directory is unavailable"
           }
 
           $resultPath = Join-Path `
@@ -146,12 +166,12 @@ jobs:
             $env:POP_OUTPUT `
             "population_inventory_manifest.json"
 
-          if (-not (Test-Path -LiteralPath $resultPath)) {
-            throw "Result JSON missing"
+          if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
+            throw "Result JSON not found"
           }
 
-          if (-not (Test-Path -LiteralPath $manifestPath)) {
-            throw "Manifest JSON missing"
+          if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+            throw "Manifest JSON not found"
           }
 
           $result = Get-Content `
@@ -163,11 +183,11 @@ jobs:
             -Raw | ConvertFrom-Json
 
           if ($result.version -ne "Clean V002") {
-            throw "Unexpected result version"
+            throw "Unexpected Python result version"
           }
 
           if ($result.audit -ne "pattern_256_population_inventory") {
-            throw "Unexpected audit identifier"
+            throw "Unexpected audit name"
           }
 
           if ($result.research_decision -ne "HOLD") {
@@ -175,38 +195,57 @@ jobs:
           }
 
           if ($manifest.execution -ne $result.execution) {
-            throw "Manifest and result execution mismatch"
+            throw "Manifest execution mismatch"
           }
 
-          $scriptHash = (
+          $started = [DateTime]::Parse(
+            $env:POP_STARTED_UTC
+          ).ToUniversalTime()
+
+          $created = [DateTime]::Parse(
+            [string]$result.created_utc
+          ).ToUniversalTime()
+
+          if ($created -lt $started) {
+            throw "Stale result detected from a previous run"
+          }
+
+          $actualScriptHash = (
             Get-FileHash `
               -LiteralPath $env:POP_SCRIPT `
               -Algorithm SHA256
           ).Hash.ToLowerInvariant()
 
-          if (
-            $scriptHash -ne
-            ([string]$manifest.script_sha256).ToLowerInvariant()
-          ) {
+          $expectedScriptHash = (
+            [string]$manifest.script_sha256
+          ).ToLowerInvariant()
+
+          if ($actualScriptHash -ne $expectedScriptHash) {
             throw "Python script SHA256 mismatch"
           }
 
           $names = @(
-            "population_inventory_detail.csv",
-            "population_inventory_issues.csv",
+            "population_inventory_detail.csv"
+            "population_inventory_issues.csv"
             "population_inventory_result.json"
           )
 
           foreach ($name in $names) {
             $path = Join-Path $env:POP_OUTPUT $name
 
-            if (-not (Test-Path -LiteralPath $path)) {
-              throw "Missing report: $name"
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing output: $name"
             }
 
-            $expected = [string](
-              $manifest.output_sha256.$name
-            )
+            $property = $manifest.output_sha256.PSObject.Properties[$name]
+
+            if ($null -eq $property) {
+              throw "Missing SHA256 entry: $name"
+            }
+
+            $expected = (
+              [string]$property.Value
+            ).ToLowerInvariant()
 
             $actual = (
               Get-FileHash `
@@ -214,15 +253,12 @@ jobs:
                 -Algorithm SHA256
             ).Hash.ToLowerInvariant()
 
-            if (
-              -not $expected -or
-              $actual -ne $expected.ToLowerInvariant()
-            ) {
+            if ($actual -ne $expected) {
               throw "SHA256 mismatch: $name"
             }
           }
 
-          Write-Host "[PASS] Report integrity"
+          Write-Host "[PASS] Report SHA256 verification"
           Write-Host "Audit classification: $($result.execution)"
 
       - name: Stage diagnostic reports
@@ -232,8 +268,12 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          if (-not $env:POP_OUTPUT -or -not $env:POP_STAGE) {
-            throw "Report paths are unavailable"
+          if (-not $env:POP_STAGE) {
+            throw "Diagnostic stage directory unavailable"
+          }
+
+          if (-not $env:POP_OUTPUT) {
+            throw "Diagnostic output directory unavailable"
           }
 
           New-Item `
@@ -242,9 +282,9 @@ jobs:
             -Force | Out-Null
 
           $names = @(
-            "population_inventory_detail.csv",
-            "population_inventory_issues.csv",
-            "population_inventory_result.json",
+            "population_inventory_detail.csv"
+            "population_inventory_issues.csv"
+            "population_inventory_result.json"
             "population_inventory_manifest.json"
           )
 
@@ -253,147 +293,149 @@ jobs:
           foreach ($name in $names) {
             $source = Join-Path $env:POP_OUTPUT $name
 
-            if (Test-Path -LiteralPath $source) {
+            if (Test-Path -LiteralPath $source -PathType Leaf) {
               Copy-Item `
                 -LiteralPath $source `
                 -Destination (Join-Path $env:POP_STAGE $name) `
-                -ErrorAction Stop
+                -Force
 
               $copied++
             }
           }
 
           if ($copied -eq 0) {
-            throw "No diagnostic reports found"
+            throw "No diagnostic files available"
           }
 
-          Write-Host "Staged diagnostic files: $copied"
+          Write-Host "[PASS] Staged $copied diagnostic files"
 
       - name: Publish summary
+        id: summary
         if: always()
+        continue-on-error: true
         run: |
-          $auditOutcome = "${{ steps.audit.outcome }}"
-          $verifyOutcome = "${{ steps.verify.outcome }}"
-          $stageOutcome = "${{ steps.stage.outcome }}"
+          $ErrorActionPreference = "Stop"
 
-          @"
-          ## Pattern 256 Population Inventory
+          $lines = New-Object System.Collections.Generic.List[string]
 
-          | Check | Result |
-          |---|---|
-          | Workflow version | Clean V002 |
-          | Python execution | $auditOutcome |
-          | SHA256 verification | $verifyOutcome |
-          | Diagnostic staging | $stageOutcome |
-          | Research decision | HOLD |
+          $lines.Add("## Pattern 256 Population Inventory")
+          $lines.Add("")
+          $lines.Add("| Check | Result |")
+          $lines.Add("|---|---|")
+          $lines.Add("| Workflow version | Clean V003 |")
+          $lines.Add("| Python version | Clean V002 |")
+          $lines.Add("| Python execution | ${{ steps.audit.outcome }} |")
+          $lines.Add("| SHA256 verification | ${{ steps.verify.outcome }} |")
+          $lines.Add("| Diagnostic staging | ${{ steps.stage.outcome }} |")
+          $lines.Add("| Research decision | HOLD |")
+          $lines.Add("")
 
-          "@ | Out-File `
-            -FilePath $env:GITHUB_STEP_SUMMARY `
-            -Append -Encoding utf8
+          $resultPath = $null
 
-          if (-not $env:POP_OUTPUT) {
-            "Environment setup did not complete." |
-              Out-File `
-                $env:GITHUB_STEP_SUMMARY `
-                -Append -Encoding utf8
-            exit 0
+          if ($env:POP_OUTPUT) {
+            $resultPath = Join-Path `
+              $env:POP_OUTPUT `
+              "population_inventory_result.json"
           }
 
-          $path = Join-Path `
-            $env:POP_OUTPUT `
-            "population_inventory_result.json"
+          if (
+            $resultPath -and
+            (Test-Path -LiteralPath $resultPath -PathType Leaf)
+          ) {
+            try {
+              $r = Get-Content `
+                -LiteralPath $resultPath `
+                -Raw | ConvertFrom-Json
 
-          if (-not (Test-Path -LiteralPath $path)) {
-            "Result JSON unavailable. Inspect execution logs." |
-              Out-File `
-                $env:GITHUB_STEP_SUMMARY `
-                -Append -Encoding utf8
-            exit 0
-          }
+              $lines.Add("### Inventory results")
+              $lines.Add("")
+              $lines.Add("| Metric | Value |")
+              $lines.Add("|---|---:|")
+              $lines.Add("| Classification | $($r.execution) |")
+              $lines.Add("| Discovered files | $($r.files_discovered) |")
+              $lines.Add("| Audited files | $($r.files_audited) |")
+              $lines.Add("| Resumed files | $($r.files_resumed) |")
+              $lines.Add("| Files needing review | $($r.files_requiring_review) |")
+              $lines.Add("| File errors | $($r.file_errors) |")
+              $lines.Add("| Total event rows | $($r.total.rows) |")
+              $lines.Add("| Unique keys within files | $($r.total.unique_events) |")
+              $lines.Add("| Duplicate keys | $($r.total.duplicate_events) |")
+              $lines.Add("| Invalid keys | $($r.total.invalid_rows) |")
+              $lines.Add("| Missing source hashes | $($r.total.missing_source_hash) |")
+              $lines.Add("| HIT YES | $($r.total.hit_yes) |")
+              $lines.Add("| HIT NO | $($r.total.hit_no) |")
+              $lines.Add("| HIT UNKNOWN | $($r.total.hit_unknown) |")
+              $lines.Add("| Total issues | $($r.issues_total) |")
+              $lines.Add("")
 
-          $r = Get-Content `
-            -LiteralPath $path `
-            -Raw | ConvertFrom-Json
+              $lines.Add("### Status distribution")
+              $lines.Add("")
 
-          @"
-          ### Audit results
+              if ($null -ne $r.status_counts) {
+                foreach ($item in $r.status_counts.PSObject.Properties) {
+                  $lines.Add("- $($item.Name): $($item.Value)")
+                }
+              }
 
-          | Metric | Value |
-          |---|---:|
-          | Audit classification | $($r.execution) |
-          | Discovered files | $($r.files_discovered) |
-          | Audited files | $($r.files_audited) |
-          | Files needing review | $($r.files_requiring_review) |
-          | File read errors | $($r.file_errors) |
-          | Total event rows | $($r.total.rows) |
-          | Unique event keys within files | $($r.total.unique_events) |
-          | Duplicate event keys | $($r.total.duplicate_events) |
-          | Invalid event keys | $($r.total.invalid_rows) |
-          | Missing source hashes | $($r.total.missing_source_hash) |
-          | HIT YES | $($r.total.hit_yes) |
-          | HIT NO | $($r.total.hit_no) |
-          | HIT UNKNOWN | $($r.total.hit_unknown) |
-          | Diagnostic issues | $($r.issues_total) |
+              $lines.Add("")
 
-          ### Status distribution
+              if (
+                $null -ne $r.errors -and
+                @($r.errors).Count -gt 0
+              ) {
+                $lines.Add("### File errors")
+                $lines.Add("")
 
-          "@ | Out-File `
-            -FilePath $env:GITHUB_STEP_SUMMARY `
-            -Append -Encoding utf8
+                foreach ($item in @($r.errors | Select-Object -First 20)) {
+                  $message = [string]$item.error
+                  $message = $message.Replace("|", "/")
+                  $lines.Add("- $($item.source_file): $message")
+                }
 
-          foreach ($item in $r.status_counts.PSObject.Properties) {
-            "- $($item.Name): $($item.Value)" |
-              Out-File `
-                $env:GITHUB_STEP_SUMMARY `
-                -Append -Encoding utf8
-          }
+                $lines.Add("")
+              }
 
-          if ($r.errors.Count -gt 0) {
-            @"
-
-            ### File errors
-
-            "@ | Out-File `
-              $env:GITHUB_STEP_SUMMARY `
-              -Append -Encoding utf8
-
-            foreach ($item in @($r.errors | Select-Object -First 20)) {
-              "- $($item.source_file): $($item.error)" |
-                Out-File `
-                  $env:GITHUB_STEP_SUMMARY `
-                  -Append -Encoding utf8
+            } catch {
+              $lines.Add("### Summary parsing error")
+              $lines.Add("")
+              $lines.Add($_.Exception.Message)
+              $lines.Add("")
             }
+
+          } else {
+            $lines.Add("Result JSON is unavailable.")
+            $lines.Add("")
           }
 
-          @"
+          $lines.Add("### Interpretation")
+          $lines.Add("")
+          $lines.Add("PASS: No recorded inventory issues.")
+          $lines.Add("")
+          $lines.Add("REVIEW: Audit completed with data findings.")
+          $lines.Add("")
+          $lines.Add("FAIL: Audit incomplete or source errors.")
+          $lines.Add("")
+          $lines.Add("No predictive accuracy or profitability is proven.")
+          $lines.Add("")
+          $lines.Add("Research decision: HOLD.")
 
-          ### Interpretation
+          $lines | Out-File `
+            -LiteralPath $env:GITHUB_STEP_SUMMARY `
+            -Encoding UTF8 `
+            -Append
 
-          PASS: inventory completed without recorded issues.
-
-          REVIEW: inventory completed but data quality
-          findings require investigation.
-
-          FAIL: missing or unreadable inputs prevented
-          complete auditing.
-
-          This inventory does not prove an unbiased
-          historical signal population or profitability.
-
-          Research decision: HOLD.
-          "@ | Out-File `
-            $env:GITHUB_STEP_SUMMARY `
-            -Append -Encoding utf8
+          Write-Host "[PASS] Summary published"
 
       - name: Upload diagnostic reports
-        if: steps.stage.outcome == 'success'
+        id: upload
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: pattern256-population-inventory-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/population_inventory_${{ github.run_id }}_${{ github.run_attempt }}/*.csv
             ${{ runner.temp }}/population_inventory_${{ github.run_id }}_${{ github.run_attempt }}/*.json
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 30
 
       - name: Final status gate
@@ -401,39 +443,66 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          if ("${{ steps.audit.outcome }}" -ne "success") {
-            throw "Python audit failed. Inspect diagnostic reports."
+          $environment = "${{ steps.environment.outcome }}"
+          $audit = "${{ steps.audit.outcome }}"
+          $verify = "${{ steps.verify.outcome }}"
+          $stage = "${{ steps.stage.outcome }}"
+          $summary = "${{ steps.summary.outcome }}"
+          $upload = "${{ steps.upload.outcome }}"
+
+          Write-Host "Environment: $environment"
+          Write-Host "Python audit: $audit"
+          Write-Host "SHA256: $verify"
+          Write-Host "Staging: $stage"
+          Write-Host "Summary: $summary"
+          Write-Host "Upload: $upload"
+
+          if ($environment -ne "success") {
+            throw "Environment verification failed"
           }
 
-          if ("${{ steps.verify.outcome }}" -ne "success") {
-            throw "SHA256 or report verification failed."
+          if ($audit -ne "success") {
+            throw "Population inventory Python execution failed"
           }
 
-          if ("${{ steps.stage.outcome }}" -ne "success") {
-            throw "Diagnostic report staging failed."
+          if ($verify -ne "success") {
+            throw "Report or SHA256 verification failed"
+          }
+
+          if ($stage -ne "success") {
+            throw "Diagnostic staging failed"
+          }
+
+          if ($summary -ne "success") {
+            throw "GitHub summary publication failed"
+          }
+
+          if ($upload -ne "success") {
+            throw "Diagnostic artifact upload failed"
           }
 
           $resultPath = Join-Path `
             $env:POP_OUTPUT `
             "population_inventory_result.json"
 
-          $result = Get-Content `
+          $r = Get-Content `
             -LiteralPath $resultPath `
             -Raw | ConvertFrom-Json
 
-          if ($result.execution -eq "FAIL") {
-            throw "Inventory incomplete due to source errors."
+          if ($r.execution -eq "FAIL") {
+            throw "Inventory incomplete: inspect file errors"
           }
 
-          if ($result.execution -eq "REVIEW") {
-            Write-Host "[REVIEW] Audit completed with findings."
+          if ($r.execution -eq "REVIEW") {
+            Write-Host "[REVIEW] Inventory completed"
+            Write-Host "Data quality findings require investigation"
             Write-Host "Research decision: HOLD"
             exit 0
           }
 
-          if ($result.execution -ne "PASS") {
-            throw "Unknown audit classification."
+          if ($r.execution -ne "PASS") {
+            throw "Unknown inventory classification"
           }
 
-          Write-Host "[PASS] Population inventory completed."
+          Write-Host "[PASS] Population inventory completed"
           Write-Host "Research decision: HOLD"
