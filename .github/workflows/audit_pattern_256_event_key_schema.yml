@@ -1,0 +1,192 @@
+
+name: audit_pattern_256_event_key_schema.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern256-event-key-schema
+  cancel-in-progress: false
+
+jobs:
+  event-key-schema:
+    name: event-key-schema
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      RESEARCH_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_event_key_schema.py"
+
+          $inventory = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_population_inventory.py"
+
+          $inputFile = Join-Path `
+            $env:RESEARCH_ROOT `
+            "data\reports\pattern_256_event_key_reconciliation\event_key_reconciliation_detail.csv"
+
+          foreach ($path in @(
+            $script,
+            $inventory,
+            $inputFile
+          )) {
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Required file missing: $path"
+            }
+          }
+
+          & py -c "import ast,pathlib,sys;ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8-sig'))" $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax verification failed"
+          }
+
+      - name: Execute event key schema audit
+        id: audit
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_event_key_schema.py"
+
+          & py -u $script `
+            --root $env:RESEARCH_ROOT `
+            --code-root $env:GITHUB_WORKSPACE
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Event key schema audit requires review"
+          }
+
+      - name: Verify reports and SHA256
+        id: verify
+        if: steps.audit.outcome == 'success'
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $dir = Join-Path `
+            $env:RESEARCH_ROOT `
+            "data\reports\pattern_256_event_key_schema"
+
+          $manifestPath = Join-Path `
+            $dir `
+            "event_key_schema_manifest.json"
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw | ConvertFrom-Json
+
+          foreach (
+            $entry in $manifest.output_sha256.PSObject.Properties
+          ) {
+            $path = Join-Path $dir $entry.Name
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            $expected = (
+              [string]$entry.Value
+            ).ToLowerInvariant()
+
+            if ($actual -ne $expected) {
+              throw "SHA256 mismatch: $path"
+            }
+          }
+
+          Write-Host "[PASS] SHA256 verified"
+
+      - name: Publish summary
+        if: steps.verify.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $path = Join-Path `
+            $env:RESEARCH_ROOT `
+            "data\reports\pattern_256_event_key_schema\event_key_schema_result.json"
+
+          $r = Get-Content `
+            -LiteralPath $path `
+            -Raw | ConvertFrom-Json
+
+          $lines = @(
+            "## Pattern 256 Event Key Schema Audit",
+            "",
+            "| Check | Result |",
+            "|---|---|",
+            "| Version | Clean V001 |",
+            "| Execution | $($r.execution) |",
+            "| Input events | $($r.input_events) |",
+            "| Checked events | $($r.checked_events) |",
+            "| Source files | $($r.source_files_checked) |",
+            "| Base key complete | $($r.base_key_complete_events) |",
+            "| Base key incomplete | $($r.base_key_incomplete_events) |",
+            "| Legacy duplicate events | $($r.legacy_duplicate_events_within_files) |",
+            "| Extended duplicate events | $($r.extended_duplicate_events_within_files) |",
+            "| Diagnosis | $($r.diagnosis) |",
+            "| Research decision | HOLD |",
+            "",
+            "No original source files modified.",
+            "",
+            "This is a schema diagnostic, not OOS proof."
+          )
+
+          $lines | Out-File `
+            -LiteralPath $env:GITHUB_STEP_SUMMARY `
+            -Encoding UTF8 `
+            -Append
+
+      - name: Upload diagnostic reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern256-event-key-schema-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_event_key_schema\event_key_schema_detail.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_event_key_schema\event_key_schema_result.json
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_event_key_schema\event_key_schema_manifest.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Final status gate
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "Event key schema audit failed"
+          }
+
+          if ("${{ steps.verify.outcome }}" -ne "success") {
+            throw "SHA256 verification failed"
+          }
+
+          Write-Host "[PASS] Event key schema audit"
+          Write-Host "Research decision: HOLD"
