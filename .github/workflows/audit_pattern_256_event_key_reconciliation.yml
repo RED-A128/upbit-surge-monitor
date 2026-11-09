@@ -1,0 +1,230 @@
+
+name: audit_pattern_256_event_key_reconciliation.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern256-event-key-reconciliation
+  cancel-in-progress: false
+
+jobs:
+  event-key-reconciliation:
+    name: event-key-reconciliation
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      RESEARCH_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify inputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_event_key_reconciliation.py"
+
+          if (-not (Test-Path -LiteralPath $script)) {
+            throw "Python script missing"
+          }
+
+          $files = @(
+            "data\reports\pattern_256_population_inventory\population_inventory_issues.csv",
+            "data\reports\pattern_256_population_inventory\population_inventory_result.json",
+            "data\reports\pattern_256_invalid_event_keys\invalid_event_key_diagnosis.csv",
+            "data\reports\pattern_256_invalid_event_keys\invalid_event_key_result.json"
+          )
+
+          foreach ($relative in $files) {
+            $path = Join-Path $env:RESEARCH_ROOT $relative
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Required input missing: $path"
+            }
+          }
+
+          & py -c "import ast,pathlib,sys;ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8-sig'))" $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax validation failed"
+          }
+
+          Write-Host "[PASS] Inputs verified"
+
+      - name: Execute reconciliation
+        id: audit
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_event_key_reconciliation.py"
+
+          & py -u $script --root $env:RESEARCH_ROOT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Reconciliation execution failed"
+          }
+
+      - name: Verify SHA256
+        id: verify
+        if: steps.audit.outcome == 'success'
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $dir = Join-Path `
+            $env:RESEARCH_ROOT `
+            "data\reports\pattern_256_event_key_reconciliation"
+
+          $manifestPath = Join-Path `
+            $dir `
+            "event_key_reconciliation_manifest.json"
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw | ConvertFrom-Json
+
+          foreach (
+            $entry in $manifest.output_sha256.PSObject.Properties
+          ) {
+            $path = Join-Path $dir $entry.Name
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            $expected = (
+              [string]$entry.Value
+            ).ToLowerInvariant()
+
+            if ($actual -ne $expected) {
+              throw "SHA256 mismatch: $path"
+            }
+          }
+
+          Write-Host "[PASS] Report SHA256"
+
+      - name: Publish summary
+        if: steps.verify.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $path = Join-Path `
+            $env:RESEARCH_ROOT `
+            "data\reports\pattern_256_event_key_reconciliation\event_key_reconciliation_result.json"
+
+          $r = Get-Content `
+            -LiteralPath $path `
+            -Raw | ConvertFrom-Json
+
+          $lines = @(
+            "## Pattern 256 Event Key Reconciliation",
+            "",
+            "| Check | Result |",
+            "|---|---|",
+            "| Version | Clean V001 |",
+            "| Execution | $($r.execution) |",
+            "| Inventory issues | $($r.inventory_issues) |",
+            "| Reconciled rows | $($r.reconciled_rows) |",
+            "| Classification-only mismatch | $($r.classification_only_mismatch_proven) |",
+            "| Errors | $(@($r.errors).Count) |",
+            "| Research decision | HOLD |",
+            "",
+            "### Reconciliation counts",
+            ""
+          )
+
+          foreach (
+            $item in $r.reconciliation_counts.PSObject.Properties
+          ) {
+            $lines += "- $($item.Name): $($item.Value)"
+          }
+
+          $lines += ""
+          $lines += "### Classification pairs"
+          $lines += ""
+
+          foreach ($pair in $r.classification_pairs) {
+            $old = [string]$pair.inventory
+            $new = [string]$pair.source
+
+            if ($old.Length -eq 0) {
+              $old = "(empty)"
+            }
+
+            $lines += "- $old -> $new : $($pair.count)"
+          }
+
+          $lines += ""
+          $lines += "No original source files were modified."
+          $lines += ""
+          $lines += "This does not approve training or trading."
+
+          $lines | Out-File `
+            -LiteralPath $env:GITHUB_STEP_SUMMARY `
+            -Encoding UTF8 `
+            -Append
+
+      - name: Upload reports
+        if: steps.verify.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern256-event-key-reconciliation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_event_key_reconciliation\event_key_reconciliation_detail.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_event_key_reconciliation\event_key_reconciliation_result.json
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_event_key_reconciliation\event_key_reconciliation_manifest.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Final status gate
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "Audit execution failed"
+          }
+
+          if ("${{ steps.verify.outcome }}" -ne "success") {
+            throw "SHA256 verification failed"
+          }
+
+          $path = Join-Path `
+            $env:RESEARCH_ROOT `
+            "data\reports\pattern_256_event_key_reconciliation\event_key_reconciliation_result.json"
+
+          $r = Get-Content `
+            -LiteralPath $path `
+            -Raw | ConvertFrom-Json
+
+          if ($r.execution -ne "PASS") {
+            throw "Reconciliation requires further review"
+          }
+
+          if (-not $r.classification_only_mismatch_proven) {
+            throw "Other event key mismatches remain"
+          }
+
+          Write-Host "[PASS] Classification-only mismatch proven"
+          Write-Host "Research decision: HOLD"
