@@ -1,0 +1,195 @@
+
+name: verify_pattern_256_outcomes_full_market.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-outcomes:
+    name: verify-outcomes
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 360
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
+          $script = Join-Path $env:GITHUB_WORKSPACE "verify_pattern_256_outcomes_full_market.py"
+
+          if (-not (Test-Path -LiteralPath $script)) {
+            throw "Python audit script missing"
+          }
+
+          foreach ($tf in @("h1", "h4", "d1")) {
+            $cp = Join-Path $root "data\reports\pattern_256_accumulation_30pct\checkpoints\$tf"
+            $ohlcv = Join-Path $root "data\ohlcv\$tf"
+
+            if (-not (Test-Path -LiteralPath $cp)) {
+              throw "Missing checkpoint directory: $cp"
+            }
+
+            if (-not (Test-Path -LiteralPath $ohlcv)) {
+              throw "Missing OHLCV directory: $ohlcv"
+            }
+          }
+
+          py --version
+
+      - name: Execute independent verification
+        id: audit
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
+          $script = Join-Path $env:GITHUB_WORKSPACE "verify_pattern_256_outcomes_full_market.py"
+
+          py -u $script --root $root
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Independent verification execution failed"
+          }
+
+      - name: Verify reports and SHA256
+        id: verify
+        if: always()
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
+          $dir = Join-Path $root "data\reports\pattern_256_outcomes_full_market"
+
+          $resultFile = Join-Path $dir "outcome_verification_result.json"
+          $detailFile = Join-Path $dir "outcome_verification_detail.csv"
+          $manifestFile = Join-Path $dir "outcome_verification_manifest.json"
+
+          foreach ($file in @($resultFile, $detailFile, $manifestFile)) {
+            if (-not (Test-Path -LiteralPath $file)) {
+              throw "Report missing: $file"
+            }
+          }
+
+          $result = Get-Content -LiteralPath $resultFile -Raw |
+            ConvertFrom-Json
+
+          $manifest = Get-Content -LiteralPath $manifestFile -Raw |
+            ConvertFrom-Json
+
+          $expectedResult = $manifest.outputs.'outcome_verification_result.json'
+          $expectedDetail = $manifest.outputs.'outcome_verification_detail.csv'
+
+          $actualResult = (Get-FileHash -LiteralPath $resultFile -Algorithm SHA256).Hash.ToLowerInvariant()
+          $actualDetail = (Get-FileHash -LiteralPath $detailFile -Algorithm SHA256).Hash.ToLowerInvariant()
+
+          if ($actualResult -ne $expectedResult) {
+            throw "Result SHA256 mismatch"
+          }
+
+          if ($actualDetail -ne $expectedDetail) {
+            throw "Detail SHA256 mismatch"
+          }
+
+          if ($result.execution -ne "PASS") {
+            throw "Audit execution not PASS"
+          }
+
+          Write-Host "SHA256 verification successful"
+
+      - name: Publish summary
+        if: always()
+        run: |
+          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
+          $file = Join-Path $root "data\reports\pattern_256_outcomes_full_market\outcome_verification_result.json"
+
+          @(
+            "## Pattern 256 Independent Outcome Verification"
+            ""
+            "| Check | Result |"
+            "|---|---|"
+            "| Version | Clean V001 |"
+            "| Python execution | ${{ steps.audit.outcome }} |"
+            "| SHA256 verification | ${{ steps.verify.outcome }} |"
+          ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+          if (Test-Path -LiteralPath $file) {
+            $r = Get-Content -LiteralPath $file -Raw |
+              ConvertFrom-Json
+
+            @(
+              "| Research decision | $($r.research_decision) |"
+              "| Classification | $($r.classification) |"
+              "| Files discovered | $($r.files_discovered) |"
+              "| Rows checked | $($r.rows_checked) |"
+              "| Resumed files | $($r.files_resumed) |"
+              ""
+              "### Classification counts"
+            ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+            foreach ($p in $r.classification_counts.PSObject.Properties) {
+              "- $($p.Name): $($p.Value)" |
+                Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+            }
+
+            @(
+              ""
+              "This verification does not approve training or live trading."
+            ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          }
+
+      - name: Stage reports
+        if: always()
+        run: |
+          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
+          $source = Join-Path $root "data\reports\pattern_256_outcomes_full_market"
+          $dest = Join-Path $env:GITHUB_WORKSPACE "outcome_audit_artifacts"
+
+          New-Item -ItemType Directory -Force -Path $dest |
+            Out-Null
+
+          foreach ($name in @(
+            "outcome_verification_result.json",
+            "outcome_verification_detail.csv",
+            "outcome_verification_manifest.json"
+          )) {
+            $file = Join-Path $source $name
+
+            if (Test-Path -LiteralPath $file) {
+              Copy-Item -LiteralPath $file -Destination $dest -Force
+            }
+          }
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-outcome-verification
+          path: outcome_audit_artifacts/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Final status gate
+        if: always()
+        run: |
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "Python execution failed"
+          }
+
+          if ("${{ steps.verify.outcome }}" -ne "success") {
+            throw "Report verification failed"
+          }
