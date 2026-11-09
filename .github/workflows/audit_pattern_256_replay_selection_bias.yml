@@ -1,0 +1,444 @@
+
+name: audit_pattern_256_replay_selection_bias.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: pattern256-selection-bias-audit
+  cancel-in-progress: false
+
+jobs:
+  replay-selection-bias:
+    name: replay-selection-bias
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPOSITORY: ${{ github.repository }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Python script
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_replay_selection_bias.py"
+
+          if (-not (Test-Path -LiteralPath $script)) {
+            throw "Python audit script missing"
+          }
+
+          & py -c "import ast,pathlib,sys;ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8-sig'))" $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax verification failed"
+          }
+
+          Write-Host "[PASS] Script verification"
+
+      - name: Locate verified replay artifact
+        id: locate
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = "application/vnd.github+json"
+            "X-GitHub-Api-Version" = "2022-11-28"
+          }
+
+          $api = "https://api.github.com/repos/$env:GH_REPOSITORY"
+          $base = Join-Path $env:RUNNER_TEMP `
+            "selection_input_${env:GITHUB_RUN_ID}_${env:GITHUB_RUN_ATTEMPT}"
+
+          New-Item -ItemType Directory `
+            -Path $base -Force | Out-Null
+
+          $selected = $null
+          $artifactId = ""
+
+          for ($page = 1; $page -le 10; $page++) {
+            $response = Invoke-RestMethod `
+              -Uri "$api/actions/artifacts?per_page=100&page=$page" `
+              -Headers $headers
+
+            $candidates = @(
+              $response.artifacts |
+                Where-Object {
+                  -not $_.expired -and
+                  $_.name -match "^pattern256-independent-outcome-"
+                } |
+                Sort-Object created_at -Descending
+            )
+
+            foreach ($artifact in $candidates) {
+              $folder = Join-Path $base `
+                "artifact_$($artifact.id)"
+
+              New-Item -ItemType Directory `
+                -Path $folder -Force | Out-Null
+
+              $zip = Join-Path $folder "artifact.zip"
+              $extract = Join-Path $folder "extracted"
+
+              try {
+                Invoke-WebRequest `
+                  -Uri "$api/actions/artifacts/$($artifact.id)/zip" `
+                  -Headers $headers `
+                  -OutFile $zip `
+                  -UseBasicParsing
+
+                Expand-Archive `
+                  -LiteralPath $zip `
+                  -DestinationPath $extract `
+                  -Force
+
+                $manifests = @(
+                  Get-ChildItem `
+                    -LiteralPath $extract `
+                    -Filter "independent_outcome_manifest.json" `
+                    -Recurse -File
+                )
+
+                foreach ($file in $manifests) {
+                  $dir = $file.DirectoryName
+
+                  $detailPath = Join-Path $dir `
+                    "independent_outcome_detail.csv"
+
+                  $resultPath = Join-Path $dir `
+                    "independent_outcome_result.json"
+
+                  if (
+                    -not (Test-Path -LiteralPath $detailPath) -or
+                    -not (Test-Path -LiteralPath $resultPath)
+                  ) {
+                    continue
+                  }
+
+                  $manifest = Get-Content `
+                    -LiteralPath $file.FullName `
+                    -Raw | ConvertFrom-Json
+
+                  $result = Get-Content `
+                    -LiteralPath $resultPath `
+                    -Raw | ConvertFrom-Json
+
+                  if (
+                    $manifest.audit -ne "pattern_256_outcome_replay_independent" -or
+                    $manifest.execution -ne "PASS" -or
+                    $result.execution -ne "PASS" -or
+                    $result.source_events -ne 74 -or
+                    $result.hypothesis_rows -ne 296 -or
+                    $result.complete_events -ne 34 -or
+                    $result.incomplete_events -ne 40
+                  ) {
+                    continue
+                  }
+
+                  $valid = $true
+
+                  foreach ($name in @(
+                    "independent_outcome_detail.csv",
+                    "independent_outcome_result.json"
+                  )) {
+                    $path = Join-Path $dir $name
+
+                    $actual = (
+                      Get-FileHash `
+                        -LiteralPath $path `
+                        -Algorithm SHA256
+                    ).Hash.ToLowerInvariant()
+
+                    $expected = (
+                      [string]$manifest.output_sha256.$name
+                    ).ToLowerInvariant()
+
+                    if (-not $expected -or
+                        $actual -ne $expected) {
+                      $valid = $false
+                      break
+                    }
+                  }
+
+                  if ($valid) {
+                    $selected = $dir
+                    $artifactId = [string]$artifact.id
+                    break
+                  }
+                }
+
+                if ($selected) {
+                  break
+                }
+              }
+              catch {
+                Write-Host "[SKIP] $($_.Exception.Message)"
+              }
+            }
+
+            if ($selected) {
+              break
+            }
+
+            if (@($response.artifacts).Count -lt 100) {
+              break
+            }
+          }
+
+          if (-not $selected) {
+            throw "Verified independent outcome artifact not found"
+          }
+
+          "SELECTION_INPUT=$selected" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Append -Encoding utf8
+
+          "SELECTION_ARTIFACT_ID=$artifactId" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Append -Encoding utf8
+
+          Write-Host "[PASS] Artifact ID: $artifactId"
+
+      - name: Prepare isolated output
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $folder = "selection_bias_${env:GITHUB_RUN_ID}_${env:GITHUB_RUN_ATTEMPT}"
+          $output = Join-Path $env:RUNNER_TEMP $folder
+
+          if (Test-Path -LiteralPath $output) {
+            throw "Output directory already exists"
+          }
+
+          "SELECTION_OUTPUT=$output" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Append -Encoding utf8
+
+      - name: Execute selection bias audit
+        id: audit
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_replay_selection_bias.py"
+
+          & py -u $script `
+            --input $env:SELECTION_INPUT `
+            --output $env:SELECTION_OUTPUT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Selection bias audit failed"
+          }
+
+      - name: Verify result and SHA256
+        id: verify
+        if: always()
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "Audit execution unsuccessful"
+          }
+
+          $resultPath = Join-Path $env:SELECTION_OUTPUT `
+            "selection_bias_result.json"
+
+          $manifestPath = Join-Path $env:SELECTION_OUTPUT `
+            "selection_bias_manifest.json"
+
+          if (
+            -not (Test-Path -LiteralPath $resultPath) -or
+            -not (Test-Path -LiteralPath $manifestPath)
+          ) {
+            throw "Missing output files"
+          }
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw | ConvertFrom-Json
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw | ConvertFrom-Json
+
+          if (
+            $result.audit -ne "pattern_256_replay_selection_bias" -or
+            $result.execution -ne "PASS" -or
+            $manifest.execution -ne "PASS" -or
+            $result.source_events -ne 74 -or
+            $result.complete_events -ne 34 -or
+            $result.incomplete_events -ne 40 -or
+            $result.hypothesis_rows -ne 296 -or
+            $result.research_decision -ne "HOLD" -or
+            $result.selection_bias_risk -ne "HIGH"
+          ) {
+            throw "Result validation failed"
+          }
+
+          $script = Join-Path $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_replay_selection_bias.py"
+
+          $scriptHash = (
+            Get-FileHash `
+              -LiteralPath $script `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if (
+            $scriptHash -ne
+            ([string]$manifest.script_sha256).ToLowerInvariant()
+          ) {
+            throw "Script SHA256 mismatch"
+          }
+
+          foreach ($name in @(
+            "selection_bias_detail.csv",
+            "selection_bias_result.json"
+          )) {
+            $path = Join-Path $env:SELECTION_OUTPUT $name
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            $expected = (
+              [string]$manifest.output_sha256.$name
+            ).ToLowerInvariant()
+
+            if (-not $expected -or
+                $actual -ne $expected) {
+              throw "Output SHA256 mismatch: $name"
+            }
+          }
+
+          Write-Host "[PASS] SHA256 verification"
+
+      - name: Publish summary
+        if: always()
+        run: |
+          $execution = "${{ steps.audit.outcome }}"
+          $verification = "${{ steps.verify.outcome }}"
+
+          @"
+          ## Pattern 256 Replay Selection Bias Audit
+
+          | Check | Result |
+          |---|---|
+          | Version | Clean V001 |
+          | Execution | $execution |
+          | Verification | $verification |
+          | Research decision | HOLD |
+
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Append -Encoding utf8
+
+          $path = Join-Path $env:SELECTION_OUTPUT `
+            "selection_bias_result.json"
+
+          if (-not (Test-Path -LiteralPath $path)) {
+            exit 0
+          }
+
+          $r = Get-Content `
+            -LiteralPath $path `
+            -Raw | ConvertFrom-Json
+
+          @"
+          ### Audit results
+
+          - Source events: $($r.source_events)
+          - Complete events: $($r.complete_events)
+          - Incomplete events: $($r.incomplete_events)
+          - All four hypotheses HIT: $($r.complete_all_four_hit)
+          - Same first-hit UTC: $($r.complete_same_first_hit_utc)
+          - Different first-hit UTC: $($r.complete_different_first_hit_utc)
+          - Selection bias risk: $($r.selection_bias_risk)
+
+          ### Complete events by source
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Append -Encoding utf8
+
+          foreach ($p in $r.complete_by_source.PSObject.Properties) {
+            "- $($p.Name): $($p.Value)" |
+              Out-File `
+                -FilePath $env:GITHUB_STEP_SUMMARY `
+                -Append -Encoding utf8
+          }
+
+          @"
+
+          ### Complete events by classification
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Append -Encoding utf8
+
+          foreach ($p in $r.complete_by_classification.PSObject.Properties) {
+            "- $($p.Name): $($p.Value)" |
+              Out-File `
+                -FilePath $env:GITHUB_STEP_SUMMARY `
+                -Append -Encoding utf8
+          }
+
+          @"
+
+          This audit does not establish predictive performance.
+          Research decision: HOLD.
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Append -Encoding utf8
+
+      - name: Upload audit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern256-selection-bias-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/selection_bias_${{ github.run_id }}_${{ github.run_attempt }}/selection_bias_detail.csv
+            ${{ runner.temp }}/selection_bias_${{ github.run_id }}_${{ github.run_attempt }}/selection_bias_result.json
+            ${{ runner.temp }}/selection_bias_${{ github.run_id }}_${{ github.run_attempt }}/selection_bias_manifest.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Final status gate
+        if: always()
+        run: |
+          if ("${{ steps.locate.outcome }}" -ne "success") {
+            throw "Input artifact discovery failed"
+          }
+
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "Selection bias audit failed"
+          }
+
+          if ("${{ steps.verify.outcome }}" -ne "success") {
+            throw "SHA256 verification failed"
+          }
+
+          Write-Host "[PASS] Selection bias audit"
+          Write-Host "Research decision: HOLD"
