@@ -1,0 +1,439 @@
+
+name: audit_pattern_256_outcome_replay_independent.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: pattern256-independent-outcome-replay
+  cancel-in-progress: false
+
+jobs:
+  independent-outcome-replay:
+    name: independent-outcome-replay
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 60
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPOSITORY: ${{ github.repository }}
+      RESEARCH_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_outcome_replay_independent.py"
+
+          if (-not (Test-Path -LiteralPath $script)) {
+            throw "Audit Python file missing"
+          }
+
+          if (-not (Test-Path -LiteralPath $env:RESEARCH_ROOT)) {
+            throw "Research root missing"
+          }
+
+          foreach ($tf in @("h1", "h4", "d1")) {
+            $dir = Join-Path $env:RESEARCH_ROOT `
+              "data\ohlcv\$tf"
+
+            if (-not (Test-Path -LiteralPath $dir)) {
+              throw "OHLCV directory missing: $tf"
+            }
+          }
+
+          & py -c "import ast,pathlib,sys;ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8-sig'))" $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax verification failed"
+          }
+
+          Write-Host "[PASS] Environment"
+
+      - name: Download previous verified artifact
+        id: download
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = "application/vnd.github+json"
+            "X-GitHub-Api-Version" = "2022-11-28"
+          }
+
+          $api = "https://api.github.com/repos/$env:GH_REPOSITORY"
+
+          $base = Join-Path $env:RUNNER_TEMP `
+            "independent_replay_input_${env:GITHUB_RUN_ID}_${env:GITHUB_RUN_ATTEMPT}"
+
+          New-Item -ItemType Directory `
+            -Path $base -Force | Out-Null
+
+          $selected = $null
+
+          for ($page = 1; $page -le 10; $page++) {
+            $response = Invoke-RestMethod `
+              -Uri "$api/actions/artifacts?per_page=100&page=$page" `
+              -Headers $headers
+
+            $candidates = @(
+              $response.artifacts |
+                Where-Object {
+                  -not $_.expired -and
+                  $_.name -match "^pattern256-entry-price-window-"
+                } |
+                Sort-Object created_at -Descending
+            )
+
+            foreach ($artifact in $candidates) {
+              $folder = Join-Path $base `
+                "artifact_$($artifact.id)"
+
+              New-Item -ItemType Directory `
+                -Path $folder -Force | Out-Null
+
+              $zip = Join-Path $folder "artifact.zip"
+              $extract = Join-Path $folder "extracted"
+
+              try {
+                Invoke-WebRequest `
+                  -Uri "$api/actions/artifacts/$($artifact.id)/zip" `
+                  -Headers $headers `
+                  -OutFile $zip `
+                  -UseBasicParsing
+
+                Expand-Archive `
+                  -LiteralPath $zip `
+                  -DestinationPath $extract `
+                  -Force
+
+                $manifests = @(
+                  Get-ChildItem `
+                    -LiteralPath $extract `
+                    -Filter "entry_price_window_manifest.json" `
+                    -Recurse -File
+                )
+
+                foreach ($file in $manifests) {
+                  $dir = $file.DirectoryName
+
+                  $resultPath = Join-Path $dir `
+                    "entry_price_window_result.json"
+
+                  $detailPath = Join-Path $dir `
+                    "entry_price_window_detail.csv"
+
+                  if (-not (Test-Path $resultPath) -or
+                      -not (Test-Path $detailPath)) {
+                    continue
+                  }
+
+                  $manifest = Get-Content `
+                    -LiteralPath $file.FullName `
+                    -Raw | ConvertFrom-Json
+
+                  $result = Get-Content `
+                    -LiteralPath $resultPath `
+                    -Raw | ConvertFrom-Json
+
+                  if (
+                    $manifest.audit -ne "pattern_256_entry_price_window" -or
+                    $manifest.execution -ne "PASS" -or
+                    $result.execution -ne "PASS" -or
+                    $result.processed_rows -ne 74 -or
+                    $result.coverage_consistent -ne $true -or
+                    $result.price_integrity_verified -ne $true
+                  ) {
+                    continue
+                  }
+
+                  $valid = $true
+
+                  foreach ($name in @(
+                    "entry_price_window_detail.csv",
+                    "entry_price_window_result.json"
+                  )) {
+                    $path = Join-Path $dir $name
+
+                    $actual = (
+                      Get-FileHash `
+                        -LiteralPath $path `
+                        -Algorithm SHA256
+                    ).Hash.ToLowerInvariant()
+
+                    $expected = (
+                      [string]$manifest.output_sha256.$name
+                    ).ToLowerInvariant()
+
+                    if (-not $expected -or
+                        $actual -ne $expected) {
+                      $valid = $false
+                      break
+                    }
+                  }
+
+                  if ($valid) {
+                    $selected = $dir
+                    Write-Host "[PASS] Artifact ID: $($artifact.id)"
+                    break
+                  }
+                }
+
+                if ($selected) {
+                  break
+                }
+              }
+              catch {
+                Write-Host "[SKIP] $($_.Exception.Message)"
+              }
+            }
+
+            if ($selected) {
+              break
+            }
+
+            if (@($response.artifacts).Count -lt 100) {
+              break
+            }
+          }
+
+          if (-not $selected) {
+            throw "Verified entry price/window artifact not found"
+          }
+
+          "INDEPENDENT_REPLAY_INPUT=$selected" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Append -Encoding utf8
+
+      - name: Prepare isolated output
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $folder = "pattern256_independent_replay_${env:GITHUB_RUN_ID}_${env:GITHUB_RUN_ATTEMPT}"
+          $output = Join-Path $env:RUNNER_TEMP $folder
+
+          if (Test-Path -LiteralPath $output) {
+            throw "Output directory already exists"
+          }
+
+          "INDEPENDENT_REPLAY_OUTPUT=$output" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Append -Encoding utf8
+
+      - name: Execute independent outcome replay
+        id: audit
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_outcome_replay_independent.py"
+
+          & py -u $script `
+            --root $env:RESEARCH_ROOT `
+            --input $env:INDEPENDENT_REPLAY_INPUT `
+            --output $env:INDEPENDENT_REPLAY_OUTPUT `
+            --target-pct 30
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Independent outcome replay failed"
+          }
+
+      - name: Verify output SHA256
+        id: verify
+        if: always()
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "Audit execution did not succeed"
+          }
+
+          $resultPath = Join-Path $env:INDEPENDENT_REPLAY_OUTPUT `
+            "independent_outcome_result.json"
+
+          $manifestPath = Join-Path $env:INDEPENDENT_REPLAY_OUTPUT `
+            "independent_outcome_manifest.json"
+
+          if (-not (Test-Path $resultPath) -or
+              -not (Test-Path $manifestPath)) {
+            throw "Required output missing"
+          }
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw | ConvertFrom-Json
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw | ConvertFrom-Json
+
+          if (
+            $result.audit -ne "pattern_256_outcome_replay_independent" -or
+            $result.execution -ne "PASS" -or
+            $manifest.execution -ne "PASS" -or
+            $result.source_events -ne 74 -or
+            $result.complete_events -ne 34 -or
+            $result.incomplete_events -ne 40 -or
+            $result.hypothesis_rows -ne 296 -or
+            $result.research_decision -ne "HOLD"
+          ) {
+            throw "Output validation failed"
+          }
+
+          $script = Join-Path $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_outcome_replay_independent.py"
+
+          $actualScript = (
+            Get-FileHash `
+              -LiteralPath $script `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if (
+            $actualScript -ne
+            ([string]$manifest.script_sha256).ToLowerInvariant()
+          ) {
+            throw "Script SHA256 mismatch"
+          }
+
+          foreach ($name in @(
+            "independent_outcome_detail.csv",
+            "independent_outcome_result.json"
+          )) {
+            $path = Join-Path $env:INDEPENDENT_REPLAY_OUTPUT $name
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            $expected = (
+              [string]$manifest.output_sha256.$name
+            ).ToLowerInvariant()
+
+            if (-not $expected -or
+                $actual -ne $expected) {
+              throw "SHA256 mismatch: $name"
+            }
+          }
+
+          Write-Host "[PASS] SHA256 verification"
+
+      - name: Publish summary
+        if: always()
+        run: |
+          $execution = "${{ steps.audit.outcome }}"
+          $verification = "${{ steps.verify.outcome }}"
+
+          @"
+          ## Pattern 256 Independent +30% Outcome Replay
+
+          | Check | Result |
+          |---|---|
+          | Version | Clean V001 |
+          | Execution | $execution |
+          | Verification | $verification |
+          | Research decision | HOLD |
+
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Append -Encoding utf8
+
+          $path = Join-Path $env:INDEPENDENT_REPLAY_OUTPUT `
+            "independent_outcome_result.json"
+
+          if (-not (Test-Path -LiteralPath $path)) {
+            exit 0
+          }
+
+          $result = Get-Content `
+            -LiteralPath $path `
+            -Raw | ConvertFrom-Json
+
+          @"
+          ### Coverage
+
+          - Source events: $($result.source_events)
+          - Complete events: $($result.complete_events)
+          - Incomplete events: $($result.incomplete_events)
+          - Hypothesis rows: $($result.hypothesis_rows)
+          - OHLCV files loaded: $($result.ohlcv_files_loaded)
+
+          ### Independent replay hypotheses
+
+          | Hypothesis | HIT | NO_HIT | Censored |
+          |---|---:|---:|---:|
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Append -Encoding utf8
+
+          foreach ($item in $result.hypotheses.PSObject.Properties) {
+            $v = $item.Value
+            $line = "| $($item.Name) | $($v.HIT) | $($v.NO_HIT) | $($v.CENSORED_INCOMPLETE_WINDOW) |"
+
+            $line | Out-File `
+              -FilePath $env:GITHUB_STEP_SUMMARY `
+              -Append -Encoding utf8
+          }
+
+          @"
+
+          A and C are noncausal diagnostic hypotheses.
+          B and D are hypothetical entry conventions.
+          No trading profitability or independent OOS is proven.
+
+          Research decision: HOLD.
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Append -Encoding utf8
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern256-independent-outcome-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/pattern256_independent_replay_${{ github.run_id }}_${{ github.run_attempt }}/independent_outcome_detail.csv
+            ${{ runner.temp }}/pattern256_independent_replay_${{ github.run_id }}_${{ github.run_attempt }}/independent_outcome_result.json
+            ${{ runner.temp }}/pattern256_independent_replay_${{ github.run_id }}_${{ github.run_attempt }}/independent_outcome_manifest.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Final status gate
+        if: always()
+        run: |
+          if ("${{ steps.download.outcome }}" -ne "success") {
+            throw "Previous artifact download failed"
+          }
+
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "Independent outcome replay failed"
+          }
+
+          if ("${{ steps.verify.outcome }}" -ne "success") {
+            throw "SHA256 verification failed"
+          }
+
+          Write-Host "[PASS] Independent outcome replay"
+          Write-Host "Research decision: HOLD"
