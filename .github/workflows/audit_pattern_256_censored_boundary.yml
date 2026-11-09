@@ -1,0 +1,209 @@
+
+name: audit_pattern_256_censored_boundary.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern256-censored-boundary
+  cancel-in-progress: false
+
+jobs:
+  censored-boundary-audit:
+    name: censored-boundary-audit
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 60
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      RESEARCH_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment and inputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_censored_boundary.py"
+
+          $reportDir = Join-Path `
+            $env:RESEARCH_ROOT `
+            "data\reports\pattern_256_entry_timestamp_root_cause"
+
+          $inputs = @(
+            $script,
+            (Join-Path $reportDir "entry_timestamp_root_cause_result.json"),
+            (Join-Path $reportDir "entry_timestamp_root_cause_detail.csv"),
+            (Join-Path $env:RESEARCH_ROOT "data\ohlcv")
+          )
+
+          foreach ($path in $inputs) {
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Missing required input: $path"
+            }
+          }
+
+          & py -m py_compile $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax verification failed"
+          }
+
+          Write-Host "[PASS] Environment verified"
+
+      - name: Execute censored boundary audit
+        id: audit
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_censored_boundary.py"
+
+          & py -u $script --root $env:RESEARCH_ROOT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Censored boundary audit failed"
+          }
+
+      - name: Verify reports and SHA256
+        id: verify
+        if: steps.audit.outcome == 'success'
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $dir = Join-Path `
+            $env:RESEARCH_ROOT `
+            "data\reports\pattern_256_censored_boundary"
+
+          $manifestPath = Join-Path `
+            $dir `
+            "censored_boundary_manifest.json"
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw | ConvertFrom-Json
+
+          if ($manifest.execution -ne "PASS") {
+            throw "Manifest execution is not PASS"
+          }
+
+          foreach ($item in $manifest.output_sha256.PSObject.Properties) {
+            $path = Join-Path $dir $item.Name
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Missing report: $path"
+            }
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            $expected = (
+              [string]$item.Value
+            ).ToLowerInvariant()
+
+            if ($actual -ne $expected) {
+              throw "SHA256 mismatch: $path"
+            }
+          }
+
+          Write-Host "[PASS] Report integrity verified"
+
+      - name: Publish summary
+        if: steps.verify.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $resultPath = Join-Path `
+            $env:RESEARCH_ROOT `
+            "data\reports\pattern_256_censored_boundary\censored_boundary_result.json"
+
+          $r = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw | ConvertFrom-Json
+
+          $lines = @(
+            "## Pattern 256 CENSORED Boundary Audit",
+            "",
+            "| Check | Result |",
+            "|---|---|",
+            "| Version | Clean V001 |",
+            "| Execution | $($r.execution) |",
+            "| Checked events | $($r.checked_events) |",
+            "| Verified checkpoints | $($r.verified_checkpoint_files) |",
+            "| OHLCV files | $($r.ohlcv_files_checked) |",
+            "| Conclusion | $($r.conclusion) |",
+            "| Research decision | HOLD |",
+            "",
+            "### Diagnosis counts",
+            ""
+          )
+
+          foreach ($item in $r.diagnosis_counts.PSObject.Properties) {
+            $lines += "- $($item.Name): $($item.Value)"
+          }
+
+          $lines += ""
+          $lines += "### Timeframe counts"
+          $lines += ""
+
+          foreach ($item in $r.timeframe_counts.PSObject.Properties) {
+            $lines += "- $($item.Name): $($item.Value)"
+          }
+
+          $lines += ""
+          $lines += "Original data and checkpoints were not modified."
+          $lines += ""
+          $lines += "This audit does not approve training or trading."
+
+          $lines | Out-File `
+            -LiteralPath $env:GITHUB_STEP_SUMMARY `
+            -Encoding UTF8 `
+            -Append
+
+      - name: Upload reports
+        if: steps.verify.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern256-censored-boundary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_censored_boundary\censored_boundary_detail.csv
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_censored_boundary\censored_boundary_result.json
+            C:\Users\USER\Documents\upbit-surge-monitor\data\reports\pattern_256_censored_boundary\censored_boundary_manifest.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Final status gate
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "CENSORED boundary audit execution failed"
+          }
+
+          if ("${{ steps.verify.outcome }}" -ne "success") {
+            throw "CENSORED boundary report verification failed"
+          }
+
+          Write-Host "[PASS] CENSORED boundary audit"
+          Write-Host "Research decision: HOLD"
