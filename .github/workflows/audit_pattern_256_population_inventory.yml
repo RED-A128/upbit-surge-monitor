@@ -1,0 +1,310 @@
+
+name: audit_pattern_256_population_inventory.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern256-population-inventory
+  cancel-in-progress: false
+
+jobs:
+  population-inventory:
+    name: population-inventory
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 120
+
+    defaults:
+      run:
+        shell: powershell
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
+
+          $script = Join-Path $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_population_inventory.py"
+
+          $source = Join-Path $root `
+            "data\reports\pattern_256_accumulation_30pct\checkpoints"
+
+          if (-not (Test-Path -LiteralPath $script)) {
+            throw "Audit script missing"
+          }
+
+          if (-not (Test-Path -LiteralPath $source)) {
+            throw "Historical checkpoint folder missing: $source"
+          }
+
+          $count = @(
+            Get-ChildItem `
+              -LiteralPath $source `
+              -Filter "KRW-*.csv" `
+              -File -Recurse
+          ).Count
+
+          if ($count -eq 0) {
+            throw "No checkpoint CSV files"
+          }
+
+          & py -c "import ast,pathlib,sys;ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8-sig'))" $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax error"
+          }
+
+          "POP_ROOT=$root" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Append -Encoding utf8
+
+          "POP_SCRIPT=$script" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Append -Encoding utf8
+
+          Write-Host "[PASS] Checkpoint files: $count"
+
+      - name: Execute population inventory
+        id: audit
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          & py -u $env:POP_SCRIPT `
+            --root $env:POP_ROOT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Population inventory audit failed"
+          }
+
+      - name: Verify result and SHA256
+        id: verify
+        if: always()
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "Audit execution unsuccessful"
+          }
+
+          $folder = Join-Path $env:POP_ROOT `
+            "data\reports\pattern_256_population_inventory"
+
+          $resultPath = Join-Path $folder `
+            "population_inventory_result.json"
+
+          $manifestPath = Join-Path $folder `
+            "population_inventory_manifest.json"
+
+          if (
+            -not (Test-Path -LiteralPath $resultPath) -or
+            -not (Test-Path -LiteralPath $manifestPath)
+          ) {
+            throw "Missing audit outputs"
+          }
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw | ConvertFrom-Json
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw | ConvertFrom-Json
+
+          if (
+            $result.audit -ne "pattern_256_population_inventory" -or
+            $result.execution -ne "PASS" -or
+            $manifest.execution -ne "PASS" -or
+            $result.research_decision -ne "HOLD" -or
+            $result.files_audited -ne $result.files_discovered
+          ) {
+            throw "Audit result validation failed"
+          }
+
+          $scriptHash = (
+            Get-FileHash `
+              -LiteralPath $env:POP_SCRIPT `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if (
+            $scriptHash -ne
+            ([string]$manifest.script_sha256).ToLowerInvariant()
+          ) {
+            throw "Script SHA256 mismatch"
+          }
+
+          foreach ($name in @(
+            "population_inventory_detail.csv",
+            "population_inventory_result.json"
+          )) {
+            $path = Join-Path $folder $name
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            $expected = (
+              [string]$manifest.output_sha256.$name
+            ).ToLowerInvariant()
+
+            if (-not $expected -or
+                $actual -ne $expected) {
+              throw "Output SHA256 mismatch: $name"
+            }
+          }
+
+          Write-Host "[PASS] SHA256 verification"
+
+      - name: Stage reports for upload
+        id: stage
+        if: always()
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ steps.verify.outcome }}" -ne "success") {
+            throw "No verified reports to stage"
+          }
+
+          $source = Join-Path $env:POP_ROOT `
+            "data\reports\pattern_256_population_inventory"
+
+          $target = Join-Path $env:RUNNER_TEMP `
+            "population_inventory_${env:GITHUB_RUN_ID}_${env:GITHUB_RUN_ATTEMPT}"
+
+          New-Item `
+            -ItemType Directory `
+            -Path $target `
+            -Force | Out-Null
+
+          foreach ($name in @(
+            "population_inventory_detail.csv",
+            "population_inventory_result.json",
+            "population_inventory_manifest.json"
+          )) {
+            Copy-Item `
+              -LiteralPath (Join-Path $source $name) `
+              -Destination (Join-Path $target $name) `
+              -ErrorAction Stop
+          }
+
+          Write-Host "[PASS] Reports staged"
+
+      - name: Publish summary
+        if: always()
+        run: |
+          $execution = "${{ steps.audit.outcome }}"
+          $verification = "${{ steps.verify.outcome }}"
+
+          @"
+          ## Pattern 256 Population Inventory
+
+          | Check | Result |
+          |---|---|
+          | Version | Clean V001 |
+          | Execution | $execution |
+          | Verification | $verification |
+          | Research decision | HOLD |
+
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Append -Encoding utf8
+
+          if ($verification -ne "success") {
+            exit 0
+          }
+
+          $path = Join-Path $env:POP_ROOT `
+            "data\reports\pattern_256_population_inventory\population_inventory_result.json"
+
+          $r = Get-Content `
+            -LiteralPath $path `
+            -Raw | ConvertFrom-Json
+
+          @"
+          ### Population coverage
+
+          - Checkpoint files: $($r.files_audited)
+          - Total event rows: $($r.total.rows)
+          - Unique events within files: $($r.total.unique_events)
+          - Duplicate events within files: $($r.total.duplicate_events)
+          - Invalid rows: $($r.total.invalid_rows)
+          - HIT flags YES: $($r.total.hit_yes)
+          - HIT flags NO: $($r.total.hit_no)
+          - HIT flags UNKNOWN: $($r.total.hit_unknown)
+          - Missing source hashes: $($r.total.missing_source_hash)
+          - Resumed files: $($r.files_resumed)
+
+          ### Status distribution
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Append -Encoding utf8
+
+          foreach ($p in $r.status_counts.PSObject.Properties) {
+            "- $($p.Name): $($p.Value)" |
+              Out-File `
+                -FilePath $env:GITHUB_STEP_SUMMARY `
+                -Append -Encoding utf8
+          }
+
+          @"
+
+          ### Interpretation
+
+          This is an inventory of existing
+          256+accumulation checkpoint events.
+
+          It does not establish an unbiased
+          signal denominator or trading profitability.
+
+          Research decision: HOLD.
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Append -Encoding utf8
+
+      - name: Upload reports
+        if: steps.stage.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern256-population-inventory-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/population_inventory_${{ github.run_id }}_${{ github.run_attempt }}/population_inventory_detail.csv
+            ${{ runner.temp }}/population_inventory_${{ github.run_id }}_${{ github.run_attempt }}/population_inventory_result.json
+            ${{ runner.temp }}/population_inventory_${{ github.run_id }}_${{ github.run_attempt }}/population_inventory_manifest.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Final status gate
+        if: always()
+        run: |
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "Population inventory execution failed"
+          }
+
+          if ("${{ steps.verify.outcome }}" -ne "success") {
+            throw "Population inventory verification failed"
+          }
+
+          if ("${{ steps.stage.outcome }}" -ne "success") {
+            throw "Population inventory staging failed"
+          }
+
+          Write-Host "[PASS] Population inventory"
+          Write-Host "Research decision: HOLD"
