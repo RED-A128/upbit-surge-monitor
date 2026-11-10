@@ -1,0 +1,241 @@
+
+name: inspect_pattern_256_evaluator_policy.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern-256-evaluator-policy-inspection
+  cancel-in-progress: false
+
+jobs:
+  inspect-policy:
+    name: inspect-policy
+    runs-on: [self-hosted, Windows]
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      RESEARCH_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+      REPORT_RELATIVE: 'data\reports\pattern_256_evaluator_policy_inspection'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment
+        id: environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "inspect_pattern_256_evaluator_policy.py"
+
+          if (-not (Test-Path -LiteralPath $script)) {
+            throw "Inspection script missing"
+          }
+
+          $source = Join-Path `
+            $env:RESEARCH_ROOT `
+            "data\reports\pattern_256_gap_review_finalization"
+
+          foreach ($name in @(
+            "gap_review_result.json",
+            "gap_review_manifest.json",
+            "gap_review_matrix.csv",
+            "gap_review_attention_cases.csv"
+          )) {
+            $path = Join-Path $source $name
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Missing input: $path"
+            }
+          }
+
+          & py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+      - name: Inspect evaluator policy
+        id: inspect
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "inspect_pattern_256_evaluator_policy.py"
+
+          & py -u $script --root $env:RESEARCH_ROOT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Policy inspection failed"
+          }
+
+      - name: Verify reports and SHA256
+        id: integrity
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $folder = Join-Path `
+            $env:RESEARCH_ROOT `
+            $env:REPORT_RELATIVE
+
+          $manifest = Get-Content `
+            -LiteralPath (
+              Join-Path $folder "policy_inspection_manifest.json"
+            ) `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          $result = Get-Content `
+            -LiteralPath (
+              Join-Path $folder "policy_inspection_result.json"
+            ) `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          if ($result.audit -ne "pattern_256_evaluator_policy_inspection") {
+            throw "Audit mismatch"
+          }
+
+          if ($result.version -ne "Clean V001") {
+            throw "Version mismatch"
+          }
+
+          if ($result.execution -ne "PASS") {
+            throw "Execution failed"
+          }
+
+          if ($result.attention_cases -ne 649) {
+            throw "Unexpected attention count"
+          }
+
+          if ($result.boundary_cases -ne 2) {
+            throw "Unexpected boundary count"
+          }
+
+          if ($result.source_policy_confirmed -ne $false) {
+            throw "Unexpected policy confirmation"
+          }
+
+          foreach ($name in @(
+            "policy_inspection_result.json",
+            "policy_source_locations.csv",
+            "policy_attention_summary.csv",
+            "policy_boundary_cases.csv"
+          )) {
+            $entry = $manifest.outputs.PSObject.Properties[$name]
+
+            if ($null -eq $entry) {
+              throw "Missing manifest entry: $name"
+            }
+
+            $path = Join-Path $folder $name
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Missing report: $name"
+            }
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            $expected = (
+              [string]$entry.Value
+            ).ToLowerInvariant()
+
+            if ($actual -ne $expected) {
+              throw "SHA256 mismatch: $name"
+            }
+          }
+
+          Write-Host "Integrity PASS"
+
+      - name: Publish summary
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          @(
+            "## Pattern 256 Evaluator Policy Inspection",
+            "",
+            "| Step | Result |",
+            "|---|---|",
+            "| Environment | ${{ steps.environment.outcome }} |",
+            "| Inspection | ${{ steps.inspect.outcome }} |",
+            "| SHA256 | ${{ steps.integrity.outcome }} |"
+          ) | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Encoding utf8 -Append
+
+          if ("${{ steps.integrity.outcome }}" -eq "success") {
+            $folder = Join-Path `
+              $env:RESEARCH_ROOT `
+              $env:REPORT_RELATIVE
+
+            $r = Get-Content `
+              -LiteralPath (
+                Join-Path $folder "policy_inspection_result.json"
+              ) `
+              -Raw -Encoding UTF8 | ConvertFrom-Json
+
+            @(
+              "",
+              "| Metric | Value |",
+              "|---|---:|",
+              "| Attention cases | $($r.attention_cases) |",
+              "| Boundary cases | $($r.boundary_cases) |",
+              "| Python files inspected | $($r.python_files_inspected) |",
+              "| Python files matched | $($r.python_files_matched) |",
+              "| Source locations | $($r.source_locations) |",
+              "| Execution | $($r.execution) |",
+              "| Research decision | $($r.research_decision) |",
+              "",
+              "Source policy remains unconfirmed.",
+              "Review evaluator code before independent OOS."
+            ) | Out-File `
+              -FilePath $env:GITHUB_STEP_SUMMARY `
+              -Encoding utf8 -Append
+          }
+
+      - name: Upload reports
+        id: upload
+        if: steps.integrity.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-policy-inspection-${{ github.run_number }}
+          path: |
+            C:/Users/USER/Documents/upbit-surge-monitor/data/reports/pattern_256_evaluator_policy_inspection/policy_inspection_result.json
+            C:/Users/USER/Documents/upbit-surge-monitor/data/reports/pattern_256_evaluator_policy_inspection/policy_inspection_manifest.json
+            C:/Users/USER/Documents/upbit-surge-monitor/data/reports/pattern_256_evaluator_policy_inspection/policy_source_locations.csv
+            C:/Users/USER/Documents/upbit-surge-monitor/data/reports/pattern_256_evaluator_policy_inspection/policy_attention_summary.csv
+            C:/Users/USER/Documents/upbit-surge-monitor/data/reports/pattern_256_evaluator_policy_inspection/policy_boundary_cases.csv
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Final status gate
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          foreach ($outcome in @(
+            "${{ steps.environment.outcome }}",
+            "${{ steps.inspect.outcome }}",
+            "${{ steps.integrity.outcome }}",
+            "${{ steps.upload.outcome }}"
+          )) {
+            if ($outcome -ne "success") {
+              throw "Required step failed: $outcome"
+            }
+          }
+
+          Write-Host "WORKFLOW PASS"
+          Write-Host "RESEARCH DECISION: HOLD"
