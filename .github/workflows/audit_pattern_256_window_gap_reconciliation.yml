@@ -1,0 +1,293 @@
+
+name: audit_pattern_256_window_gap_reconciliation.yml
+
+on:
+  workflow_dispatch:
+    inputs:
+      detail_path:
+        description: 'Optional absolute path to outcome_verification_detail.csv'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern-256-window-gap-reconciliation
+  cancel-in-progress: false
+
+jobs:
+  reconcile-window-gaps:
+    name: reconcile-window-gaps
+    runs-on: [self-hosted, Windows]
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      RESEARCH_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+      REPORT_RELATIVE: 'data\reports\pattern_256_window_gap_reconciliation'
+      DETAIL_PATH: ${{ inputs.detail_path }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment
+        id: environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_window_gap_reconciliation.py"
+
+          if (-not (Test-Path -LiteralPath $script)) {
+            throw "Audit script missing"
+          }
+
+          if (-not (Test-Path -LiteralPath $env:RESEARCH_ROOT)) {
+            throw "Research root missing"
+          }
+
+          foreach ($tf in @("h1", "h4", "d1")) {
+            $folder = Join-Path `
+              $env:RESEARCH_ROOT `
+              "data\ohlcv\$tf"
+
+            if (-not (Test-Path -LiteralPath $folder)) {
+              throw "OHLCV folder missing: $folder"
+            }
+          }
+
+          & py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          Write-Host "Environment PASS"
+
+      - name: Execute reconciliation
+        id: audit
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_window_gap_reconciliation.py"
+
+          $arguments = @(
+            "-u",
+            $script,
+            "--root",
+            $env:RESEARCH_ROOT,
+            "--max-per-category",
+            "300"
+          )
+
+          if (-not [string]::IsNullOrWhiteSpace($env:DETAIL_PATH)) {
+            $arguments += @(
+              "--detail",
+              $env:DETAIL_PATH
+            )
+          }
+
+          & py @arguments
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Reconciliation failed"
+          }
+
+      - name: Verify reports and SHA256
+        id: integrity
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $folder = Join-Path `
+            $env:RESEARCH_ROOT `
+            $env:REPORT_RELATIVE
+
+          $manifestPath = Join-Path `
+            $folder `
+            "window_gap_reconciliation_manifest.json"
+
+          $resultPath = Join-Path `
+            $folder `
+            "window_gap_reconciliation_result.json"
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          if ($result.audit -ne "pattern_256_window_gap_reconciliation") {
+            throw "Unexpected audit"
+          }
+
+          if ($result.version -ne "Clean V001") {
+            throw "Unexpected version"
+          }
+
+          if ($result.execution -ne "PASS") {
+            throw "Audit not PASS"
+          }
+
+          if ($result.error_count -ne 0) {
+            throw "Audit errors present"
+          }
+
+          if ($result.sample_rows_processed -ne $result.sample_rows_selected) {
+            throw "Incomplete sample coverage"
+          }
+
+          if ($result.research_decision -ne "HOLD") {
+            throw "Research decision mismatch"
+          }
+
+          if ($result.train_approved -ne $false) {
+            throw "Unexpected training approval"
+          }
+
+          if ($result.live_trading_approved -ne $false) {
+            throw "Unexpected trading approval"
+          }
+
+          $files = @(
+            "window_gap_reconciliation_result.json",
+            "window_gap_reconciliation_samples.csv",
+            "window_gap_reconciliation_by_category.csv",
+            "window_gap_reconciliation_by_timeframe.csv"
+          )
+
+          foreach ($name in $files) {
+            $entry = $manifest.outputs.PSObject.Properties[$name]
+
+            if ($null -eq $entry) {
+              throw "Manifest missing: $name"
+            }
+
+            $path = Join-Path $folder $name
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Report missing: $name"
+            }
+
+            $expected = [string]$entry.Value
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($actual -ne $expected.ToLowerInvariant()) {
+              throw "SHA256 mismatch: $name"
+            }
+
+            Write-Host "[SHA256 PASS] $name"
+          }
+
+          Write-Host "Integrity PASS"
+
+      - name: Publish summary
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          @(
+            "## Pattern 256 WINDOW_GAP Reconciliation",
+            "",
+            "| Step | Result |",
+            "|---|---|",
+            "| Environment | ${{ steps.environment.outcome }} |",
+            "| Reconciliation | ${{ steps.audit.outcome }} |",
+            "| SHA256 integrity | ${{ steps.integrity.outcome }} |"
+          ) | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Encoding utf8 -Append
+
+          if ("${{ steps.integrity.outcome }}" -eq "success") {
+            $folder = Join-Path `
+              $env:RESEARCH_ROOT `
+              $env:REPORT_RELATIVE
+
+            $result = Get-Content `
+              -LiteralPath (
+                Join-Path $folder "window_gap_reconciliation_result.json"
+              ) `
+              -Raw -Encoding UTF8 | ConvertFrom-Json
+
+            @(
+              "",
+              "| Metric | Value |",
+              "|---|---:|",
+              "| Detail rows scanned | $($result.detail_rows_scanned) |",
+              "| Samples selected | $($result.sample_rows_selected) |",
+              "| Samples processed | $($result.sample_rows_processed) |",
+              "| Source markets | $($result.source_markets) |",
+              "| Errors | $($result.error_count) |",
+              "| Execution | $($result.execution) |",
+              "| Research decision | $($result.research_decision) |",
+              "",
+              "### Diagnosis counts",
+              ""
+            ) | Out-File `
+              -FilePath $env:GITHUB_STEP_SUMMARY `
+              -Encoding utf8 -Append
+
+            foreach ($item in $result.diagnosis_counts.PSObject.Properties) {
+              "| $($item.Name) | $($item.Value) |" |
+                Out-File `
+                  -FilePath $env:GITHUB_STEP_SUMMARY `
+                  -Encoding utf8 -Append
+            }
+
+            @(
+              "",
+              "This is a diagnostic sample, not an independent OOS test.",
+              "Training and live trading remain unapproved."
+            ) | Out-File `
+              -FilePath $env:GITHUB_STEP_SUMMARY `
+              -Encoding utf8 -Append
+          }
+
+      - name: Upload compact reports
+        id: upload
+        if: steps.integrity.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-window-gap-reconciliation-${{ github.run_number }}
+          path: |
+            C:/Users/USER/Documents/upbit-surge-monitor/data/reports/pattern_256_window_gap_reconciliation/window_gap_reconciliation_result.json
+            C:/Users/USER/Documents/upbit-surge-monitor/data/reports/pattern_256_window_gap_reconciliation/window_gap_reconciliation_manifest.json
+            C:/Users/USER/Documents/upbit-surge-monitor/data/reports/pattern_256_window_gap_reconciliation/window_gap_reconciliation_samples.csv
+            C:/Users/USER/Documents/upbit-surge-monitor/data/reports/pattern_256_window_gap_reconciliation/window_gap_reconciliation_by_category.csv
+            C:/Users/USER/Documents/upbit-surge-monitor/data/reports/pattern_256_window_gap_reconciliation/window_gap_reconciliation_by_timeframe.csv
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Final status gate
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $outcomes = @(
+            "${{ steps.environment.outcome }}",
+            "${{ steps.audit.outcome }}",
+            "${{ steps.integrity.outcome }}",
+            "${{ steps.upload.outcome }}"
+          )
+
+          foreach ($outcome in $outcomes) {
+            if ($outcome -ne "success") {
+              throw "Required step failed: $outcome"
+            }
+          }
+
+          Write-Host "WORKFLOW PASS"
+          Write-Host "RESEARCH DECISION: HOLD"
