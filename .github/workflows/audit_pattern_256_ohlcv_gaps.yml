@@ -1,0 +1,289 @@
+
+name: audit_pattern_256_ohlcv_gaps.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern-256-ohlcv-gap-audit
+  cancel-in-progress: false
+
+jobs:
+  audit-ohlcv-gaps:
+    name: audit-ohlcv-gaps
+    runs-on: [self-hosted, Windows]
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      RESEARCH_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+      REPORT_RELATIVE: 'data\reports\pattern_256_ohlcv_gap_audit'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment
+        id: environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_ohlcv_gaps.py"
+
+          if (-not (Test-Path -LiteralPath $script)) {
+            throw "Audit script missing"
+          }
+
+          if (-not (Test-Path -LiteralPath $env:RESEARCH_ROOT)) {
+            throw "Research root missing"
+          }
+
+          $diagnostics = Join-Path `
+            $env:RESEARCH_ROOT `
+            "data\reports\pattern_256_outcome_review_diagnostics"
+
+          foreach ($name in @(
+            "review_diagnostics_result.json",
+            "review_diagnostics_manifest.json",
+            "review_by_market.csv",
+            "review_by_timeframe.csv"
+          )) {
+            $path = Join-Path $diagnostics $name
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Missing diagnostic file: $path"
+            }
+          }
+
+          foreach ($tf in @("h1", "h4", "d1")) {
+            $folder = Join-Path `
+              $env:RESEARCH_ROOT `
+              "data\ohlcv\$tf"
+
+            if (-not (Test-Path -LiteralPath $folder)) {
+              throw "Missing OHLCV folder: $folder"
+            }
+          }
+
+          & py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          Write-Host "Environment PASS"
+
+      - name: Execute OHLCV gap audit
+        id: audit
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_ohlcv_gaps.py"
+
+          & py -u $script --root $env:RESEARCH_ROOT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "OHLCV gap audit failed"
+          }
+
+      - name: Verify reports and SHA256
+        id: integrity
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $folder = Join-Path `
+            $env:RESEARCH_ROOT `
+            $env:REPORT_RELATIVE
+
+          $manifestPath = Join-Path `
+            $folder `
+            "ohlcv_gap_manifest.json"
+
+          $resultPath = Join-Path `
+            $folder `
+            "ohlcv_gap_result.json"
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          if ($manifest.audit -ne "pattern_256_ohlcv_gap_audit") {
+            throw "Unexpected audit manifest"
+          }
+
+          if ($result.audit -ne $manifest.audit) {
+            throw "Audit mismatch"
+          }
+
+          if ($result.version -ne "Clean V001") {
+            throw "Unexpected audit version"
+          }
+
+          if ($result.execution -ne "PASS") {
+            throw "Audit execution not PASS"
+          }
+
+          if ($result.markets_processed -ne $result.markets_expected) {
+            throw "Incomplete market coverage"
+          }
+
+          if ($result.error_count -ne 0) {
+            throw "Audit contains errors"
+          }
+
+          if ($result.research_decision -ne "HOLD") {
+            throw "Research decision mismatch"
+          }
+
+          if ($result.train_approved -ne $false) {
+            throw "Unexpected training approval"
+          }
+
+          if ($result.live_trading_approved -ne $false) {
+            throw "Unexpected live trading approval"
+          }
+
+          $expectedFiles = @(
+            "ohlcv_gap_result.json",
+            "ohlcv_gap_by_market.csv",
+            "ohlcv_gap_by_timeframe.csv",
+            "ohlcv_gap_samples.csv"
+          )
+
+          foreach ($name in $expectedFiles) {
+            $property = $manifest.outputs.PSObject.Properties[$name]
+
+            if ($null -eq $property) {
+              throw "Manifest entry missing: $name"
+            }
+
+            $expected = [string]$property.Value
+            $path = Join-Path $folder $name
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Report missing: $name"
+            }
+
+            $actual = (
+              Get-FileHash -LiteralPath $path -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($actual -ne $expected.ToLowerInvariant()) {
+              throw "SHA256 mismatch: $name"
+            }
+
+            Write-Host "[SHA256 PASS] $name"
+          }
+
+          Write-Host "Report integrity PASS"
+
+      - name: Publish summary
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          @(
+            "## Pattern 256 OHLCV Gap Audit",
+            "",
+            "| Step | Result |",
+            "|---|---|",
+            "| Environment | ${{ steps.environment.outcome }} |",
+            "| OHLCV audit | ${{ steps.audit.outcome }} |",
+            "| Report integrity | ${{ steps.integrity.outcome }} |"
+          ) | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Encoding utf8 -Append
+
+          if ("${{ steps.integrity.outcome }}" -eq "success") {
+            $folder = Join-Path `
+              $env:RESEARCH_ROOT `
+              $env:REPORT_RELATIVE
+
+            $result = Get-Content `
+              -LiteralPath (
+                Join-Path $folder "ohlcv_gap_result.json"
+              ) `
+              -Raw -Encoding UTF8 | ConvertFrom-Json
+
+            @(
+              "",
+              "| Markets processed | $($result.markets_processed) |",
+              "| Markets resumed | $($result.markets_resumed) |",
+              "| Execution | $($result.execution) |",
+              "| Research decision | $($result.research_decision) |",
+              "",
+              "A successful audit does not prove data completeness or profitability."
+            ) | Out-File `
+              -FilePath $env:GITHUB_STEP_SUMMARY `
+              -Encoding utf8 -Append
+
+            foreach ($tf in @("h1", "h4", "d1")) {
+              $item = $result.timeframes.$tf
+
+              if ($null -ne $item) {
+                @(
+                  "",
+                  "### $tf",
+                  "",
+                  "| Measure | Count |",
+                  "|---|---:|",
+                  "| Gap events | $($item.gap_events) |",
+                  "| Missing candle slots | $($item.missing_bars) |",
+                  "| Duplicate timestamps | $($item.duplicate_timestamps) |",
+                  "| Reverse timestamps | $($item.reverse_timestamps) |",
+                  "| Existing WINDOW_GAP rows | $($item.window_gap_rows) |"
+                ) | Out-File `
+                  -FilePath $env:GITHUB_STEP_SUMMARY `
+                  -Encoding utf8 -Append
+              }
+            }
+          }
+
+      - name: Upload compact reports
+        id: upload
+        if: steps.integrity.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-ohlcv-gap-audit-${{ github.run_number }}
+          path: |
+            C:/Users/USER/Documents/upbit-surge-monitor/data/reports/pattern_256_ohlcv_gap_audit/ohlcv_gap_result.json
+            C:/Users/USER/Documents/upbit-surge-monitor/data/reports/pattern_256_ohlcv_gap_audit/ohlcv_gap_manifest.json
+            C:/Users/USER/Documents/upbit-surge-monitor/data/reports/pattern_256_ohlcv_gap_audit/ohlcv_gap_by_market.csv
+            C:/Users/USER/Documents/upbit-surge-monitor/data/reports/pattern_256_ohlcv_gap_audit/ohlcv_gap_by_timeframe.csv
+            C:/Users/USER/Documents/upbit-surge-monitor/data/reports/pattern_256_ohlcv_gap_audit/ohlcv_gap_samples.csv
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Final status gate
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $outcomes = @(
+            "${{ steps.environment.outcome }}",
+            "${{ steps.audit.outcome }}",
+            "${{ steps.integrity.outcome }}",
+            "${{ steps.upload.outcome }}"
+          )
+
+          foreach ($outcome in $outcomes) {
+            if ($outcome -ne "success") {
+              throw "Required step failed: $outcome"
+            }
+          }
+
+          Write-Host "WORKFLOW PASS"
+          Write-Host "RESEARCH DECISION: HOLD"
