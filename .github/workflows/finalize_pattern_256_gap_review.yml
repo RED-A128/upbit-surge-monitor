@@ -1,0 +1,269 @@
+
+name: finalize_pattern_256_gap_review.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern-256-gap-review-finalization
+  cancel-in-progress: false
+
+jobs:
+  finalize-gap-review:
+    name: finalize-gap-review
+    runs-on: [self-hosted, Windows]
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      RESEARCH_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+      REPORT_RELATIVE: 'data\reports\pattern_256_gap_review_finalization'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment
+        id: environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "finalize_pattern_256_gap_review.py"
+
+          if (-not (Test-Path -LiteralPath $script)) {
+            throw "Python audit script missing"
+          }
+
+          $source = Join-Path `
+            $env:RESEARCH_ROOT `
+            "data\reports\pattern_256_window_gap_reconciliation"
+
+          foreach ($name in @(
+            "window_gap_reconciliation_result.json",
+            "window_gap_reconciliation_manifest.json",
+            "window_gap_reconciliation_samples.csv",
+            "window_gap_reconciliation_by_category.csv",
+            "window_gap_reconciliation_by_timeframe.csv"
+          )) {
+            $path = Join-Path $source $name
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Input missing: $path"
+            }
+          }
+
+          & py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          Write-Host "Environment PASS"
+
+      - name: Finalize review
+        id: audit
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "finalize_pattern_256_gap_review.py"
+
+          & py -u $script --root $env:RESEARCH_ROOT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Review finalization failed"
+          }
+
+      - name: Verify SHA256
+        id: integrity
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $folder = Join-Path `
+            $env:RESEARCH_ROOT `
+            $env:REPORT_RELATIVE
+
+          $manifest = Get-Content `
+            -LiteralPath (
+              Join-Path $folder "gap_review_manifest.json"
+            ) `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          $result = Get-Content `
+            -LiteralPath (
+              Join-Path $folder "gap_review_result.json"
+            ) `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          if ($result.audit -ne "pattern_256_gap_review_finalization") {
+            throw "Audit mismatch"
+          }
+
+          if ($result.version -ne "Clean V001") {
+            throw "Version mismatch"
+          }
+
+          if ($result.execution -ne "PASS") {
+            throw "Execution failed"
+          }
+
+          if ($result.error_count -ne 0) {
+            throw "Errors present"
+          }
+
+          if ($result.input_samples -ne $result.validated_samples) {
+            throw "Incomplete validation"
+          }
+
+          if ($result.research_decision -ne "HOLD") {
+            throw "Unexpected research decision"
+          }
+
+          if ($result.train_approved -ne $false) {
+            throw "Unexpected training approval"
+          }
+
+          if ($result.live_trading_approved -ne $false) {
+            throw "Unexpected trading approval"
+          }
+
+          foreach ($name in @(
+            "gap_review_result.json",
+            "gap_review_matrix.csv",
+            "gap_review_attention_cases.csv"
+          )) {
+            $entry = $manifest.outputs.PSObject.Properties[$name]
+
+            if ($null -eq $entry) {
+              throw "Manifest entry missing: $name"
+            }
+
+            $path = Join-Path $folder $name
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Report missing: $name"
+            }
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            $expected = (
+              [string]$entry.Value
+            ).ToLowerInvariant()
+
+            if ($actual -ne $expected) {
+              throw "SHA256 mismatch: $name"
+            }
+
+            Write-Host "[SHA256 PASS] $name"
+          }
+
+          Write-Host "Integrity PASS"
+
+      - name: Publish summary
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          @(
+            "## Pattern 256 Gap Review Finalization",
+            "",
+            "| Step | Result |",
+            "|---|---|",
+            "| Environment | ${{ steps.environment.outcome }} |",
+            "| Review | ${{ steps.audit.outcome }} |",
+            "| SHA256 | ${{ steps.integrity.outcome }} |"
+          ) | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Encoding utf8 -Append
+
+          if ("${{ steps.integrity.outcome }}" -eq "success") {
+            $folder = Join-Path `
+              $env:RESEARCH_ROOT `
+              $env:REPORT_RELATIVE
+
+            $result = Get-Content `
+              -LiteralPath (
+                Join-Path $folder "gap_review_result.json"
+              ) `
+              -Raw -Encoding UTF8 | ConvertFrom-Json
+
+            @(
+              "",
+              "| Metric | Value |",
+              "|---|---:|",
+              "| Samples | $($result.input_samples) |",
+              "| Validated | $($result.validated_samples) |",
+              "| Attention cases | $($result.attention_cases) |",
+              "| Errors | $($result.error_count) |",
+              "| Execution | $($result.execution) |",
+              "| Research decision | $($result.research_decision) |",
+              "",
+              "### Attention categories",
+              "",
+              "| Category | Count |",
+              "|---|---:|"
+            ) | Out-File `
+              -FilePath $env:GITHUB_STEP_SUMMARY `
+              -Encoding utf8 -Append
+
+            foreach ($item in $result.attention_counts.PSObject.Properties) {
+              "| $($item.Name) | $($item.Value) |" |
+                Out-File `
+                  -FilePath $env:GITHUB_STEP_SUMMARY `
+                  -Encoding utf8 -Append
+            }
+
+            @(
+              "",
+              "Diagnostic review only.",
+              "Independent OOS and profitability remain unproven.",
+              "Training and live trading remain unapproved."
+            ) | Out-File `
+              -FilePath $env:GITHUB_STEP_SUMMARY `
+              -Encoding utf8 -Append
+          }
+
+      - name: Upload reports
+        id: upload
+        if: steps.integrity.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-gap-review-${{ github.run_number }}
+          path: |
+            C:/Users/USER/Documents/upbit-surge-monitor/data/reports/pattern_256_gap_review_finalization/gap_review_result.json
+            C:/Users/USER/Documents/upbit-surge-monitor/data/reports/pattern_256_gap_review_finalization/gap_review_manifest.json
+            C:/Users/USER/Documents/upbit-surge-monitor/data/reports/pattern_256_gap_review_finalization/gap_review_matrix.csv
+            C:/Users/USER/Documents/upbit-surge-monitor/data/reports/pattern_256_gap_review_finalization/gap_review_attention_cases.csv
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Final status gate
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          foreach ($outcome in @(
+            "${{ steps.environment.outcome }}",
+            "${{ steps.audit.outcome }}",
+            "${{ steps.integrity.outcome }}",
+            "${{ steps.upload.outcome }}"
+          )) {
+            if ($outcome -ne "success") {
+              throw "Required step failed: $outcome"
+            }
+          }
+
+          Write-Host "WORKFLOW PASS"
+          Write-Host "RESEARCH DECISION: HOLD"
