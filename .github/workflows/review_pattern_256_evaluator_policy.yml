@@ -1,0 +1,195 @@
+
+name: review_pattern_256_evaluator_policy.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  review-evaluator-policy:
+    name: review-evaluator-policy
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        shell: powershell
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
+          $checkout = $env:GITHUB_WORKSPACE
+
+          if (-not (Test-Path -LiteralPath $root)) {
+              throw "Research root not found"
+          }
+
+          $script = Join-Path $checkout "review_pattern_256_evaluator_policy.py"
+
+          if (-not (Test-Path -LiteralPath $script)) {
+              throw "Python review script not found"
+          }
+
+          $inspection = Join-Path $root "data\reports\pattern_256_evaluator_policy_inspection"
+
+          if (-not (Test-Path -LiteralPath $inspection)) {
+              throw "Previous inspection reports not found"
+          }
+
+          py --version
+
+          Write-Host "Environment verification PASS"
+
+      - name: Execute policy review
+        id: review
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
+          $script = Join-Path $env:GITHUB_WORKSPACE "review_pattern_256_evaluator_policy.py"
+
+          py -u $script --root $root --checkout $env:GITHUB_WORKSPACE
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Policy review failed"
+          }
+
+      - name: Verify reports and SHA256
+        id: verify
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
+          $dir = Join-Path $root "data\reports\pattern_256_evaluator_policy_review"
+
+          $result = Join-Path $dir "policy_review_result.json"
+          $evidence = Join-Path $dir "policy_review_evidence.md"
+          $manifestFile = Join-Path $dir "policy_review_manifest.json"
+
+          foreach ($file in @($result, $evidence, $manifestFile)) {
+              if (-not (Test-Path -LiteralPath $file)) {
+                  throw "Report missing: $file"
+              }
+          }
+
+          $manifest = Get-Content -LiteralPath $manifestFile -Raw |
+              ConvertFrom-Json
+
+          foreach ($property in $manifest.outputs.PSObject.Properties) {
+              $path = Join-Path $dir $property.Name
+              $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLower()
+              $expected = ([string]$property.Value).ToLower()
+
+              if ($actual -ne $expected) {
+                  throw "SHA256 mismatch: $($property.Name)"
+              }
+          }
+
+          $report = Get-Content -LiteralPath $result -Raw |
+              ConvertFrom-Json
+
+          if ($report.execution -ne "PASS") {
+              throw "Unexpected audit execution"
+          }
+
+          if ($report.research_decision -ne "HOLD") {
+              throw "Unsafe research decision"
+          }
+
+          if ($report.train_approved -ne $false) {
+              throw "Unexpected training approval"
+          }
+
+          if ($report.live_trading_approved -ne $false) {
+              throw "Unexpected trading approval"
+          }
+
+          Write-Host "Report verification PASS"
+
+      - name: Publish summary
+        if: always()
+        run: |
+          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
+          $result = Join-Path $root "data\reports\pattern_256_evaluator_policy_review\policy_review_result.json"
+
+          Add-Content $env:GITHUB_STEP_SUMMARY "## Pattern 256 Evaluator Policy Review"
+          Add-Content $env:GITHUB_STEP_SUMMARY ""
+          Add-Content $env:GITHUB_STEP_SUMMARY "| Check | Result |"
+          Add-Content $env:GITHUB_STEP_SUMMARY "|---|---|"
+
+          if (Test-Path -LiteralPath $result) {
+              $r = Get-Content -LiteralPath $result -Raw |
+                  ConvertFrom-Json
+
+              Add-Content $env:GITHUB_STEP_SUMMARY "| Execution | $($r.execution) |"
+              Add-Content $env:GITHUB_STEP_SUMMARY "| Classification | $($r.classification) |"
+              Add-Content $env:GITHUB_STEP_SUMMARY "| Attention cases | $($r.attention_cases) |"
+              Add-Content $env:GITHUB_STEP_SUMMARY "| Boundary cases | $($r.boundary_cases) |"
+              Add-Content $env:GITHUB_STEP_SUMMARY "| Sources inspected | $($r.sources_inspected) |"
+              Add-Content $env:GITHUB_STEP_SUMMARY "| Hash mismatches | $($r.hash_mismatches) |"
+              Add-Content $env:GITHUB_STEP_SUMMARY "| Research decision | HOLD |"
+          }
+          else {
+              Add-Content $env:GITHUB_STEP_SUMMARY "| Execution | FAILED OR NOT STARTED |"
+          }
+
+          Add-Content $env:GITHUB_STEP_SUMMARY ""
+          Add-Content $env:GITHUB_STEP_SUMMARY "Manual policy review is required before independent OOS."
+
+      - name: Stage reports
+        if: steps.verify.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
+          $source = Join-Path $root "data\reports\pattern_256_evaluator_policy_review"
+          $destination = Join-Path $env:GITHUB_WORKSPACE "policy-review-artifact"
+
+          New-Item -ItemType Directory -Force -Path $destination |
+              Out-Null
+
+          foreach ($name in @(
+              "policy_review_result.json",
+              "policy_review_evidence.md",
+              "policy_review_manifest.json"
+          )) {
+              Copy-Item `
+                  -LiteralPath (Join-Path $source $name) `
+                  -Destination (Join-Path $destination $name) `
+                  -Force
+          }
+
+      - name: Upload reports
+        if: steps.verify.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-evaluator-policy-review
+          path: policy-review-artifact/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Final status gate
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ steps.review.outcome }}" -ne "success") {
+              throw "Policy review execution failed"
+          }
+
+          if ("${{ steps.verify.outcome }}" -ne "success") {
+              throw "Policy review integrity verification failed"
+          }
+
+          Write-Host "Policy review workflow PASS"
