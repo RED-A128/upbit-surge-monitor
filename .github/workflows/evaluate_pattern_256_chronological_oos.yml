@@ -1,0 +1,224 @@
+
+name: evaluate_pattern_256_chronological_oos.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate-chronological-oos:
+    name: evaluate-chronological-oos
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 240
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      RESEARCH_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+      REPORT_FOLDER: data\reports\pattern_256_chronological_oos
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "=== Python ==="
+          py --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python launcher unavailable"
+          }
+
+          $script = Join-Path $env:GITHUB_WORKSPACE "evaluate_pattern_256_chronological_oos.py"
+
+          if (-not (Test-Path -LiteralPath $script)) {
+            throw "Python evaluation script missing"
+          }
+
+          if (-not (Test-Path -LiteralPath $env:RESEARCH_ROOT)) {
+            throw "Local research root missing"
+          }
+
+          foreach ($tf in @("h1", "h4", "d1")) {
+            $ohlcv = Join-Path $env:RESEARCH_ROOT "data\ohlcv\$tf"
+            $signals = Join-Path $env:RESEARCH_ROOT "data\signals\256\$tf"
+
+            if (-not (Test-Path -LiteralPath $ohlcv)) {
+              throw "OHLCV folder missing: $ohlcv"
+            }
+
+            if (-not (Test-Path -LiteralPath $signals)) {
+              throw "Signal folder missing: $signals"
+            }
+
+            Write-Host "[OK] $tf"
+          }
+
+      - name: Execute chronological OOS
+        id: evaluate
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path $env:GITHUB_WORKSPACE "evaluate_pattern_256_chronological_oos.py"
+
+          py -u $script --root $env:RESEARCH_ROOT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Chronological OOS evaluation failed"
+          }
+
+      - name: Verify report integrity
+        id: integrity
+        if: steps.evaluate.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $folder = Join-Path $env:RESEARCH_ROOT $env:REPORT_FOLDER
+
+          $manifestPath = Join-Path $folder "oos_manifest.json"
+          $resultPath = Join-Path $folder "oos_result.json"
+
+          if (-not (Test-Path -LiteralPath $manifestPath)) {
+            throw "Manifest missing"
+          }
+
+          if (-not (Test-Path -LiteralPath $resultPath)) {
+            throw "Result missing"
+          }
+
+          $manifest = Get-Content -LiteralPath $manifestPath -Raw |
+            ConvertFrom-Json
+
+          $result = Get-Content -LiteralPath $resultPath -Raw |
+            ConvertFrom-Json
+
+          foreach ($property in $manifest.files.PSObject.Properties) {
+            $name = $property.Name
+            $expected = [string]$property.Value
+            $path = Join-Path $folder $name
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Missing report: $name"
+            }
+
+            $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+
+            if ($actual -ne $expected.ToLowerInvariant()) {
+              throw "SHA256 mismatch: $name"
+            }
+
+            Write-Host "[SHA256 OK] $name"
+          }
+
+          if ($result.execution -ne "PASS") {
+            throw "Audit execution is not PASS"
+          }
+
+          if ($result.research_decision -ne "HOLD") {
+            throw "Unexpected research decision"
+          }
+
+          Write-Host "All report integrity checks passed"
+
+      - name: Publish summary
+        if: always()
+        run: |
+          $folder = Join-Path $env:RESEARCH_ROOT $env:REPORT_FOLDER
+          $resultPath = Join-Path $folder "oos_result.json"
+
+          @"
+          # Pattern 256 Chronological OOS
+
+          | Step | Status |
+          |---|---|
+          | Python execution | ${{ steps.evaluate.outcome }} |
+          | SHA256 integrity | ${{ steps.integrity.outcome }} |
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+          if (Test-Path -LiteralPath $resultPath) {
+            $result = Get-Content -LiteralPath $resultPath -Raw |
+              ConvertFrom-Json
+
+            @"
+
+          | Metric | Value |
+          |---|---|
+          | Version | $($result.version) |
+          | Execution | $($result.execution) |
+          | Input pairs | $($result.input_pairs) |
+          | Signal episodes | $($result.signal_episodes) |
+          | Event rows | $($result.event_rows) |
+          | Errors | $($result.errors.Count) |
+          | Research decision | $($result.research_decision) |
+
+          **This is a preliminary chronological evaluation, not proof of independent OOS or profitability.**
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          }
+
+      - name: Stage compact reports
+        id: stage
+        if: steps.integrity.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $source = Join-Path $env:RESEARCH_ROOT $env:REPORT_FOLDER
+          $target = Join-Path $env:GITHUB_WORKSPACE "oos_artifacts"
+
+          New-Item -ItemType Directory -Path $target -Force |
+            Out-Null
+
+          foreach ($name in @(
+            "oos_result.json",
+            "oos_summary.csv",
+            "oos_report.md",
+            "oos_manifest.json"
+          )) {
+            Copy-Item -LiteralPath (Join-Path $source $name) `
+              -Destination (Join-Path $target $name) `
+              -ErrorAction Stop
+          }
+
+          Write-Host "Compact reports staged"
+
+      - name: Upload compact reports
+        id: upload
+        if: steps.stage.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-chronological-oos
+          path: oos_artifacts/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Final status gate
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ steps.evaluate.outcome }}" -ne "success") {
+            throw "OOS Python evaluation failed"
+          }
+
+          if ("${{ steps.integrity.outcome }}" -ne "success") {
+            throw "OOS integrity verification failed"
+          }
+
+          if ("${{ steps.stage.outcome }}" -ne "success") {
+            throw "Report staging failed"
+          }
+
+          if ("${{ steps.upload.outcome }}" -ne "success") {
+            throw "Artifact upload failed"
+          }
+
+          Write-Host "Workflow completed successfully"
+          Write-Host "Research decision remains HOLD"
