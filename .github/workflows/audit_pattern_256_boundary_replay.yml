@@ -1,0 +1,213 @@
+
+name: audit_pattern_256_boundary_replay.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit-boundary-replay:
+    name: audit-boundary-replay
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        shell: powershell
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
+          $script = Join-Path $env:GITHUB_WORKSPACE "audit_pattern_256_boundary_replay.py"
+
+          if (-not (Test-Path -LiteralPath $root)) {
+              throw "Local research root missing"
+          }
+
+          if (-not (Test-Path -LiteralPath $script)) {
+              throw "Boundary replay script missing"
+          }
+
+          $required = @(
+              "data\ohlcv\d1\KRW-AWE.csv",
+              "data\ohlcv\h1\KRW-0G.csv",
+              "data\reports\pattern_256_evaluator_policy_review\policy_review_result.json"
+          )
+
+          foreach ($relative in $required) {
+              $path = Join-Path $root $relative
+
+              if (-not (Test-Path -LiteralPath $path)) {
+                  throw "Required input missing: $path"
+              }
+          }
+
+          py --version
+          Write-Host "Environment PASS"
+
+      - name: Execute boundary replay
+        id: replay
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
+          $script = Join-Path $env:GITHUB_WORKSPACE "audit_pattern_256_boundary_replay.py"
+
+          py -u $script --root $root
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Boundary replay execution failed"
+          }
+
+      - name: Verify reports
+        id: verify
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
+          $dir = Join-Path $root "data\reports\pattern_256_boundary_replay"
+
+          $resultPath = Join-Path $dir "boundary_replay_result.json"
+          $manifestPath = Join-Path $dir "boundary_replay_manifest.json"
+
+          if (-not (Test-Path -LiteralPath $resultPath)) {
+              throw "Result missing"
+          }
+
+          if (-not (Test-Path -LiteralPath $manifestPath)) {
+              throw "Manifest missing"
+          }
+
+          $result = Get-Content -LiteralPath $resultPath -Raw |
+              ConvertFrom-Json
+
+          $manifest = Get-Content -LiteralPath $manifestPath -Raw |
+              ConvertFrom-Json
+
+          foreach ($item in $manifest.outputs.PSObject.Properties) {
+              $path = Join-Path $dir $item.Name
+
+              if (-not (Test-Path -LiteralPath $path)) {
+                  throw "Output missing: $path"
+              }
+
+              $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLower()
+              $expected = ([string]$item.Value).ToLower()
+
+              if ($actual -ne $expected) {
+                  throw "SHA256 mismatch: $($item.Name)"
+              }
+          }
+
+          if ($result.execution -ne "PASS") {
+              throw "Unexpected execution status"
+          }
+
+          if ($result.boundary_cases -ne 2) {
+              throw "Unexpected boundary case count"
+          }
+
+          if ($result.window_checks -ne 4) {
+              throw "Unexpected window check count"
+          }
+
+          if ($result.research_decision -ne "HOLD") {
+              throw "Unsafe research decision"
+          }
+
+          if ($result.train_approved -ne $false) {
+              throw "Training approval is not allowed"
+          }
+
+          if ($result.live_trading_approved -ne $false) {
+              throw "Trading approval is not allowed"
+          }
+
+          Write-Host "Report integrity PASS"
+
+      - name: Publish summary
+        if: always()
+        run: |
+          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
+          $path = Join-Path $root "data\reports\pattern_256_boundary_replay\boundary_replay_result.json"
+
+          Add-Content $env:GITHUB_STEP_SUMMARY "## Pattern 256 Boundary Replay"
+          Add-Content $env:GITHUB_STEP_SUMMARY ""
+          Add-Content $env:GITHUB_STEP_SUMMARY "| Metric | Result |"
+          Add-Content $env:GITHUB_STEP_SUMMARY "|---|---|"
+
+          if ("${{ steps.verify.outcome }}" -eq "success") {
+              $r = Get-Content -LiteralPath $path -Raw |
+                  ConvertFrom-Json
+
+              Add-Content $env:GITHUB_STEP_SUMMARY "| Execution | $($r.execution) |"
+              Add-Content $env:GITHUB_STEP_SUMMARY "| Classification | $($r.classification) |"
+              Add-Content $env:GITHUB_STEP_SUMMARY "| Boundary cases | $($r.boundary_cases) |"
+              Add-Content $env:GITHUB_STEP_SUMMARY "| Window checks | $($r.window_checks) |"
+              Add-Content $env:GITHUB_STEP_SUMMARY "| Gap agreement | $($r.gap_counts_agree_with_previous) |"
+          }
+          else {
+              Add-Content $env:GITHUB_STEP_SUMMARY "| Execution | FAILED OR NOT VERIFIED |"
+          }
+
+          Add-Content $env:GITHUB_STEP_SUMMARY "| Research decision | HOLD |"
+          Add-Content $env:GITHUB_STEP_SUMMARY ""
+          Add-Content $env:GITHUB_STEP_SUMMARY "Independent OOS remains unproven."
+
+      - name: Stage verified reports
+        if: steps.verify.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
+          $source = Join-Path $root "data\reports\pattern_256_boundary_replay"
+          $destination = Join-Path $env:GITHUB_WORKSPACE "boundary-replay-artifact"
+
+          New-Item -ItemType Directory -Force -Path $destination |
+              Out-Null
+
+          $names = @(
+              "boundary_replay_result.json",
+              "boundary_replay_windows.csv",
+              "boundary_replay_manifest.json"
+          )
+
+          foreach ($name in $names) {
+              Copy-Item `
+                  -LiteralPath (Join-Path $source $name) `
+                  -Destination (Join-Path $destination $name) `
+                  -Force
+          }
+
+      - name: Upload verified reports
+        if: steps.verify.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-boundary-replay
+          path: boundary-replay-artifact/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Final gate
+        if: always()
+        run: |
+          if ("${{ steps.replay.outcome }}" -ne "success") {
+              throw "Boundary replay did not succeed"
+          }
+
+          if ("${{ steps.verify.outcome }}" -ne "success") {
+              throw "Boundary replay verification failed"
+          }
+
+          Write-Host "Boundary replay workflow PASS"
