@@ -1,0 +1,261 @@
+
+name: inspect_pattern_256_oos_inputs.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern-256-oos-input-inspection
+  cancel-in-progress: false
+
+jobs:
+  inspect-oos-inputs:
+    name: inspect-oos-inputs
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 90
+
+    defaults:
+      run:
+        shell: powershell
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
+          $script = Join-Path $env:GITHUB_WORKSPACE "inspect_pattern_256_oos_inputs.py"
+
+          $required = @(
+            "data\ohlcv\h1",
+            "data\ohlcv\h4",
+            "data\ohlcv\d1",
+            "data\reports\pattern_256_oos_policy_freeze\oos_policy.json",
+            "data\reports\pattern_256_oos_policy_freeze\oos_policy_freeze_result.json",
+            "data\reports\pattern_256_oos_policy_freeze\oos_policy_freeze_report.md",
+            "data\reports\pattern_256_oos_policy_freeze\oos_policy_freeze_manifest.json"
+          )
+
+          if (-not (Test-Path -LiteralPath $script)) {
+            throw "Python script missing: $script"
+          }
+
+          foreach ($relative in $required) {
+            $path = Join-Path $root $relative
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Required input missing: $path"
+            }
+          }
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          Write-Host "Environment PASS"
+
+      - name: Inspect actual OOS inputs
+        id: inspection
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
+          $script = Join-Path $env:GITHUB_WORKSPACE "inspect_pattern_256_oos_inputs.py"
+
+          py -u $script --root $root
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "OOS input inspection failed"
+          }
+
+      - name: Verify output integrity
+        id: verify
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
+          $folder = Join-Path $root "data\reports\pattern_256_oos_input_inspection"
+
+          $manifestPath = Join-Path $folder "oos_input_inspection_manifest.json"
+          $resultPath = Join-Path $folder "oos_input_inspection_result.json"
+
+          if (-not (Test-Path -LiteralPath $manifestPath)) {
+            throw "Manifest missing"
+          }
+
+          if (-not (Test-Path -LiteralPath $resultPath)) {
+            throw "Result missing"
+          }
+
+          $manifest = Get-Content -LiteralPath $manifestPath -Raw |
+            ConvertFrom-Json
+
+          $result = Get-Content -LiteralPath $resultPath -Raw |
+            ConvertFrom-Json
+
+          $expected = @(
+            "oos_input_inspection_result.json",
+            "oos_input_inventory.csv",
+            "oos_input_inspection_report.md"
+          )
+
+          $actual = @(
+            $manifest.outputs.PSObject.Properties.Name
+          )
+
+          if (
+            (Compare-Object `
+              -ReferenceObject $expected `
+              -DifferenceObject $actual).Count -ne 0
+          ) {
+            throw "Unexpected manifest contents"
+          }
+
+          foreach ($property in $manifest.outputs.PSObject.Properties) {
+            $path = Join-Path $folder $property.Name
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Missing output: $path"
+            }
+
+            $actualHash = (
+              Get-FileHash -LiteralPath $path -Algorithm SHA256
+            ).Hash.ToLower()
+
+            $expectedHash = ([string]$property.Value).ToLower()
+
+            if ($actualHash -ne $expectedHash) {
+              throw "SHA256 mismatch: $($property.Name)"
+            }
+          }
+
+          if ($result.version -ne "Clean V001") {
+            throw "Unexpected version"
+          }
+
+          if ($result.execution -ne "PASS") {
+            throw "Inspection execution failed"
+          }
+
+          if ($result.research_decision -ne "HOLD") {
+            throw "Unexpected research decision"
+          }
+
+          if ($result.independent_oos_proven -ne $false) {
+            throw "Unexpected OOS approval"
+          }
+
+          Write-Host "Output integrity PASS"
+
+      - name: Publish summary
+        if: always()
+        run: |
+          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
+          $path = Join-Path $root "data\reports\pattern_256_oos_input_inspection\oos_input_inspection_result.json"
+
+          Add-Content $env:GITHUB_STEP_SUMMARY "## Pattern 256 OOS Input Inspection"
+          Add-Content $env:GITHUB_STEP_SUMMARY ""
+          Add-Content $env:GITHUB_STEP_SUMMARY "| Check | Result |"
+          Add-Content $env:GITHUB_STEP_SUMMARY "|---|---|"
+
+          if ("${{ steps.verify.outcome }}" -eq "success") {
+            $r = Get-Content -LiteralPath $path -Raw |
+              ConvertFrom-Json
+
+            Add-Content $env:GITHUB_STEP_SUMMARY "| Execution | $($r.execution) |"
+            Add-Content $env:GITHUB_STEP_SUMMARY "| Classification | $($r.classification) |"
+
+            foreach ($tf in @("h1", "h4", "d1")) {
+              $s = $r.summary.$tf
+
+              Add-Content $env:GITHUB_STEP_SUMMARY "| $tf OHLCV files | $($s.ohlcv_files) |"
+              Add-Content $env:GITHUB_STEP_SUMMARY "| $tf signal files | $($s.signal_files) |"
+              Add-Content $env:GITHUB_STEP_SUMMARY "| $tf matching files | $($s.matching_files) |"
+            }
+          }
+          else {
+            Add-Content $env:GITHUB_STEP_SUMMARY "| Inspection | FAILED OR NOT VERIFIED |"
+          }
+
+          Add-Content $env:GITHUB_STEP_SUMMARY "| Independent OOS | NOT PROVEN |"
+          Add-Content $env:GITHUB_STEP_SUMMARY "| Research decision | HOLD |"
+
+      - name: Stage compact reports
+        if: steps.verify.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
+          $source = Join-Path $root "data\reports\pattern_256_oos_input_inspection"
+          $destination = Join-Path $env:GITHUB_WORKSPACE "oos-input-inspection-artifact"
+
+          New-Item -ItemType Directory -Force -Path $destination |
+            Out-Null
+
+          $names = @(
+            "oos_input_inspection_report.md",
+            "oos_input_inventory.csv",
+            "oos_input_inspection_manifest.json"
+          )
+
+          foreach ($name in $names) {
+            Copy-Item `
+              -LiteralPath (Join-Path $source $name) `
+              -Destination (Join-Path $destination $name) `
+              -Force `
+              -ErrorAction Stop
+          }
+
+          $result = Get-Content `
+            -LiteralPath (Join-Path $source "oos_input_inspection_result.json") `
+            -Raw |
+            ConvertFrom-Json
+
+          $compact = [ordered]@{
+            audit = $result.audit
+            version = $result.version
+            execution = $result.execution
+            classification = $result.classification
+            summary = $result.summary
+            independent_oos_proven = $false
+            research_decision = "HOLD"
+          }
+
+          $compact |
+            ConvertTo-Json -Depth 20 |
+            Set-Content `
+              -LiteralPath (Join-Path $destination "oos_input_compact_summary.json") `
+              -Encoding UTF8
+
+      - name: Upload compact reports
+        if: steps.verify.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-oos-input-inspection
+          path: oos-input-inspection-artifact/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Final status gate
+        if: always()
+        run: |
+          if ("${{ steps.inspection.outcome }}" -ne "success") {
+            throw "Input inspection execution failed"
+          }
+
+          if ("${{ steps.verify.outcome }}" -ne "success") {
+            throw "Input inspection integrity failed"
+          }
+
+          Write-Host "OOS input inspection PASS"
