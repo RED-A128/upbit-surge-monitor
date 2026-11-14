@@ -1,0 +1,240 @@
+
+name: audit_pattern_256_entry_policy_gate.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern-256-entry-policy-gate
+  cancel-in-progress: false
+
+jobs:
+  audit-entry-policy:
+    name: audit-entry-policy
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        shell: powershell
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
+          $script = Join-Path $env:GITHUB_WORKSPACE "audit_pattern_256_entry_policy_gate.py"
+
+          $required = @(
+            "data\reports\pattern_256_evaluator_policy_review\policy_review_result.json",
+            "data\reports\pattern_256_evaluator_policy_review\policy_review_manifest.json",
+            "data\reports\pattern_256_boundary_replay\boundary_replay_result.json",
+            "data\reports\pattern_256_boundary_replay\boundary_replay_windows.csv",
+            "data\reports\pattern_256_boundary_replay\boundary_replay_manifest.json"
+          )
+
+          if (-not (Test-Path -LiteralPath $script)) {
+            throw "Python script missing: $script"
+          }
+
+          foreach ($relative in $required) {
+            $path = Join-Path $root $relative
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Required input missing: $path"
+            }
+          }
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python environment failed"
+          }
+
+          Write-Host "Environment PASS"
+
+      - name: Execute entry policy gate
+        id: audit
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
+          $script = Join-Path $env:GITHUB_WORKSPACE "audit_pattern_256_entry_policy_gate.py"
+
+          py -u $script --root $root
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Entry policy gate execution failed"
+          }
+
+      - name: Verify reports and SHA256
+        id: verify
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
+          $dir = Join-Path $root "data\reports\pattern_256_entry_policy_gate"
+
+          $resultPath = Join-Path $dir "entry_policy_gate_result.json"
+          $manifestPath = Join-Path $dir "entry_policy_gate_manifest.json"
+
+          if (-not (Test-Path -LiteralPath $resultPath)) {
+            throw "Result JSON missing"
+          }
+
+          if (-not (Test-Path -LiteralPath $manifestPath)) {
+            throw "Manifest JSON missing"
+          }
+
+          $result = Get-Content -LiteralPath $resultPath -Raw |
+            ConvertFrom-Json
+
+          $manifest = Get-Content -LiteralPath $manifestPath -Raw |
+            ConvertFrom-Json
+
+          foreach ($item in $manifest.outputs.PSObject.Properties) {
+            $path = Join-Path $dir $item.Name
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Missing report: $path"
+            }
+
+            $actual = (
+              Get-FileHash -LiteralPath $path -Algorithm SHA256
+            ).Hash.ToLower()
+
+            $expected = ([string]$item.Value).ToLower()
+
+            if ($actual -ne $expected) {
+              throw "SHA256 mismatch: $($item.Name)"
+            }
+          }
+
+          if ($result.version -ne "Clean V001") {
+            throw "Unexpected Python version"
+          }
+
+          if ($result.execution -ne "PASS") {
+            throw "Audit execution not PASS"
+          }
+
+          if ($result.historical_reproduction_confirmed -ne $true) {
+            throw "Historical reproduction not confirmed"
+          }
+
+          if ($result.cases_checked -ne 2) {
+            throw "Unexpected case count"
+          }
+
+          if ($result.window_checks -ne 4) {
+            throw "Unexpected window count"
+          }
+
+          if ($result.source_policy_confirmed -ne $false) {
+            throw "Unexpected policy approval"
+          }
+
+          if ($result.independent_oos_proven -ne $false) {
+            throw "Unexpected OOS approval"
+          }
+
+          if ($result.train_approved -ne $false) {
+            throw "Unexpected training approval"
+          }
+
+          if ($result.live_trading_approved -ne $false) {
+            throw "Unexpected trading approval"
+          }
+
+          if ($result.research_decision -ne "HOLD") {
+            throw "Unexpected research decision"
+          }
+
+          Write-Host "Report integrity PASS"
+
+      - name: Publish summary
+        if: always()
+        run: |
+          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
+          $path = Join-Path $root "data\reports\pattern_256_entry_policy_gate\entry_policy_gate_result.json"
+
+          Add-Content $env:GITHUB_STEP_SUMMARY "## Pattern 256 Entry Policy Gate"
+          Add-Content $env:GITHUB_STEP_SUMMARY ""
+          Add-Content $env:GITHUB_STEP_SUMMARY "| Check | Result |"
+          Add-Content $env:GITHUB_STEP_SUMMARY "|---|---|"
+
+          if ("${{ steps.verify.outcome }}" -eq "success") {
+            $r = Get-Content -LiteralPath $path -Raw |
+              ConvertFrom-Json
+
+            Add-Content $env:GITHUB_STEP_SUMMARY "| Execution | $($r.execution) |"
+            Add-Content $env:GITHUB_STEP_SUMMARY "| Classification | $($r.classification) |"
+            Add-Content $env:GITHUB_STEP_SUMMARY "| Cases | $($r.cases_checked) |"
+            Add-Content $env:GITHUB_STEP_SUMMARY "| Windows | $($r.window_checks) |"
+            Add-Content $env:GITHUB_STEP_SUMMARY "| Historical reproduction | $($r.historical_reproduction_confirmed) |"
+            Add-Content $env:GITHUB_STEP_SUMMARY "| Execution policy confirmed | $($r.source_policy_confirmed) |"
+          }
+          else {
+            Add-Content $env:GITHUB_STEP_SUMMARY "| Execution | FAILED OR NOT VERIFIED |"
+          }
+
+          Add-Content $env:GITHUB_STEP_SUMMARY "| Independent OOS | NOT PROVEN |"
+          Add-Content $env:GITHUB_STEP_SUMMARY "| Research decision | HOLD |"
+
+      - name: Stage verified reports
+        if: steps.verify.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
+          $source = Join-Path $root "data\reports\pattern_256_entry_policy_gate"
+          $destination = Join-Path $env:GITHUB_WORKSPACE "entry-policy-gate-artifact"
+
+          New-Item -ItemType Directory -Force -Path $destination |
+            Out-Null
+
+          $names = @(
+            "entry_policy_gate_result.json",
+            "entry_policy_gate_report.md",
+            "entry_policy_gate_manifest.json"
+          )
+
+          foreach ($name in $names) {
+            Copy-Item `
+              -LiteralPath (Join-Path $source $name) `
+              -Destination (Join-Path $destination $name) `
+              -Force `
+              -ErrorAction Stop
+          }
+
+      - name: Upload verified reports
+        if: steps.verify.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-entry-policy-gate
+          path: entry-policy-gate-artifact/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Final status gate
+        if: always()
+        run: |
+          if ("${{ steps.audit.outcome }}" -ne "success") {
+            throw "Entry policy audit failed"
+          }
+
+          if ("${{ steps.verify.outcome }}" -ne "success") {
+            throw "Entry policy report verification failed"
+          }
+
+          Write-Host "Entry policy gate PASS"
