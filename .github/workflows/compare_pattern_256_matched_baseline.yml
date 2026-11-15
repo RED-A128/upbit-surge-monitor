@@ -1,0 +1,244 @@
+
+name: compare_pattern_256_matched_baseline.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare-matched-baseline:
+    name: compare-matched-baseline
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 240
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      RESEARCH_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+      REPORT_FOLDER: data\reports\pattern_256_matched_baseline
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          $script = Join-Path $env:GITHUB_WORKSPACE "compare_pattern_256_matched_baseline.py"
+
+          if (-not (Test-Path -LiteralPath $script)) {
+            throw "Python script missing"
+          }
+
+          $previous = Join-Path $env:RESEARCH_ROOT "data\reports\pattern_256_baseline_comparison"
+
+          foreach ($name in @(
+            "baseline_result.json",
+            "baseline_manifest.json"
+          )) {
+            if (-not (Test-Path -LiteralPath (Join-Path $previous $name))) {
+              throw "Previous baseline missing: $name"
+            }
+          }
+
+          $oos = Join-Path $env:RESEARCH_ROOT "data\reports\pattern_256_chronological_oos\oos_result.json"
+
+          if (-not (Test-Path -LiteralPath $oos)) {
+            throw "Chronological OOS result missing"
+          }
+
+          foreach ($tf in @("h1", "h4", "d1")) {
+            foreach ($relative in @(
+              "data\ohlcv\$tf",
+              "data\signals\256\$tf"
+            )) {
+              $path = Join-Path $env:RESEARCH_ROOT $relative
+
+              if (-not (Test-Path -LiteralPath $path)) {
+                throw "Required directory missing: $path"
+              }
+            }
+          }
+
+      - name: Execute matched baseline
+        id: compare
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path $env:GITHUB_WORKSPACE "compare_pattern_256_matched_baseline.py"
+
+          py -u $script `
+            --root $env:RESEARCH_ROOT `
+            --max-episodes-per-market-split 100 `
+            --max-match-days 30
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Matched baseline execution failed"
+          }
+
+      - name: Verify SHA256 integrity
+        id: integrity
+        if: steps.compare.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $folder = Join-Path $env:RESEARCH_ROOT $env:REPORT_FOLDER
+          $manifestPath = Join-Path $folder "matched_manifest.json"
+          $resultPath = Join-Path $folder "matched_result.json"
+
+          if (-not (Test-Path -LiteralPath $manifestPath)) {
+            throw "Manifest missing"
+          }
+
+          $manifest = Get-Content -LiteralPath $manifestPath -Raw |
+            ConvertFrom-Json
+
+          foreach ($property in $manifest.files.PSObject.Properties) {
+            $path = Join-Path $folder $property.Name
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Report missing: $($property.Name)"
+            }
+
+            $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            $expected = ([string]$property.Value).ToLowerInvariant()
+
+            if ($actual -ne $expected) {
+              throw "SHA256 mismatch: $($property.Name)"
+            }
+          }
+
+          $result = Get-Content -LiteralPath $resultPath -Raw |
+            ConvertFrom-Json
+
+          if ($result.execution -ne "PASS") {
+            throw "Execution not PASS"
+          }
+
+          if ($result.input_pairs -ne 870) {
+            throw "Unexpected input pair count"
+          }
+
+          if ($result.comparison.Count -ne 27) {
+            throw "Expected 27 comparison groups"
+          }
+
+          if ($result.research_decision -ne "HOLD") {
+            throw "Unexpected research decision"
+          }
+
+          Write-Host "SHA256 integrity PASS"
+
+      - name: Publish job summary
+        if: always()
+        run: |
+          $folder = Join-Path $env:RESEARCH_ROOT $env:REPORT_FOLDER
+          $resultPath = Join-Path $folder "matched_result.json"
+
+          @"
+          # Pattern 256 Matched Baseline Comparison
+
+          | Check | Result |
+          |---|---|
+          | Python execution | ${{ steps.compare.outcome }} |
+          | SHA256 integrity | ${{ steps.integrity.outcome }} |
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+          if ("${{ steps.integrity.outcome }}" -eq "success") {
+            $result = Get-Content -LiteralPath $resultPath -Raw |
+              ConvertFrom-Json
+
+            @"
+
+          | Metric | Value |
+          |---|---|
+          | Version | $($result.version) |
+          | Input pairs | $($result.input_pairs) |
+          | Research decision | $($result.research_decision) |
+
+          ## TEST comparison
+
+          | TF | Horizon | Matched pairs | Signal % | Control % | Difference pp |
+          |---|---:|---:|---:|---:|---:|
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+            foreach ($row in $result.comparison) {
+              if ($row.split -eq "TEST") {
+                "| $($row.timeframe) | $($row.horizon) | $($row.matched_pairs) | $($row.signal_rate_pct) | $($row.control_rate_pct) | $($row.difference_pp) |" |
+                  Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+              }
+            }
+
+            @"
+
+          Research only. Independent OOS and profitability remain unproven.
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          }
+
+      - name: Stage artifacts
+        id: stage
+        if: steps.integrity.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $source = Join-Path $env:RESEARCH_ROOT $env:REPORT_FOLDER
+          $target = Join-Path $env:GITHUB_WORKSPACE "matched_baseline_artifacts"
+
+          New-Item -ItemType Directory -Path $target -Force |
+            Out-Null
+
+          foreach ($name in @(
+            "matched_result.json",
+            "matched_comparison.csv",
+            "matched_diagnostics.csv",
+            "matched_report.md",
+            "matched_manifest.json"
+          )) {
+            Copy-Item `
+              -LiteralPath (Join-Path $source $name) `
+              -Destination (Join-Path $target $name) `
+              -Force `
+              -ErrorAction Stop
+          }
+
+      - name: Upload artifacts
+        id: upload
+        if: steps.stage.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-matched-baseline
+          path: matched_baseline_artifacts/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Final gate
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          foreach ($outcome in @(
+            "${{ steps.compare.outcome }}",
+            "${{ steps.integrity.outcome }}",
+            "${{ steps.stage.outcome }}",
+            "${{ steps.upload.outcome }}"
+          )) {
+            if ($outcome -ne "success") {
+              throw "Matched baseline workflow failed"
+            }
+          }
+
+          Write-Host "Workflow PASS"
+          Write-Host "Research decision: HOLD"
