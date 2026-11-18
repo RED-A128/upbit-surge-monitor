@@ -1,0 +1,326 @@
+
+name: audit_pattern_256_h1_matched_controls.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  h1-matched-controls:
+    name: h1-matched-controls
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 360
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      RESEARCH_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+      REPORT_FOLDER: data\reports\pattern_256_h1_matched_controls
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment and inputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_h1_matched_controls.py"
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Audit script missing: $script"
+          }
+
+          $required = @(
+            "data\ohlcv\h1",
+            "data\signals\256\h1",
+            "data\reports\pattern_256_h1_event_outcomes\event_outcomes_result.json",
+            "data\reports\pattern_256_h1_event_outcomes\event_outcomes_events.csv",
+            "data\reports\pattern_256_h1_event_outcomes\event_outcomes_report.md",
+            "data\reports\pattern_256_h1_event_outcomes\event_outcomes_manifest.json"
+          )
+
+          foreach ($relative in $required) {
+            $path = Join-Path $env:RESEARCH_ROOT $relative
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Required input missing: $path"
+            }
+          }
+
+          Write-Host "Environment and inputs verified"
+
+      - name: Run matched control comparison
+        id: audit
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_h1_matched_controls.py"
+
+          py -u $script --root $env:RESEARCH_ROOT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Matched control comparison failed"
+          }
+
+      - name: Verify results and SHA256
+        id: verify
+        if: steps.audit.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $folder = Join-Path `
+            $env:RESEARCH_ROOT `
+            $env:REPORT_FOLDER
+
+          $manifestPath = Join-Path `
+            $folder "matched_controls_manifest.json"
+
+          $resultPath = Join-Path `
+            $folder "matched_controls_result.json"
+
+          if (-not (Test-Path -LiteralPath $manifestPath)) {
+            throw "Manifest missing"
+          }
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath -Raw |
+            ConvertFrom-Json
+
+          if ($manifest.version -ne "Clean V001") {
+            throw "Manifest version mismatch"
+          }
+
+          $expectedFiles = @(
+            "matched_controls_result.json",
+            "matched_controls_pairs.csv",
+            "matched_controls_unmatched.csv",
+            "matched_controls_report.md"
+          )
+
+          $actualFiles = @(
+            $manifest.files.PSObject.Properties.Name
+          )
+
+          if (
+            (Compare-Object $expectedFiles $actualFiles).Count -gt 0
+          ) {
+            throw "Manifest file inventory mismatch"
+          }
+
+          foreach ($item in $manifest.files.PSObject.Properties) {
+            $path = Join-Path $folder $item.Name
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Report missing: $($item.Name)"
+            }
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            $expected = (
+              [string]$item.Value
+            ).ToLowerInvariant()
+
+            if ($actual -ne $expected) {
+              throw "SHA256 mismatch: $($item.Name)"
+            }
+          }
+
+          $result = Get-Content `
+            -LiteralPath $resultPath -Raw |
+            ConvertFrom-Json
+
+          if ($result.version -ne "Clean V001") {
+            throw "Unexpected version"
+          }
+
+          if ($result.execution -ne "PASS") {
+            throw "Execution not PASS"
+          }
+
+          if (
+            $result.classification -ne "MATCHED_CONTROL_COMPUTED"
+          ) {
+            throw "Unexpected classification"
+          }
+
+          if ($result.prior_event_count -ne 33843) {
+            throw "Original event count changed"
+          }
+
+          if (
+            $result.matched_pairs -le 0 -or
+            $result.matched_pairs -gt 33843
+          ) {
+            throw "Invalid matched pair count"
+          }
+
+          if (
+            $result.matched_pairs + $result.unmatched_events `
+              -ne $result.prior_event_count
+          ) {
+            throw "Matched/unmatched accounting mismatch"
+          }
+
+          $outcomes = $result.paired_outcomes
+
+          $outcomeTotal = `
+            $outcomes.signal_only_hits +
+            $outcomes.control_only_hits +
+            $outcomes.both_hit +
+            $outcomes.neither_hit
+
+          if ($outcomeTotal -ne $result.matched_pairs) {
+            throw "Paired outcome accounting mismatch"
+          }
+
+          if ($result.research_decision -ne "HOLD") {
+            throw "Research decision changed"
+          }
+
+          if ($result.train_approved -ne $false) {
+            throw "Training approval must remain false"
+          }
+
+          if ($result.live_trading_approved -ne $false) {
+            throw "Trading approval must remain false"
+          }
+
+          Write-Host "Result and SHA256 verification PASS"
+
+      - name: Publish job summary
+        if: always()
+        run: |
+          $folder = Join-Path `
+            $env:RESEARCH_ROOT `
+            $env:REPORT_FOLDER
+
+          $resultPath = Join-Path `
+            $folder "matched_controls_result.json"
+
+          @"
+          # Pattern 256 H1 Matched Controls
+
+          | Step | Status |
+          |---|---|
+          | Python execution | ${{ steps.audit.outcome }} |
+          | SHA256 verification | ${{ steps.verify.outcome }} |
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Encoding utf8 -Append
+
+          if ("${{ steps.verify.outcome }}" -eq "success") {
+            $r = Get-Content `
+              -LiteralPath $resultPath -Raw |
+              ConvertFrom-Json
+
+            @"
+
+          | Metric | Value |
+          |---|---|
+          | Version | $($r.version) |
+          | Classification | $($r.classification) |
+          | Original events | $($r.prior_event_count) |
+          | Matched pairs | $($r.matched_pairs) |
+          | Unmatched events | $($r.unmatched_events) |
+          | Signal hits | $($r.signal_hits_in_pairs) |
+          | Control hits | $($r.control_hits_in_pairs) |
+          | Signal hit rate (%) | $($r.signal_hit_rate_pct) |
+          | Control hit rate (%) | $($r.control_hit_rate_pct) |
+          | Difference (pp) | $($r.difference_percentage_points) |
+          | Signal-only hits | $($r.paired_outcomes.signal_only_hits) |
+          | Control-only hits | $($r.paired_outcomes.control_only_hits) |
+          | Both hit | $($r.paired_outcomes.both_hit) |
+          | Neither hit | $($r.paired_outcomes.neither_hit) |
+          | Research decision | $($r.research_decision) |
+
+          This is an observational matched comparison.
+
+          Independent OOS, causality and profitability
+          are not proven.
+
+          Research decision: HOLD.
+          "@ | Out-File `
+              -FilePath $env:GITHUB_STEP_SUMMARY `
+              -Encoding utf8 -Append
+          }
+
+      - name: Stage verified artifacts
+        id: stage
+        if: steps.verify.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $source = Join-Path `
+            $env:RESEARCH_ROOT `
+            $env:REPORT_FOLDER
+
+          $target = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "h1_matched_control_artifacts"
+
+          New-Item `
+            -ItemType Directory `
+            -Path $target `
+            -Force | Out-Null
+
+          foreach ($filename in @(
+            "matched_controls_result.json",
+            "matched_controls_pairs.csv",
+            "matched_controls_unmatched.csv",
+            "matched_controls_report.md",
+            "matched_controls_manifest.json"
+          )) {
+            Copy-Item `
+              -LiteralPath (Join-Path $source $filename) `
+              -Destination (Join-Path $target $filename) `
+              -Force `
+              -ErrorAction Stop
+          }
+
+      - name: Upload artifacts
+        id: upload
+        if: steps.stage.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-h1-matched-controls
+          path: h1_matched_control_artifacts/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Final gate
+        if: always()
+        run: |
+          foreach ($outcome in @(
+            "${{ steps.audit.outcome }}",
+            "${{ steps.verify.outcome }}",
+            "${{ steps.stage.outcome }}",
+            "${{ steps.upload.outcome }}"
+          )) {
+            if ($outcome -ne "success") {
+              throw "Matched control workflow failed"
+            }
+          }
+
+          Write-Host "Matched control workflow PASS"
+          Write-Host "Research decision: HOLD"
