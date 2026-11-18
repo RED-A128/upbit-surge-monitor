@@ -1,0 +1,246 @@
+
+name: audit_pattern_256_event_input_preflight.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  event-input-preflight:
+    name: event-input-preflight
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 60
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      RESEARCH_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+      REPORT_FOLDER: data\reports\pattern_256_event_input_preflight
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          $script = Join-Path $env:GITHUB_WORKSPACE "audit_pattern_256_event_input_preflight.py"
+
+          if (-not (Test-Path -LiteralPath $script)) {
+            throw "Preflight script missing"
+          }
+
+          foreach ($tf in @("h1", "h4", "d1")) {
+            foreach ($relative in @(
+              "data\ohlcv\$tf",
+              "data\signals\256\$tf"
+            )) {
+              $path = Join-Path $env:RESEARCH_ROOT $relative
+
+              if (-not (Test-Path -LiteralPath $path -PathType Container)) {
+                throw "Required directory missing: $path"
+              }
+            }
+          }
+
+      - name: Run event input preflight
+        id: preflight
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path $env:GITHUB_WORKSPACE "audit_pattern_256_event_input_preflight.py"
+
+          py -u $script --root $env:RESEARCH_ROOT --sample-rows 200
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Preflight failed"
+          }
+
+      - name: Verify output SHA256
+        id: integrity
+        if: steps.preflight.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $folder = Join-Path $env:RESEARCH_ROOT $env:REPORT_FOLDER
+          $manifestPath = Join-Path $folder "preflight_manifest.json"
+          $resultPath = Join-Path $folder "preflight_result.json"
+
+          if (-not (Test-Path -LiteralPath $manifestPath)) {
+            throw "Manifest missing"
+          }
+
+          $manifest = Get-Content -LiteralPath $manifestPath -Raw |
+            ConvertFrom-Json
+
+          foreach ($item in $manifest.files.PSObject.Properties) {
+            $path = Join-Path $folder $item.Name
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Missing output: $($item.Name)"
+            }
+
+            $actual = (
+              Get-FileHash -LiteralPath $path -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            $expected = (
+              [string]$item.Value
+            ).ToLowerInvariant()
+
+            if ($actual -ne $expected) {
+              throw "SHA256 mismatch: $($item.Name)"
+            }
+          }
+
+          $result = Get-Content -LiteralPath $resultPath -Raw |
+            ConvertFrom-Json
+
+          if ($result.execution -ne "PASS") {
+            throw "Execution not PASS"
+          }
+
+          if ($result.version -ne "Clean V001") {
+            throw "Unexpected version"
+          }
+
+          if ($result.total_matched_files -le 0) {
+            throw "No matched files"
+          }
+
+          if ($result.research_decision -ne "HOLD") {
+            throw "Research gate changed"
+          }
+
+          if ($result.event_level_audit_complete -ne $false) {
+            throw "Unexpected event audit approval"
+          }
+
+          if ($result.live_trading_approved -ne $false) {
+            throw "Unexpected trading approval"
+          }
+
+          Write-Host "SHA256 integrity PASS"
+
+      - name: Publish job summary
+        if: always()
+        run: |
+          $folder = Join-Path $env:RESEARCH_ROOT $env:REPORT_FOLDER
+          $resultPath = Join-Path $folder "preflight_result.json"
+
+          @"
+          # Pattern 256 Event Input Preflight
+
+          | Step | Status |
+          |---|---|
+          | Python execution | ${{ steps.preflight.outcome }} |
+          | SHA256 integrity | ${{ steps.integrity.outcome }} |
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+          if ("${{ steps.integrity.outcome }}" -eq "success") {
+            $result = Get-Content -LiteralPath $resultPath -Raw |
+              ConvertFrom-Json
+
+            @"
+
+          | Metric | Value |
+          |---|---|
+          | Version | $($result.version) |
+          | Classification | $($result.classification) |
+          | Matched files | $($result.total_matched_files) |
+          | Anomalies | $($result.total_anomalies) |
+          | Unmatched files | $($result.total_unmatched_files) |
+          | Research decision | $($result.research_decision) |
+
+          ## Input inventory
+
+          | TF | OHLCV | Signals | Matched | Anomalies | Sample triggers |
+          |---|---:|---:|---:|---:|---:|
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+            foreach ($item in $result.timeframes) {
+              "| $($item.timeframe) | $($item.ohlcv_files) | $($item.signal_files) | $($item.matching_files) | $($item.anomaly_count) | $($item.sampled_trigger_rows) |" |
+                Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+            }
+
+            @"
+
+          This is a sampled input inspection.
+
+          Event-level audit: NOT COMPLETE.
+
+          Independent OOS: NOT PROVEN.
+
+          Profitability: NOT PROVEN.
+
+          Research decision: HOLD.
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          }
+
+      - name: Stage artifacts
+        id: stage
+        if: steps.integrity.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $source = Join-Path $env:RESEARCH_ROOT $env:REPORT_FOLDER
+          $target = Join-Path $env:GITHUB_WORKSPACE "event_input_preflight_artifacts"
+
+          New-Item -ItemType Directory -Path $target -Force |
+            Out-Null
+
+          foreach ($filename in @(
+            "preflight_result.json",
+            "preflight_report.md",
+            "preflight_manifest.json"
+          )) {
+            Copy-Item `
+              -LiteralPath (Join-Path $source $filename) `
+              -Destination (Join-Path $target $filename) `
+              -Force `
+              -ErrorAction Stop
+          }
+
+      - name: Upload artifacts
+        id: upload
+        if: steps.stage.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-event-input-preflight
+          path: event_input_preflight_artifacts/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Final gate
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          foreach ($outcome in @(
+            "${{ steps.preflight.outcome }}",
+            "${{ steps.integrity.outcome }}",
+            "${{ steps.stage.outcome }}",
+            "${{ steps.upload.outcome }}"
+          )) {
+            if ($outcome -ne "success") {
+              throw "Event input preflight workflow failed"
+            }
+          }
+
+          Write-Host "Workflow execution PASS"
+          Write-Host "Research decision: HOLD"
