@@ -1,0 +1,261 @@
+
+name: audit_pattern_256_cross_split_stability.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cross-split-stability:
+    name: cross-split-stability
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      RESEARCH_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+      REPORT_FOLDER: data\reports\pattern_256_cross_split_stability
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment and inputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          $script = Join-Path $env:GITHUB_WORKSPACE "audit_pattern_256_cross_split_stability.py"
+
+          if (-not (Test-Path -LiteralPath $script)) {
+            throw "Audit script missing"
+          }
+
+          $inputFolder = Join-Path $env:RESEARCH_ROOT "data\reports\pattern_256_statistical_robustness"
+
+          foreach ($filename in @(
+            "robustness_result.json",
+            "robustness_comparison.csv",
+            "robustness_report.md",
+            "robustness_manifest.json"
+          )) {
+            $path = Join-Path $inputFolder $filename
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Missing input: $path"
+            }
+          }
+
+      - name: Run cross-split stability audit
+        id: audit
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path $env:GITHUB_WORKSPACE "audit_pattern_256_cross_split_stability.py"
+
+          py -u $script --root $env:RESEARCH_ROOT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Cross-split stability audit failed"
+          }
+
+      - name: Verify SHA256 integrity
+        id: integrity
+        if: steps.audit.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $folder = Join-Path $env:RESEARCH_ROOT $env:REPORT_FOLDER
+          $manifestPath = Join-Path $folder "stability_manifest.json"
+          $resultPath = Join-Path $folder "stability_result.json"
+
+          if (-not (Test-Path -LiteralPath $manifestPath)) {
+            throw "Manifest missing"
+          }
+
+          $manifest = Get-Content -LiteralPath $manifestPath -Raw |
+            ConvertFrom-Json
+
+          foreach ($item in $manifest.files.PSObject.Properties) {
+            $path = Join-Path $folder $item.Name
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Missing output: $($item.Name)"
+            }
+
+            $actual = (
+              Get-FileHash -LiteralPath $path -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            $expected = (
+              [string]$item.Value
+            ).ToLowerInvariant()
+
+            if ($actual -ne $expected) {
+              throw "SHA256 mismatch: $($item.Name)"
+            }
+          }
+
+          $result = Get-Content -LiteralPath $resultPath -Raw |
+            ConvertFrom-Json
+
+          if ($result.execution -ne "PASS") {
+            throw "Execution not PASS"
+          }
+
+          if ($result.version -ne "Clean V001") {
+            throw "Unexpected version"
+          }
+
+          if ($result.comparison_groups -ne 9) {
+            throw "Expected 9 comparison groups"
+          }
+
+          if ($result.research_decision -ne "HOLD") {
+            throw "Research gate changed"
+          }
+
+          if ($result.independent_oos_proven -ne $false) {
+            throw "Unexpected OOS approval"
+          }
+
+          if ($result.live_trading_approved -ne $false) {
+            throw "Unexpected trading approval"
+          }
+
+          Write-Host "SHA256 verification PASS"
+
+      - name: Publish job summary
+        if: always()
+        run: |
+          $folder = Join-Path $env:RESEARCH_ROOT $env:REPORT_FOLDER
+          $resultPath = Join-Path $folder "stability_result.json"
+
+          @"
+          # Pattern 256 Cross-Split Stability Audit
+
+          | Step | Status |
+          |---|---|
+          | Python execution | ${{ steps.audit.outcome }} |
+          | SHA256 integrity | ${{ steps.integrity.outcome }} |
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+          if ("${{ steps.integrity.outcome }}" -eq "success") {
+            $result = Get-Content -LiteralPath $resultPath -Raw |
+              ConvertFrom-Json
+
+            @"
+
+          | Metric | Value |
+          |---|---|
+          | Version | $($result.version) |
+          | Comparison groups | $($result.comparison_groups) |
+          | Consistent positive | $($result.consistent_positive_groups) |
+          | Consistent negative | $($result.consistent_negative_groups) |
+          | Mixed direction | $($result.mixed_direction_groups) |
+          | Insufficient data | $($result.insufficient_data_groups) |
+          | Research decision | $($result.research_decision) |
+
+          ## Cross-split comparison
+
+          | TF | Horizon | DEV pp | VALIDATION pp | TEST pp | Minimum retention % | Classification |
+          |---|---:|---:|---:|---:|---:|---|
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+            foreach ($row in $result.comparison) {
+              "| $($row.timeframe) | $($row.horizon) | $($row.dev_difference_pp) | $($row.validation_difference_pp) | $($row.test_difference_pp) | $($row.minimum_retention_pct) | $($row.classification) |" |
+                Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+            }
+
+            @"
+
+          ## Retention sensitivity
+
+          | Minimum retention % | Eligible groups | Positive groups | Significant positive TEST |
+          |---:|---:|---:|---:|
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+            foreach ($row in $result.threshold_analysis) {
+              "| $($row.minimum_retention_threshold_pct) | $($row.eligible_groups) | $($row.consistent_positive_groups) | $($row.positive_with_significant_test) |" |
+                Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+            }
+
+            @"
+
+          Historical research only.
+
+          Independent OOS: NOT PROVEN.
+
+          Profitability: NOT PROVEN.
+
+          Research decision: HOLD.
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          }
+
+      - name: Stage artifacts
+        id: stage
+        if: steps.integrity.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $source = Join-Path $env:RESEARCH_ROOT $env:REPORT_FOLDER
+          $target = Join-Path $env:GITHUB_WORKSPACE "cross_split_stability_artifacts"
+
+          New-Item -ItemType Directory -Path $target -Force |
+            Out-Null
+
+          foreach ($filename in @(
+            "stability_result.json",
+            "stability_comparison.csv",
+            "stability_report.md",
+            "stability_manifest.json"
+          )) {
+            Copy-Item `
+              -LiteralPath (Join-Path $source $filename) `
+              -Destination (Join-Path $target $filename) `
+              -Force `
+              -ErrorAction Stop
+          }
+
+      - name: Upload artifacts
+        id: upload
+        if: steps.stage.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-cross-split-stability
+          path: cross_split_stability_artifacts/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Final gate
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          foreach ($outcome in @(
+            "${{ steps.audit.outcome }}",
+            "${{ steps.integrity.outcome }}",
+            "${{ steps.stage.outcome }}",
+            "${{ steps.upload.outcome }}"
+          )) {
+            if ($outcome -ne "success") {
+              throw "Cross-split stability workflow failed"
+            }
+          }
+
+          Write-Host "Workflow PASS"
+          Write-Host "Research decision: HOLD"
