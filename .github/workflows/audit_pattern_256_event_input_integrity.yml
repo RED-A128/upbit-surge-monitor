@@ -1,0 +1,243 @@
+
+name: audit_pattern_256_event_input_integrity.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  event-input-integrity:
+    name: event-input-integrity
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 360
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      RESEARCH_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+      REPORT_FOLDER: data\reports\pattern_256_event_input_integrity
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          $script = Join-Path $env:GITHUB_WORKSPACE "audit_pattern_256_event_input_integrity.py"
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Integrity script missing"
+          }
+
+          foreach ($tf in @("h1", "h4", "d1")) {
+            foreach ($relative in @(
+              "data\ohlcv\$tf",
+              "data\signals\256\$tf"
+            )) {
+              $path = Join-Path $env:RESEARCH_ROOT $relative
+
+              if (-not (Test-Path -LiteralPath $path -PathType Container)) {
+                throw "Required directory missing: $path"
+              }
+            }
+          }
+
+      - name: Run full-row input integrity
+        id: audit
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path $env:GITHUB_WORKSPACE "audit_pattern_256_event_input_integrity.py"
+
+          py -u $script --root $env:RESEARCH_ROOT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python integrity audit failed"
+          }
+
+      - name: Verify output SHA256
+        id: integrity
+        if: steps.audit.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $folder = Join-Path $env:RESEARCH_ROOT $env:REPORT_FOLDER
+
+          $manifestPath = Join-Path $folder "integrity_manifest.json"
+          $resultPath = Join-Path $folder "integrity_result.json"
+
+          if (-not (Test-Path -LiteralPath $manifestPath)) {
+            throw "Manifest missing"
+          }
+
+          $manifest = Get-Content -LiteralPath $manifestPath -Raw |
+            ConvertFrom-Json
+
+          if ($manifest.version -ne "Clean V002") {
+            throw "Unexpected manifest version"
+          }
+
+          foreach ($item in $manifest.files.PSObject.Properties) {
+            $path = Join-Path $folder $item.Name
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Missing report: $($item.Name)"
+            }
+
+            $actual = (
+              Get-FileHash -LiteralPath $path -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            $expected = (
+              [string]$item.Value
+            ).ToLowerInvariant()
+
+            if ($actual -ne $expected) {
+              throw "SHA256 mismatch: $($item.Name)"
+            }
+          }
+
+          $result = Get-Content -LiteralPath $resultPath -Raw |
+            ConvertFrom-Json
+
+          if ($result.version -ne "Clean V002") {
+            throw "Unexpected result version"
+          }
+
+          if ($result.execution -ne "PASS") {
+            throw "Audit execution failed"
+          }
+
+          if ($result.audit_scope -ne "FULL_ROWS") {
+            throw "Unexpected audit scope"
+          }
+
+          if ($result.totals.file_pairs -le 0) {
+            throw "No file pairs inspected"
+          }
+
+          if ($result.research_decision -ne "HOLD") {
+            throw "Research gate changed"
+          }
+
+          if ($result.live_trading_approved -ne $false) {
+            throw "Trading approval must remain false"
+          }
+
+          if ($result.train_approved -ne $false) {
+            throw "Training approval must remain false"
+          }
+
+          Write-Host "SHA256 integrity PASS"
+
+      - name: Publish job summary
+        if: always()
+        run: |
+          $folder = Join-Path $env:RESEARCH_ROOT $env:REPORT_FOLDER
+          $resultPath = Join-Path $folder "integrity_result.json"
+
+          @"
+          # Pattern 256 Full-Row Input Integrity
+
+          | Step | Status |
+          |---|---|
+          | Python execution | ${{ steps.audit.outcome }} |
+          | SHA256 integrity | ${{ steps.integrity.outcome }} |
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+          if ("${{ steps.integrity.outcome }}" -eq "success") {
+            $result = Get-Content -LiteralPath $resultPath -Raw |
+              ConvertFrom-Json
+
+            @"
+
+          | Metric | Value |
+          |---|---|
+          | Version | $($result.version) |
+          | Classification | $($result.classification) |
+          | File pairs | $($result.totals.file_pairs) |
+          | Passed pairs | $($result.totals.pass_files) |
+          | Review pairs | $($result.totals.review_files) |
+          | OHLCV rows | $($result.totals.ohlcv_rows) |
+          | Signal rows | $($result.totals.signal_rows) |
+          | Trigger rows | $($result.totals.signal_triggers) |
+          | Research decision | $($result.research_decision) |
+
+          Full-row input integrity only.
+
+          Independent OOS: NOT PROVEN.
+
+          Event-level profitability: NOT PROVEN.
+
+          Research decision: HOLD.
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          }
+
+      - name: Stage verified artifacts
+        id: stage
+        if: steps.integrity.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $source = Join-Path $env:RESEARCH_ROOT $env:REPORT_FOLDER
+          $target = Join-Path $env:GITHUB_WORKSPACE "event_input_integrity_artifacts"
+
+          New-Item -ItemType Directory -Path $target -Force |
+            Out-Null
+
+          foreach ($filename in @(
+            "integrity_result.json",
+            "integrity_report.md",
+            "integrity_manifest.json"
+          )) {
+            Copy-Item `
+              -LiteralPath (Join-Path $source $filename) `
+              -Destination (Join-Path $target $filename) `
+              -Force `
+              -ErrorAction Stop
+          }
+
+      - name: Upload artifacts
+        id: upload
+        if: steps.stage.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-event-input-integrity
+          path: event_input_integrity_artifacts/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Final gate
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          foreach ($outcome in @(
+            "${{ steps.audit.outcome }}",
+            "${{ steps.integrity.outcome }}",
+            "${{ steps.stage.outcome }}",
+            "${{ steps.upload.outcome }}"
+          )) {
+            if ($outcome -ne "success") {
+              throw "Integrity workflow failed"
+            }
+          }
+
+          Write-Host "Workflow execution PASS"
+          Write-Host "Research decision: HOLD"
