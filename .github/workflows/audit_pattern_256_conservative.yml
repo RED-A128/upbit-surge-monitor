@@ -1,0 +1,266 @@
+
+name: audit_pattern_256_conservative.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  conservative-audit:
+    name: conservative-audit
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 240
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      RESEARCH_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+      REPORT_FOLDER: data\reports\pattern_256_conservative_audit
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          $script = Join-Path $env:GITHUB_WORKSPACE "audit_pattern_256_conservative.py"
+
+          if (-not (Test-Path -LiteralPath $script)) {
+            throw "Audit script missing"
+          }
+
+          $required = @(
+            "data\reports\pattern_256_matched_baseline\matched_result.json",
+            "data\reports\pattern_256_matched_baseline\matched_manifest.json",
+            "data\reports\pattern_256_chronological_oos\oos_result.json"
+          )
+
+          foreach ($relative in $required) {
+            $path = Join-Path $env:RESEARCH_ROOT $relative
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Required input missing: $path"
+            }
+          }
+
+          foreach ($tf in @("h1", "h4", "d1")) {
+            foreach ($relative in @(
+              "data\ohlcv\$tf",
+              "data\signals\256\$tf"
+            )) {
+              $path = Join-Path $env:RESEARCH_ROOT $relative
+
+              if (-not (Test-Path -LiteralPath $path)) {
+                throw "Required folder missing: $path"
+              }
+            }
+          }
+
+      - name: Run conservative audit
+        id: audit
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path $env:GITHUB_WORKSPACE "audit_pattern_256_conservative.py"
+
+          py -u $script `
+            --root $env:RESEARCH_ROOT `
+            --max-episodes-per-market-split 100 `
+            --max-match-days 30
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Conservative audit failed"
+          }
+
+      - name: Verify SHA256 integrity
+        id: integrity
+        if: steps.audit.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $folder = Join-Path $env:RESEARCH_ROOT $env:REPORT_FOLDER
+          $manifestPath = Join-Path $folder "conservative_manifest.json"
+          $resultPath = Join-Path $folder "conservative_result.json"
+
+          if (-not (Test-Path -LiteralPath $manifestPath)) {
+            throw "Manifest missing"
+          }
+
+          $manifest = Get-Content -LiteralPath $manifestPath -Raw |
+            ConvertFrom-Json
+
+          foreach ($item in $manifest.files.PSObject.Properties) {
+            $path = Join-Path $folder $item.Name
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Report missing: $($item.Name)"
+            }
+
+            $actual = (
+              Get-FileHash -LiteralPath $path -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            $expected = (
+              [string]$item.Value
+            ).ToLowerInvariant()
+
+            if ($actual -ne $expected) {
+              throw "SHA256 mismatch: $($item.Name)"
+            }
+          }
+
+          $result = Get-Content -LiteralPath $resultPath -Raw |
+            ConvertFrom-Json
+
+          if ($result.execution -ne "PASS") {
+            throw "Execution not PASS"
+          }
+
+          if ($result.version -ne "Clean V002") {
+            throw "Unexpected version"
+          }
+
+          if ($result.input_pairs -ne 870) {
+            throw "Unexpected input pair count"
+          }
+
+          if ($result.comparison.Count -ne 27) {
+            throw "Expected 27 comparison groups"
+          }
+
+          if ($result.research_decision -ne "HOLD") {
+            throw "Unexpected research decision"
+          }
+
+          Write-Host "SHA256 integrity PASS"
+
+      - name: Publish job summary
+        if: always()
+        run: |
+          $folder = Join-Path $env:RESEARCH_ROOT $env:REPORT_FOLDER
+          $resultPath = Join-Path $folder "conservative_result.json"
+
+          @"
+          # Pattern 256 Conservative Audit
+
+          | Check | Result |
+          |---|---|
+          | Python execution | ${{ steps.audit.outcome }} |
+          | SHA256 integrity | ${{ steps.integrity.outcome }} |
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+          if ("${{ steps.integrity.outcome }}" -eq "success") {
+            $result = Get-Content -LiteralPath $resultPath -Raw |
+              ConvertFrom-Json
+
+            @"
+
+          | Metric | Value |
+          |---|---|
+          | Version | $($result.version) |
+          | Input pairs | $($result.input_pairs) |
+          | Classification | $($result.classification) |
+          | Research decision | $($result.research_decision) |
+
+          ## TEST comparison
+
+          | TF | Horizon | Pairs | Signal % | Control % | Difference pp |
+          |---|---:|---:|---:|---:|---:|
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+            foreach ($row in $result.comparison) {
+              if ($row.split -eq "TEST") {
+                "| $($row.timeframe) | $($row.horizon) | $($row.matched_pairs) | $($row.signal_rate_pct) | $($row.control_rate_pct) | $($row.difference_pp) |" |
+                  Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+              }
+            }
+
+            @"
+
+          ## Diagnostic counts
+
+          | TF | Split | Sampled | Invalid window | No prior control | Overlap excluded | Matched |
+          |---|---|---:|---:|---:|---:|---:|
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+            foreach ($row in $result.diagnostics) {
+              "| $($row.timeframe) | $($row.split) | $($row.episodes_sampled) | $($row.signal_window_invalid) | $($row.no_prior_control) | $($row.overlap_excluded) | $($row.matched_pairs) |" |
+                Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+            }
+
+            @"
+
+          Research only. Independent OOS and profitability remain unproven.
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          }
+
+      - name: Stage artifacts
+        id: stage
+        if: steps.integrity.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $source = Join-Path $env:RESEARCH_ROOT $env:REPORT_FOLDER
+          $target = Join-Path $env:GITHUB_WORKSPACE "conservative_audit_artifacts"
+
+          New-Item -ItemType Directory -Path $target -Force |
+            Out-Null
+
+          foreach ($name in @(
+            "conservative_result.json",
+            "conservative_comparison.csv",
+            "conservative_diagnostics.csv",
+            "conservative_report.md",
+            "conservative_manifest.json"
+          )) {
+            Copy-Item `
+              -LiteralPath (Join-Path $source $name) `
+              -Destination (Join-Path $target $name) `
+              -Force `
+              -ErrorAction Stop
+          }
+
+      - name: Upload artifacts
+        id: upload
+        if: steps.stage.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-conservative-audit
+          path: conservative_audit_artifacts/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Final gate
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          foreach ($outcome in @(
+            "${{ steps.audit.outcome }}",
+            "${{ steps.integrity.outcome }}",
+            "${{ steps.stage.outcome }}",
+            "${{ steps.upload.outcome }}"
+          )) {
+            if ($outcome -ne "success") {
+              throw "Conservative audit workflow failed"
+            }
+          }
+
+          Write-Host "Workflow PASS"
+          Write-Host "Research decision: HOLD"
