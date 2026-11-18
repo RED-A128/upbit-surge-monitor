@@ -1,0 +1,252 @@
+
+name: audit_pattern_256_statistical_robustness.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  statistical-robustness:
+    name: statistical-robustness
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      RESEARCH_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+      REPORT_FOLDER: data\reports\pattern_256_statistical_robustness
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify inputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          $script = Join-Path $env:GITHUB_WORKSPACE "audit_pattern_256_statistical_robustness.py"
+
+          if (-not (Test-Path -LiteralPath $script)) {
+            throw "Statistical audit script missing"
+          }
+
+          $required = @(
+            "data\reports\pattern_256_matched_baseline\matched_result.json",
+            "data\reports\pattern_256_matched_baseline\matched_manifest.json",
+            "data\reports\pattern_256_conservative_audit\conservative_result.json",
+            "data\reports\pattern_256_conservative_audit\conservative_manifest.json"
+          )
+
+          foreach ($relative in $required) {
+            $path = Join-Path $env:RESEARCH_ROOT $relative
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Required file missing: $path"
+            }
+          }
+
+      - name: Run statistical robustness audit
+        id: audit
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path $env:GITHUB_WORKSPACE "audit_pattern_256_statistical_robustness.py"
+
+          py -u $script --root $env:RESEARCH_ROOT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Statistical robustness audit failed"
+          }
+
+      - name: Verify output SHA256
+        id: integrity
+        if: steps.audit.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $folder = Join-Path $env:RESEARCH_ROOT $env:REPORT_FOLDER
+          $manifestPath = Join-Path $folder "robustness_manifest.json"
+          $resultPath = Join-Path $folder "robustness_result.json"
+
+          if (-not (Test-Path -LiteralPath $manifestPath)) {
+            throw "Manifest missing"
+          }
+
+          $manifest = Get-Content -LiteralPath $manifestPath -Raw |
+            ConvertFrom-Json
+
+          foreach ($item in $manifest.files.PSObject.Properties) {
+            $path = Join-Path $folder $item.Name
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Output missing: $($item.Name)"
+            }
+
+            $actual = (
+              Get-FileHash -LiteralPath $path -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            $expected = (
+              [string]$item.Value
+            ).ToLowerInvariant()
+
+            if ($actual -ne $expected) {
+              throw "SHA256 mismatch: $($item.Name)"
+            }
+          }
+
+          $result = Get-Content -LiteralPath $resultPath -Raw |
+            ConvertFrom-Json
+
+          if ($result.execution -ne "PASS") {
+            throw "Execution not PASS"
+          }
+
+          if ($result.version -ne "Clean V001") {
+            throw "Unexpected version"
+          }
+
+          if ($result.input_pairs -ne 870) {
+            throw "Unexpected input pair count"
+          }
+
+          if ($result.comparison_groups -ne 27) {
+            throw "Expected 27 comparison groups"
+          }
+
+          if ($result.research_decision -ne "HOLD") {
+            throw "Research gate changed"
+          }
+
+          if ($result.independent_oos_proven -ne $false) {
+            throw "Invalid OOS approval"
+          }
+
+          if ($result.live_trading_approved -ne $false) {
+            throw "Invalid trading approval"
+          }
+
+          Write-Host "Integrity verification PASS"
+
+      - name: Publish job summary
+        if: always()
+        run: |
+          $folder = Join-Path $env:RESEARCH_ROOT $env:REPORT_FOLDER
+          $resultPath = Join-Path $folder "robustness_result.json"
+
+          @"
+          # Pattern 256 Statistical Robustness Audit
+
+          | Step | Status |
+          |---|---|
+          | Python execution | ${{ steps.audit.outcome }} |
+          | SHA256 integrity | ${{ steps.integrity.outcome }} |
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+          if ("${{ steps.integrity.outcome }}" -eq "success") {
+            $result = Get-Content -LiteralPath $resultPath -Raw |
+              ConvertFrom-Json
+
+            @"
+
+          | Metric | Value |
+          |---|---|
+          | Version | $($result.version) |
+          | Comparison groups | $($result.comparison_groups) |
+          | Evaluable groups | $($result.evaluable_groups) |
+          | Direction reversals | $($result.direction_reversal_groups) |
+          | Research decision | $($result.research_decision) |
+
+          ## TEST comparison
+
+          | TF | Horizon | Pairs | Retention % | Old diff pp | New diff pp | 95% CI lower | 95% CI upper | Holm p |
+          |---|---:|---:|---:|---:|---:|---:|---:|---:|
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+            foreach ($row in $result.comparison) {
+              if ($row.split -eq "TEST") {
+                "| $($row.timeframe) | $($row.horizon) | $($row.conservative_pairs) | $($row.retention_pct) | $($row.baseline_difference_pp) | $($row.conservative_difference_pp) | $($row.paired_difference_ci95_lower_pp) | $($row.paired_difference_ci95_upper_pp) | $($row.holm_adjusted_p) |" |
+                  Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+              }
+            }
+
+            @"
+
+          **Interpretation:** Exploratory paired tests only.
+          Market clustering, historical regime differences and
+          prior TEST exposure remain unresolved.
+
+          Independent OOS: NOT PROVEN.
+          Profitability: NOT PROVEN.
+          Research decision: HOLD.
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          }
+
+      - name: Stage artifacts
+        id: stage
+        if: steps.integrity.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $source = Join-Path $env:RESEARCH_ROOT $env:REPORT_FOLDER
+          $target = Join-Path $env:GITHUB_WORKSPACE "statistical_robustness_artifacts"
+
+          New-Item -ItemType Directory -Path $target -Force |
+            Out-Null
+
+          foreach ($name in @(
+            "robustness_result.json",
+            "robustness_comparison.csv",
+            "robustness_report.md",
+            "robustness_manifest.json"
+          )) {
+            Copy-Item `
+              -LiteralPath (Join-Path $source $name) `
+              -Destination (Join-Path $target $name) `
+              -Force `
+              -ErrorAction Stop
+          }
+
+      - name: Upload artifacts
+        id: upload
+        if: steps.stage.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-statistical-robustness
+          path: statistical_robustness_artifacts/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Final gate
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          foreach ($outcome in @(
+            "${{ steps.audit.outcome }}",
+            "${{ steps.integrity.outcome }}",
+            "${{ steps.stage.outcome }}",
+            "${{ steps.upload.outcome }}"
+          )) {
+            if ($outcome -ne "success") {
+              throw "Statistical robustness workflow failed"
+            }
+          }
+
+          Write-Host "Workflow PASS"
+          Write-Host "Research decision: HOLD"
