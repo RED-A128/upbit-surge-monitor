@@ -1,0 +1,241 @@
+
+name: audit_pattern_256_h1_event_outcomes.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  h1-event-outcomes:
+    name: h1-event-outcomes
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 360
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      RESEARCH_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+      REPORT_FOLDER: data\reports\pattern_256_h1_event_outcomes
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          $script = Join-Path $env:GITHUB_WORKSPACE "audit_pattern_256_h1_event_outcomes.py"
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Audit script missing"
+          }
+
+          foreach ($relative in @(
+            "data\ohlcv\h1",
+            "data\signals\256\h1"
+          )) {
+            $path = Join-Path $env:RESEARCH_ROOT $relative
+
+            if (-not (Test-Path -LiteralPath $path -PathType Container)) {
+              throw "Required directory missing: $path"
+            }
+          }
+
+      - name: Run H1 event outcomes
+        id: audit
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path $env:GITHUB_WORKSPACE "audit_pattern_256_h1_event_outcomes.py"
+
+          py -u $script --root $env:RESEARCH_ROOT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "H1 event audit failed"
+          }
+
+      - name: Verify SHA256 and result
+        id: verify
+        if: steps.audit.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $folder = Join-Path $env:RESEARCH_ROOT $env:REPORT_FOLDER
+          $manifestPath = Join-Path $folder "event_outcomes_manifest.json"
+          $resultPath = Join-Path $folder "event_outcomes_result.json"
+
+          if (-not (Test-Path -LiteralPath $manifestPath)) {
+            throw "Manifest missing"
+          }
+
+          $manifest = Get-Content -LiteralPath $manifestPath -Raw |
+            ConvertFrom-Json
+
+          if ($manifest.version -ne "Clean V001") {
+            throw "Unexpected manifest version"
+          }
+
+          foreach ($item in $manifest.files.PSObject.Properties) {
+            $path = Join-Path $folder $item.Name
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Missing report: $($item.Name)"
+            }
+
+            $actual = (
+              Get-FileHash -LiteralPath $path -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            $expected = (
+              [string]$item.Value
+            ).ToLowerInvariant()
+
+            if ($actual -ne $expected) {
+              throw "SHA256 mismatch: $($item.Name)"
+            }
+          }
+
+          $result = Get-Content -LiteralPath $resultPath -Raw |
+            ConvertFrom-Json
+
+          if ($result.version -ne "Clean V001") {
+            throw "Unexpected result version"
+          }
+
+          if ($result.execution -ne "PASS") {
+            throw "Execution not PASS"
+          }
+
+          if ($result.classification -ne "EVENT_OUTCOMES_COMPUTED") {
+            throw "Unexpected classification"
+          }
+
+          if ($result.totals.markets -ne 290) {
+            throw "Expected 290 H1 markets"
+          }
+
+          if ($result.totals.eligible_events -le 0) {
+            throw "No eligible events"
+          }
+
+          if ($result.research_decision -ne "HOLD") {
+            throw "Research decision changed"
+          }
+
+          if ($result.train_approved -ne $false) {
+            throw "Training must remain blocked"
+          }
+
+          if ($result.live_trading_approved -ne $false) {
+            throw "Trading must remain blocked"
+          }
+
+          Write-Host "SHA256 and result verification PASS"
+
+      - name: Publish job summary
+        if: always()
+        run: |
+          $folder = Join-Path $env:RESEARCH_ROOT $env:REPORT_FOLDER
+          $resultPath = Join-Path $folder "event_outcomes_result.json"
+
+          @"
+          # Pattern 256 H1 Event Outcomes
+
+          | Step | Status |
+          |---|---|
+          | Python execution | ${{ steps.audit.outcome }} |
+          | SHA256 verification | ${{ steps.verify.outcome }} |
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+          if ("${{ steps.verify.outcome }}" -eq "success") {
+            $result = Get-Content -LiteralPath $resultPath -Raw |
+              ConvertFrom-Json
+
+            @"
+
+          | Metric | Value |
+          |---|---|
+          | Version | $($result.version) |
+          | Classification | $($result.classification) |
+          | Markets | $($result.totals.markets) |
+          | Raw triggers | $($result.totals.raw_trigger_rows) |
+          | Independent events | $($result.totals.eligible_events) |
+          | +30% hits | $($result.totals.target_hits) |
+          | +30% misses | $($result.totals.target_misses) |
+          | Overlap skipped | $($result.totals.overlap_skipped) |
+          | Right censored | $($result.totals.right_censored) |
+          | Time-gap excluded | $($result.totals.time_gap_excluded) |
+          | Hit rate (%) | $($result.hit_rate_pct) |
+          | Research decision | $($result.research_decision) |
+
+          This is an event-outcome calculation, not a
+          profitability or independent OOS validation.
+
+          Research decision: HOLD.
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          }
+
+      - name: Stage artifacts
+        id: stage
+        if: steps.verify.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $source = Join-Path $env:RESEARCH_ROOT $env:REPORT_FOLDER
+          $target = Join-Path $env:GITHUB_WORKSPACE "h1_event_outcome_artifacts"
+
+          New-Item -ItemType Directory -Path $target -Force |
+            Out-Null
+
+          foreach ($filename in @(
+            "event_outcomes_result.json",
+            "event_outcomes_events.csv",
+            "event_outcomes_report.md",
+            "event_outcomes_manifest.json"
+          )) {
+            Copy-Item `
+              -LiteralPath (Join-Path $source $filename) `
+              -Destination (Join-Path $target $filename) `
+              -Force `
+              -ErrorAction Stop
+          }
+
+      - name: Upload artifacts
+        id: upload
+        if: steps.stage.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-h1-event-outcomes
+          path: h1_event_outcome_artifacts/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Final gate
+        if: always()
+        run: |
+          foreach ($outcome in @(
+            "${{ steps.audit.outcome }}",
+            "${{ steps.verify.outcome }}",
+            "${{ steps.stage.outcome }}",
+            "${{ steps.upload.outcome }}"
+          )) {
+            if ($outcome -ne "success") {
+              throw "Event outcome workflow failed"
+            }
+          }
+
+          Write-Host "Event outcome workflow PASS"
+          Write-Host "Research decision: HOLD"
