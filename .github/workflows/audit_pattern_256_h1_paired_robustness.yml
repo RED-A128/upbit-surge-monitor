@@ -1,0 +1,323 @@
+
+name: audit_pattern_256_h1_paired_robustness.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  paired-robustness:
+    name: paired-robustness
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 120
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      RESEARCH_ROOT: C:\Users\USER\Documents\upbit-surge-monitor
+      REPORT_FOLDER: data\reports\pattern_256_h1_paired_robustness
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify input files
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_h1_paired_robustness.py"
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Python audit script missing"
+          }
+
+          $folder = Join-Path `
+            $env:RESEARCH_ROOT `
+            "data\reports\pattern_256_h1_matched_controls"
+
+          $required = @(
+            "matched_controls_result.json",
+            "matched_controls_pairs.csv",
+            "matched_controls_unmatched.csv",
+            "matched_controls_report.md",
+            "matched_controls_manifest.json"
+          )
+
+          foreach ($filename in $required) {
+            $path = Join-Path $folder $filename
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing input: $path"
+            }
+          }
+
+          Write-Host "All required files present"
+
+      - name: Run paired robustness audit
+        id: audit
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_h1_paired_robustness.py"
+
+          py -u $script `
+            --root $env:RESEARCH_ROOT `
+            --bootstrap-iterations 5000
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Paired robustness audit failed"
+          }
+
+      - name: Verify outputs and SHA256
+        id: verify
+        if: steps.audit.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $folder = Join-Path `
+            $env:RESEARCH_ROOT `
+            $env:REPORT_FOLDER
+
+          $manifestPath = Join-Path `
+            $folder "paired_robustness_manifest.json"
+
+          $resultPath = Join-Path `
+            $folder "paired_robustness_result.json"
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath -Raw |
+            ConvertFrom-Json
+
+          if ($manifest.version -ne "Clean V001") {
+            throw "Manifest version mismatch"
+          }
+
+          $expectedFiles = @(
+            "paired_robustness_result.json",
+            "paired_robustness_groups.csv",
+            "paired_robustness_report.md"
+          )
+
+          $actualFiles = @(
+            $manifest.files.PSObject.Properties.Name
+          )
+
+          if (
+            (Compare-Object $expectedFiles $actualFiles).Count -gt 0
+          ) {
+            throw "Manifest inventory mismatch"
+          }
+
+          foreach ($item in $manifest.files.PSObject.Properties) {
+            $path = Join-Path $folder $item.Name
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Missing report: $($item.Name)"
+            }
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            $expected = (
+              [string]$item.Value
+            ).ToLowerInvariant()
+
+            if ($actual -ne $expected) {
+              throw "SHA256 mismatch: $($item.Name)"
+            }
+          }
+
+          $r = Get-Content `
+            -LiteralPath $resultPath -Raw |
+            ConvertFrom-Json
+
+          if ($r.version -ne "Clean V001") {
+            throw "Unexpected version"
+          }
+
+          if ($r.execution -ne "PASS") {
+            throw "Execution not PASS"
+          }
+
+          if (
+            $r.classification -ne "PAIRED_ROBUSTNESS_COMPUTED"
+          ) {
+            throw "Unexpected classification"
+          }
+
+          if ($r.overall.pairs -ne 31182) {
+            throw "Pair count mismatch"
+          }
+
+          if (
+            $r.overall.signal_hits -ne 3569 -or
+            $r.overall.control_hits -ne 3545
+          ) {
+            throw "Hit count mismatch"
+          }
+
+          if (
+            $r.overall.signal_only -ne 2620 -or
+            $r.overall.control_only -ne 2596 -or
+            $r.overall.both_hit -ne 949 -or
+            $r.overall.neither_hit -ne 25017
+          ) {
+            throw "Paired outcome mismatch"
+          }
+
+          if (
+            $r.monthly_cluster_bootstrap.status -ne "COMPUTED"
+          ) {
+            throw "Cluster bootstrap incomplete"
+          }
+
+          if (
+            $r.research_decision -ne "HOLD" -or
+            $r.train_approved -ne $false -or
+            $r.live_trading_approved -ne $false
+          ) {
+            throw "Safety gate mismatch"
+          }
+
+          Write-Host "SHA256 and result verification PASS"
+
+      - name: Publish job summary
+        if: always()
+        run: |
+          $folder = Join-Path `
+            $env:RESEARCH_ROOT `
+            $env:REPORT_FOLDER
+
+          $resultPath = Join-Path `
+            $folder "paired_robustness_result.json"
+
+          @"
+          # Pattern 256 H1 Paired Robustness
+
+          | Step | Status |
+          |---|---|
+          | Python execution | ${{ steps.audit.outcome }} |
+          | SHA256 verification | ${{ steps.verify.outcome }} |
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Encoding utf8 -Append
+
+          if ("${{ steps.verify.outcome }}" -eq "success") {
+            $r = Get-Content `
+              -LiteralPath $resultPath -Raw |
+              ConvertFrom-Json
+
+            $o = $r.overall
+            $b = $r.monthly_cluster_bootstrap
+
+            @"
+
+          | Metric | Value |
+          |---|---|
+          | Version | $($r.version) |
+          | Classification | $($r.classification) |
+          | Matched pairs | $($o.pairs) |
+          | Signal hits | $($o.signal_hits) |
+          | Control hits | $($o.control_hits) |
+          | Signal rate (%) | $($o.signal_rate_pct) |
+          | Control rate (%) | $($o.control_rate_pct) |
+          | Difference (pp) | $($o.difference_pp) |
+          | Exact McNemar p | $($o.mcnemar_exact_p) |
+          | Monthly clusters | $($b.months) |
+          | Bootstrap 95% lower (pp) | $($b.lower_95_pp) |
+          | Bootstrap 95% upper (pp) | $($b.upper_95_pp) |
+          | Bootstrap includes zero | $($b.contains_zero) |
+          | Positive years | $($r.yearly_positive_groups) |
+          | Negative years | $($r.yearly_negative_groups) |
+          | Research decision | $($r.research_decision) |
+
+          Exploratory historical research only.
+
+          Independent OOS: NOT PROVEN.
+
+          Profitability: NOT PROVEN.
+
+          Training and trading: BLOCKED.
+          "@ | Out-File `
+              -FilePath $env:GITHUB_STEP_SUMMARY `
+              -Encoding utf8 -Append
+          }
+
+      - name: Stage verified artifacts
+        id: stage
+        if: steps.verify.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $source = Join-Path `
+            $env:RESEARCH_ROOT `
+            $env:REPORT_FOLDER
+
+          $target = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "paired_robustness_artifacts"
+
+          New-Item `
+            -ItemType Directory `
+            -Path $target `
+            -Force | Out-Null
+
+          foreach ($filename in @(
+            "paired_robustness_result.json",
+            "paired_robustness_groups.csv",
+            "paired_robustness_report.md",
+            "paired_robustness_manifest.json"
+          )) {
+            Copy-Item `
+              -LiteralPath (Join-Path $source $filename) `
+              -Destination (Join-Path $target $filename) `
+              -Force `
+              -ErrorAction Stop
+          }
+
+      - name: Upload artifacts
+        id: upload
+        if: steps.stage.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-h1-paired-robustness
+          path: paired_robustness_artifacts/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Final gate
+        if: always()
+        run: |
+          $outcomes = @(
+            "${{ steps.audit.outcome }}",
+            "${{ steps.verify.outcome }}",
+            "${{ steps.stage.outcome }}",
+            "${{ steps.upload.outcome }}"
+          )
+
+          foreach ($outcome in $outcomes) {
+            if ($outcome -ne "success") {
+              throw "Paired robustness workflow failed"
+            }
+          }
+
+          Write-Host "Paired robustness workflow PASS"
+          Write-Host "Research decision remains HOLD"
