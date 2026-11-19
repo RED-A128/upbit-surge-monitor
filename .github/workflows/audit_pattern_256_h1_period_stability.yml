@@ -14,33 +14,58 @@ concurrency:
 jobs:
   period-stability:
     name: period-stability
-    runs-on: [self-hosted, Windows]
+
+    runs-on:
+      - self-hosted
+      - Windows
 
     defaults:
       run:
-        shell: pwsh
+        shell: powershell
+
+    env:
+      PROJECT_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Verify environment
+        id: environment
         run: |
           $ErrorActionPreference = "Stop"
 
-          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
-          $script = Join-Path $env:GITHUB_WORKSPACE `
+          Write-Host "=================================="
+          Write-Host "Pattern 256 H1 Period Stability"
+          Write-Host "Workflow Clean V002"
+          Write-Host "=================================="
+
+          Write-Host "Windows identity:"
+          whoami
+
+          Write-Host "PowerShell version:"
+          $PSVersionTable.PSVersion.ToString()
+
+          $root = $env:PROJECT_ROOT
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
             "audit_pattern_256_h1_period_stability.py"
 
-          $inputDir = Join-Path $root `
+          $inputDir = Join-Path `
+            $root `
             "data\reports\pattern_256_h1_paired_robustness"
 
-          if (-not (Test-Path -LiteralPath $root)) {
+          if (-not (Test-Path -LiteralPath $root -PathType Container)) {
             throw "Project root missing: $root"
           }
 
-          if (-not (Test-Path -LiteralPath $script)) {
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
             throw "Audit script missing: $script"
+          }
+
+          if (-not (Test-Path -LiteralPath $inputDir -PathType Container)) {
+            throw "Input report folder missing: $inputDir"
           }
 
           $required = @(
@@ -53,48 +78,64 @@ jobs:
           foreach ($name in $required) {
             $path = Join-Path $inputDir $name
 
-            if (-not (Test-Path -LiteralPath $path)) {
-              throw "Missing input: $path"
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing input file: $path"
             }
 
-            Write-Host "[OK] $path"
+            Write-Host "[FOUND] $name"
           }
 
-          py --version
+          Write-Host "Python version:"
+          & py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python launcher failed"
+          }
+
+          Write-Host "[PASS] Environment verification"
 
       - name: Execute period stability audit
         id: audit
         run: |
           $ErrorActionPreference = "Stop"
 
-          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
-          $script = Join-Path $env:GITHUB_WORKSPACE `
+          $root = $env:PROJECT_ROOT
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
             "audit_pattern_256_h1_period_stability.py"
+
+          Write-Host "Executing Python audit..."
 
           & py -u $script --root $root
 
           if ($LASTEXITCODE -ne 0) {
-            throw "Python audit failed"
+            throw "Python audit failed with exit code $LASTEXITCODE"
           }
+
+          Write-Host "[PASS] Python audit completed"
 
       - name: Verify output SHA256
         id: integrity
         run: |
           $ErrorActionPreference = "Stop"
 
-          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
-          $folder = Join-Path $root `
+          $folder = Join-Path `
+            $env:PROJECT_ROOT `
             "data\reports\pattern_256_h1_period_stability"
 
-          $manifestPath = Join-Path $folder `
+          $manifestPath = Join-Path `
+            $folder `
             "period_stability_manifest.json"
 
-          if (-not (Test-Path -LiteralPath $manifestPath)) {
+          if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
             throw "Output manifest missing"
           }
 
-          $manifest = Get-Content -LiteralPath $manifestPath `
-            -Raw | ConvertFrom-Json
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw `
+            -Encoding UTF8 | ConvertFrom-Json
 
           $names = @(
             "period_stability_result.json",
@@ -104,13 +145,21 @@ jobs:
           foreach ($name in $names) {
             $path = Join-Path $folder $name
 
-            if (-not (Test-Path -LiteralPath $path)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
               throw "Output missing: $name"
             }
 
             $expected = $manifest.output_sha256.$name
-            $actual = (Get-FileHash -LiteralPath $path `
-              -Algorithm SHA256).Hash.ToLowerInvariant()
+
+            if ([string]::IsNullOrWhiteSpace($expected)) {
+              throw "Manifest SHA256 missing: $name"
+            }
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
 
             if ($actual -ne $expected.ToLowerInvariant()) {
               throw "SHA256 mismatch: $name"
@@ -119,11 +168,14 @@ jobs:
             Write-Host "[SHA256 PASS] $name"
           }
 
-          $resultPath = Join-Path $folder `
+          $resultPath = Join-Path `
+            $folder `
             "period_stability_result.json"
 
-          $result = Get-Content -LiteralPath $resultPath `
-            -Raw | ConvertFrom-Json
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw `
+            -Encoding UTF8 | ConvertFrom-Json
 
           if ($result.execution -ne "PASS") {
             throw "Audit execution is not PASS"
@@ -133,49 +185,89 @@ jobs:
             throw "Unexpected research decision"
           }
 
+          if ($result.independent_oos_proven -ne $false) {
+            throw "Unexpected independent OOS status"
+          }
+
+          if ($result.profitability_proven -ne $false) {
+            throw "Unexpected profitability status"
+          }
+
+          Write-Host "[PASS] Report integrity verification"
+
       - name: Publish summary
         if: steps.integrity.outcome == 'success'
         run: |
-          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
-          $folder = Join-Path $root `
+          $ErrorActionPreference = "Stop"
+
+          $folder = Join-Path `
+            $env:PROJECT_ROOT `
             "data\reports\pattern_256_h1_period_stability"
 
-          $result = Get-Content -LiteralPath `
-            (Join-Path $folder "period_stability_result.json") `
-            -Raw | ConvertFrom-Json
+          $resultPath = Join-Path `
+            $folder `
+            "period_stability_result.json"
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw `
+            -Encoding UTF8 | ConvertFrom-Json
 
           $lines = @(
             "# Pattern 256 H1 Period Stability Audit",
             "",
             "| Metric | Result |",
             "|---|---|",
-            "| Execution | $($result.execution) |",
+            "| Workflow | Clean V002 |",
+            "| Python execution | $($result.execution) |",
             "| Classification | $($result.classification) |",
             "| Positive years | $($result.positive_years) |",
             "| Negative years | $($result.negative_years) |",
-            "| Latest difference pp | $($result.latest_period_difference_pp) |",
+            "| Latest period difference pp | $($result.latest_period_difference_pp) |",
+            "| Bootstrap lower pp | $($result.bootstrap_95_lower_pp) |",
+            "| Bootstrap upper pp | $($result.bootstrap_95_upper_pp) |",
             "| Research decision | $($result.research_decision) |",
             "",
-            "Independent OOS and profitability remain unproven."
+            "Independent OOS: NOT PROVEN.",
+            "",
+            "Profitability: NOT PROVEN.",
+            "",
+            "Training and live trading remain unapproved."
           )
 
-          $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY `
-            -Encoding utf8 -Append
+          $lines | Out-File `
+            -LiteralPath $env:GITHUB_STEP_SUMMARY `
+            -Encoding UTF8 `
+            -Append
+
+          Write-Host "[PASS] Summary published"
 
       - name: Stage verified reports
+        id: stage
         if: steps.integrity.outcome == 'success'
         run: |
           $ErrorActionPreference = "Stop"
 
-          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
-          $source = Join-Path $root `
+          $source = Join-Path `
+            $env:PROJECT_ROOT `
             "data\reports\pattern_256_h1_period_stability"
 
-          $destination = Join-Path $env:GITHUB_WORKSPACE `
+          $destination = Join-Path `
+            $env:GITHUB_WORKSPACE `
             "period_stability_artifact"
 
-          New-Item -ItemType Directory `
-            -Path $destination -Force | Out-Null
+          if (Test-Path -LiteralPath $destination) {
+            Remove-Item `
+              -LiteralPath $destination `
+              -Recurse `
+              -Force `
+              -ErrorAction Stop
+          }
+
+          New-Item `
+            -ItemType Directory `
+            -Path $destination `
+            -Force | Out-Null
 
           $names = @(
             "period_stability_result.json",
@@ -184,13 +276,42 @@ jobs:
           )
 
           foreach ($name in $names) {
-            Copy-Item -LiteralPath (Join-Path $source $name) `
-              -Destination (Join-Path $destination $name) `
+            $sourceFile = Join-Path $source $name
+            $targetFile = Join-Path $destination $name
+
+            Copy-Item `
+              -LiteralPath $sourceFile `
+              -Destination $targetFile `
               -ErrorAction Stop
+
+            if (-not (Test-Path -LiteralPath $targetFile -PathType Leaf)) {
+              throw "Artifact staging failed: $name"
+            }
+
+            $sourceHash = (
+              Get-FileHash `
+                -LiteralPath $sourceFile `
+                -Algorithm SHA256
+            ).Hash
+
+            $targetHash = (
+              Get-FileHash `
+                -LiteralPath $targetFile `
+                -Algorithm SHA256
+            ).Hash
+
+            if ($sourceHash -ne $targetHash) {
+              throw "Staged file SHA256 mismatch: $name"
+            }
+
+            Write-Host "[STAGED] $name"
           }
 
+          Write-Host "[PASS] Artifact staging"
+
       - name: Upload reports
-        if: steps.integrity.outcome == 'success'
+        id: upload
+        if: steps.stage.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: pattern-256-h1-period-stability
@@ -201,16 +322,37 @@ jobs:
       - name: Final status gate
         if: always()
         run: |
+          $ErrorActionPreference = "Stop"
+
+          $environment = "${{ steps.environment.outcome }}"
           $audit = "${{ steps.audit.outcome }}"
           $integrity = "${{ steps.integrity.outcome }}"
+          $stage = "${{ steps.stage.outcome }}"
+          $upload = "${{ steps.upload.outcome }}"
 
-          if ($audit -ne "success") {
-            throw "Audit execution failed"
+          Write-Host "=================================="
+          Write-Host "Final verification"
+          Write-Host "=================================="
+
+          Write-Host "Environment: $environment"
+          Write-Host "Python audit: $audit"
+          Write-Host "SHA256 integrity: $integrity"
+          Write-Host "Artifact staging: $stage"
+          Write-Host "Artifact upload: $upload"
+
+          $statuses = @(
+            $environment,
+            $audit,
+            $integrity,
+            $stage,
+            $upload
+          )
+
+          foreach ($status in $statuses) {
+            if ($status -ne "success") {
+              throw "Workflow failed: one or more steps were not successful"
+            }
           }
 
-          if ($integrity -ne "success") {
-            throw "Integrity verification failed"
-          }
-
-          Write-Host "Period stability audit completed."
-          Write-Host "Research decision remains HOLD."
+          Write-Host "[PASS] All workflow stages completed"
+          Write-Host "Research decision remains HOLD"
