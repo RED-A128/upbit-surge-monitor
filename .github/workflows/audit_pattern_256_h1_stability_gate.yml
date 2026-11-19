@@ -1,632 +1,315 @@
 
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+name: audit_pattern_256_h1_stability_gate.yml
 
-"""
-Pattern 256 H1 Stability Gate
-Clean V001
+on:
+  workflow_dispatch:
 
-Read-only audit of an existing period-stability report.
+permissions:
+  contents: read
 
-Does not modify OHLCV, features, signals, or prior reports.
-Does not claim independent OOS or profitability.
-"""
+concurrency:
+  group: pattern-256-h1-stability-gate
+  cancel-in-progress: false
 
-import argparse
-import hashlib
-import json
-import math
-import sys
-from datetime import datetime, timezone
-from pathlib import Path
+jobs:
+  stability-gate:
+    name: stability-gate
 
+    runs-on:
+      - self-hosted
+      - Windows
 
-VERSION = "Clean V001"
+    defaults:
+      run:
+        shell: powershell
 
-INPUT_DIR = Path(
-    "data/reports/pattern_256_h1_period_stability"
-)
+    env:
+      PROJECT_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
 
-OUTPUT_DIR = Path(
-    "data/reports/pattern_256_h1_stability_gate"
-)
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-INPUT_FILES = (
-    "period_stability_result.json",
-    "period_stability_report.md",
-    "period_stability_manifest.json",
-)
+      - name: Verify environment
+        id: environment
+        run: |
+          $ErrorActionPreference = "Stop"
 
+          Write-Host "=================================="
+          Write-Host "Pattern 256 H1 Stability Gate"
+          Write-Host "=================================="
 
-def sha256(path):
-    digest = hashlib.sha256()
+          whoami
+          Write-Host $PSVersionTable.PSVersion.ToString()
 
-    with path.open("rb") as handle:
-        for chunk in iter(
-            lambda: handle.read(1024 * 1024),
-            b"",
-        ):
-            digest.update(chunk)
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_h1_stability_gate.py"
 
-    return digest.hexdigest()
+          $folder = Join-Path `
+            $env:PROJECT_ROOT `
+            "data\reports\pattern_256_h1_period_stability"
 
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Python script missing: $script"
+          }
 
-def load_json(path):
-    with path.open("r", encoding="utf-8-sig") as handle:
-        return json.load(handle)
+          if (-not (Test-Path -LiteralPath $folder -PathType Container)) {
+            throw "Input folder missing: $folder"
+          }
 
+          $files = @(
+            "period_stability_result.json",
+            "period_stability_report.md",
+            "period_stability_manifest.json"
+          )
 
-def save_json(path, value):
-    payload = json.dumps(
-        value,
-        ensure_ascii=False,
-        indent=2,
-        allow_nan=False,
-    )
+          foreach ($name in $files) {
+            $path = Join-Path $folder $name
 
-    path.write_text(
-        payload + "\n",
-        encoding="utf-8",
-    )
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Input missing: $path"
+            }
 
+            Write-Host "[FOUND] $name"
+          }
 
-def require(condition, message):
-    if not condition:
-        raise ValueError(message)
+          & py --version
 
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python launcher failed"
+          }
 
-def as_number(value, name):
-    require(
-        isinstance(value, (int, float))
-        and not isinstance(value, bool),
-        f"{name}: numeric value required",
-    )
+          Write-Host "[PASS] Environment"
 
-    number = float(value)
+      - name: Execute stability gate
+        id: audit
+        run: |
+          $ErrorActionPreference = "Stop"
 
-    require(
-        math.isfinite(number),
-        f"{name}: non-finite value",
-    )
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_h1_stability_gate.py"
 
-    return number
+          & py -u $script --root $env:PROJECT_ROOT
 
+          if ($LASTEXITCODE -ne 0) {
+            throw "Stability gate execution failed"
+          }
 
-def as_integer(value, name):
-    number = as_number(value, name)
+          Write-Host "[PASS] Stability gate"
 
-    require(
-        number.is_integer() and number >= 0,
-        f"{name}: nonnegative integer required",
-    )
-
-    return int(number)
-
-
-def verify_input(folder):
-    paths = {
-        name: folder / name
-        for name in INPUT_FILES
-    }
-
-    for name, path in paths.items():
-        require(
-            path.is_file(),
-            f"Missing input: {name}",
-        )
-
-    manifest = load_json(
-        paths["period_stability_manifest.json"]
-    )
-
-    expected_hashes = manifest.get(
-        "output_sha256", {}
-    )
-
-    for name in (
-        "period_stability_result.json",
-        "period_stability_report.md",
-    ):
-        expected = expected_hashes.get(name)
-
-        require(
-            isinstance(expected, str)
-            and len(expected) == 64,
-            f"Missing SHA256: {name}",
-        )
-
-        actual = sha256(paths[name])
-
-        require(
-            actual.lower() == expected.lower(),
-            f"SHA256 mismatch: {name}",
-        )
-
-    return paths
-
-
-def validate_group(group, kind):
-    require(
-        isinstance(group, dict),
-        f"Invalid {kind} group",
-    )
-
-    label = group.get("group")
-
-    require(
-        isinstance(label, str) and label,
-        f"Missing {kind} label",
-    )
-
-    pairs = as_integer(
-        group.get("pairs"),
-        f"{label}.pairs",
-    )
-
-    signal_hits = as_integer(
-        group.get("signal_hits"),
-        f"{label}.signal_hits",
-    )
-
-    control_hits = as_integer(
-        group.get("control_hits"),
-        f"{label}.control_hits",
-    )
-
-    require(
-        pairs > 0,
-        f"{label}: zero pairs",
-    )
-
-    require(
-        signal_hits <= pairs
-        and control_hits <= pairs,
-        f"{label}: hits exceed pairs",
-    )
-
-    calculated = (
-        (signal_hits - control_hits)
-        / pairs
-        * 100.0
-    )
-
-    reported = as_number(
-        group.get("difference_pp"),
-        f"{label}.difference_pp",
-    )
-
-    require(
-        abs(calculated - reported) <= 0.000001,
-        f"{label}: difference mismatch",
-    )
-
-    expected_direction = (
-        "POSITIVE"
-        if signal_hits > control_hits
-        else "NEGATIVE"
-        if signal_hits < control_hits
-        else "NEUTRAL"
-    )
-
-    require(
-        group.get("direction") == expected_direction,
-        f"{label}: direction mismatch",
-    )
-
-    return {
-        "group": label,
-        "pairs": pairs,
-        "signal_hits": signal_hits,
-        "control_hits": control_hits,
-        "difference_pp": round(calculated, 8),
-        "direction": expected_direction,
-    }
-
-
-def evaluate(result):
-    require(
-        result.get("execution") == "PASS",
-        "Upstream execution not PASS",
-    )
-
-    require(
-        result.get("timeframe") == "h1",
-        "Expected h1 report",
-    )
-
-    yearly_raw = result.get("yearly_groups")
-    periods_raw = result.get("chronological_groups")
-
-    require(
-        isinstance(yearly_raw, list)
-        and len(yearly_raw) >= 2,
-        "Insufficient yearly groups",
-    )
-
-    require(
-        isinstance(periods_raw, list)
-        and len(periods_raw) == 3,
-        "Expected three chronological periods",
-    )
-
-    yearly = [
-        validate_group(group, "YEAR")
-        for group in yearly_raw
-    ]
-
-    periods = [
-        validate_group(group, "PERIOD")
-        for group in periods_raw
-    ]
-
-    years = [row["group"] for row in yearly]
-
-    require(
-        len(set(years)) == len(years),
-        "Duplicate years",
-    )
-
-    require(
-        years == sorted(years),
-        "Years not chronological",
-    )
-
-    require(
-        len(set(row["group"] for row in periods)) == 3,
-        "Duplicate periods",
-    )
-
-    for field in (
-        "pairs",
-        "signal_hits",
-        "control_hits",
-    ):
-        yearly_total = sum(
-            row[field] for row in yearly
-        )
-
-        period_total = sum(
-            row[field] for row in periods
-        )
-
-        require(
-            yearly_total == period_total,
-            f"Year/period total mismatch: {field}",
-        )
-
-    positive_years = sum(
-        row["direction"] == "POSITIVE"
-        for row in yearly
-    )
-
-    negative_years = sum(
-        row["direction"] == "NEGATIVE"
-        for row in yearly
-    )
-
-    require(
-        positive_years == result.get("positive_years"),
-        "Positive year count mismatch",
-    )
-
-    require(
-        negative_years == result.get("negative_years"),
-        "Negative year count mismatch",
-    )
-
-    require(
-        len(yearly) == result.get("year_count"),
-        "Year count mismatch",
-    )
-
-    first = periods[0]["difference_pp"]
-    latest = periods[-1]["difference_pp"]
-
-    require(
-        abs(
-            first
-            - as_number(
-                result.get("first_period_difference_pp"),
-                "first_period_difference_pp",
-            )
-        ) <= 0.000001,
-        "First period mismatch",
-    )
-
-    require(
-        abs(
-            latest
-            - as_number(
-                result.get("latest_period_difference_pp"),
-                "latest_period_difference_pp",
-            )
-        ) <= 0.000001,
-        "Latest period mismatch",
-    )
-
-    reported_change = as_number(
-        result.get("latest_minus_first_pp"),
-        "latest_minus_first_pp",
-    )
-
-    require(
-        abs((latest - first) - reported_change)
-        <= 0.000001,
-        "Period change mismatch",
-    )
-
-    lower = as_number(
-        result.get("bootstrap_95_lower_pp"),
-        "bootstrap_95_lower_pp",
-    )
-
-    upper = as_number(
-        result.get("bootstrap_95_upper_pp"),
-        "bootstrap_95_upper_pp",
-    )
-
-    require(
-        lower <= upper,
-        "Invalid bootstrap interval",
-    )
-
-    excludes_zero = lower > 0 or upper < 0
-
-    require(
-        result.get("bootstrap_excludes_zero")
-        is excludes_zero,
-        "Bootstrap zero-exclusion mismatch",
-    )
-
-    p_value = as_number(
-        result.get("mcnemar_exact_p"),
-        "mcnemar_exact_p",
-    )
-
-    require(
-        0 <= p_value <= 1,
-        "Invalid p-value",
-    )
-
-    for key in (
-        "independent_oos_proven",
-        "profitability_proven",
-        "causality_proven",
-        "train_approved",
-        "live_trading_approved",
-    ):
-        require(
-            result.get(key) is False,
-            f"Unexpected approval: {key}",
-        )
-
-    require(
-        result.get("research_decision") == "HOLD",
-        "Unexpected upstream research decision",
-    )
-
-    positive_periods = sum(
-        row["direction"] == "POSITIVE"
-        for row in periods
-    )
-
-    latest_negative = latest < 0
-    performance_declined = latest < first
-    statistical_uncertainty = (
-        not excludes_zero or p_value >= 0.05
-    )
-
-    # Conservative descriptive classification.
-    # No claim of statistical significance is inferred
-    # from differences between aggregate periods.
-    if latest_negative and performance_declined:
-        classification = (
-            "RECENT_EDGE_DECAY_OBSERVED"
-        )
-    elif statistical_uncertainty:
-        classification = (
-            "EDGE_NOT_STATISTICALLY_ESTABLISHED"
-        )
-    else:
-        classification = (
-            "FURTHER_INDEPENDENT_VALIDATION_REQUIRED"
-        )
-
-    return {
-        "version": VERSION,
-        "execution": "PASS",
-        "classification": classification,
-        "timeframe": "h1",
-        "total_pairs": sum(
-            row["pairs"] for row in yearly
-        ),
-        "year_count": len(yearly),
-        "positive_years": positive_years,
-        "negative_years": negative_years,
-        "positive_periods": positive_periods,
-        "period_count": len(periods),
-        "first_period_difference_pp": first,
-        "latest_period_difference_pp": latest,
-        "latest_minus_first_pp": round(
-            latest - first, 8
-        ),
-        "latest_period_negative": latest_negative,
-        "performance_declined": performance_declined,
-        "bootstrap_95_lower_pp": lower,
-        "bootstrap_95_upper_pp": upper,
-        "bootstrap_excludes_zero": excludes_zero,
-        "mcnemar_exact_p": p_value,
-        "statistical_uncertainty": statistical_uncertainty,
-        "yearly_groups": yearly,
-        "chronological_groups": periods,
-        "independent_oos_proven": False,
-        "profitability_proven": False,
-        "train_approved": False,
-        "live_trading_approved": False,
-        "research_decision": "HOLD",
-        "limitations": [
-            "Aggregate report revalidation only",
-            "No independent OOS evaluation",
-            "No event-level bootstrap recomputation",
-            "No proof of regime-shift significance",
-            "No trading cost or slippage evaluation",
-            "No strategy approval",
-        ],
-    }
-
-
-def make_report(result):
-    lines = [
-        "# Pattern 256 H1 Stability Gate",
-        "",
-        f"Version: {VERSION}",
-        f"Execution: {result['execution']}",
-        f"Classification: {result['classification']}",
-        "",
-        "## Annual results",
-        "",
-        "| Year | Pairs | Difference pp | Direction |",
-        "|---|---:|---:|---|",
-    ]
-
-    for row in result["yearly_groups"]:
-        lines.append(
-            f"| {row['group']} | {row['pairs']} "
-            f"| {row['difference_pp']:.8f} "
-            f"| {row['direction']} |"
-        )
-
-    lines.extend([
-        "",
-        "## Chronological periods",
-        "",
-        "| Period | Pairs | Difference pp | Direction |",
-        "|---|---:|---:|---|",
-    ])
-
-    for row in result["chronological_groups"]:
-        lines.append(
-            f"| {row['group']} | {row['pairs']} "
-            f"| {row['difference_pp']:.8f} "
-            f"| {row['direction']} |"
-        )
-
-    lines.extend([
-        "",
-        "## Stability assessment",
-        "",
-        f"- First period difference pp: "
-        f"{result['first_period_difference_pp']:.8f}",
-        f"- Latest period difference pp: "
-        f"{result['latest_period_difference_pp']:.8f}",
-        f"- Change pp: "
-        f"{result['latest_minus_first_pp']:.8f}",
-        f"- Positive years: {result['positive_years']}",
-        f"- Negative years: {result['negative_years']}",
-        f"- McNemar p: {result['mcnemar_exact_p']}",
-        f"- Bootstrap 95% interval: "
-        f"[{result['bootstrap_95_lower_pp']}, "
-        f"{result['bootstrap_95_upper_pp']}]",
-        "",
-        "## Decision",
-        "",
-        "- Research decision: HOLD",
-        "- Independent OOS: NOT PROVEN",
-        "- Profitability: NOT PROVEN",
-        "- Training: NOT APPROVED",
-        "- Live trading: NOT APPROVED",
-        "",
-        "This is an aggregate historical audit, "
-        "not a new independent test.",
-        "",
-    ])
-
-    return "\n".join(lines)
-
-
-def main():
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument(
-        "--root",
-        default=".",
-        help="Persistent project root",
-    )
-
-    args = parser.parse_args()
-
-    root = Path(args.root).expanduser().resolve()
-    source = root / INPUT_DIR
-    destination = root / OUTPUT_DIR
-
-    paths = verify_input(source)
-
-    upstream = load_json(
-        paths["period_stability_result.json"]
-    )
-
-    result = evaluate(upstream)
-
-    destination.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    result_path = destination / "stability_gate_result.json"
-    report_path = destination / "stability_gate_report.md"
-    manifest_path = destination / "stability_gate_manifest.json"
-
-    save_json(result_path, result)
-
-    report_path.write_text(
-        make_report(result),
-        encoding="utf-8",
-    )
-
-    manifest = {
-        "version": VERSION,
-        "created_utc": datetime.now(
-            timezone.utc
-        ).isoformat(),
-        "input_sha256": {
-            name: sha256(path)
-            for name, path in paths.items()
-        },
-        "output_sha256": {
-            result_path.name: sha256(result_path),
-            report_path.name: sha256(report_path),
-        },
-    }
-
-    save_json(manifest_path, manifest)
-
-    print("==================================")
-    print("Pattern 256 H1 Stability Gate")
-    print("==================================")
-    print("Execution: PASS")
-    print(
-        "Classification:",
-        result["classification"],
-    )
-    print(
-        "Latest period difference pp:",
-        result["latest_period_difference_pp"],
-    )
-    print(
-        "Research decision:",
-        result["research_decision"],
-    )
-    print("SHA256 manifest generated")
-    print("Independent OOS: NOT PROVEN")
-    print("Profitability: NOT PROVEN")
-
-
-if __name__ == "__main__":
-    try:
-        main()
-    except Exception as exc:
-        print(
-            f"[FAIL] {type(exc).__name__}: {exc}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+      - name: Verify output integrity
+        id: integrity
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $folder = Join-Path `
+            $env:PROJECT_ROOT `
+            "data\reports\pattern_256_h1_stability_gate"
+
+          $manifestPath = Join-Path `
+            $folder `
+            "stability_gate_manifest.json"
+
+          $resultPath = Join-Path `
+            $folder `
+            "stability_gate_result.json"
+
+          if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+            throw "Manifest missing"
+          }
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          $names = @(
+            "stability_gate_result.json",
+            "stability_gate_report.md"
+          )
+
+          foreach ($name in $names) {
+            $path = Join-Path $folder $name
+
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Report missing: $name"
+            }
+
+            $expected = $manifest.output_sha256.$name
+
+            if ([string]::IsNullOrWhiteSpace($expected)) {
+              throw "SHA256 missing: $name"
+            }
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($actual -ne $expected.ToLowerInvariant()) {
+              throw "SHA256 mismatch: $name"
+            }
+
+            Write-Host "[SHA256 PASS] $name"
+          }
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          if ($result.execution -ne "PASS") {
+            throw "Execution is not PASS"
+          }
+
+          if ($result.research_decision -ne "HOLD") {
+            throw "Unexpected research decision"
+          }
+
+          if ($result.independent_oos_proven -ne $false) {
+            throw "Unexpected OOS approval"
+          }
+
+          if ($result.profitability_proven -ne $false) {
+            throw "Unexpected profitability approval"
+          }
+
+          Write-Host "[PASS] Output integrity"
+
+      - name: Publish summary
+        if: steps.integrity.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $folder = Join-Path `
+            $env:PROJECT_ROOT `
+            "data\reports\pattern_256_h1_stability_gate"
+
+          $path = Join-Path `
+            $folder `
+            "stability_gate_result.json"
+
+          $r = Get-Content `
+            -LiteralPath $path `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          $lines = @(
+            "# Pattern 256 H1 Stability Gate",
+            "",
+            "| Metric | Result |",
+            "|---|---|",
+            "| Version | $($r.version) |",
+            "| Execution | $($r.execution) |",
+            "| Classification | $($r.classification) |",
+            "| Total pairs | $($r.total_pairs) |",
+            "| Positive years | $($r.positive_years) |",
+            "| Negative years | $($r.negative_years) |",
+            "| First period difference pp | $($r.first_period_difference_pp) |",
+            "| Latest period difference pp | $($r.latest_period_difference_pp) |",
+            "| Change pp | $($r.latest_minus_first_pp) |",
+            "| McNemar p | $($r.mcnemar_exact_p) |",
+            "| Research decision | $($r.research_decision) |",
+            "",
+            "Independent OOS: NOT PROVEN.",
+            "",
+            "Profitability: NOT PROVEN.",
+            "",
+            "Training and live trading remain unapproved."
+          )
+
+          $lines | Out-File `
+            -LiteralPath $env:GITHUB_STEP_SUMMARY `
+            -Encoding UTF8 `
+            -Append
+
+      - name: Stage verified reports
+        id: stage
+        if: steps.integrity.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $source = Join-Path `
+            $env:PROJECT_ROOT `
+            "data\reports\pattern_256_h1_stability_gate"
+
+          $destination = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "stability_gate_artifact"
+
+          if (Test-Path -LiteralPath $destination) {
+            Remove-Item `
+              -LiteralPath $destination `
+              -Recurse -Force
+          }
+
+          New-Item `
+            -ItemType Directory `
+            -Path $destination `
+            -Force | Out-Null
+
+          $names = @(
+            "stability_gate_result.json",
+            "stability_gate_report.md",
+            "stability_gate_manifest.json"
+          )
+
+          foreach ($name in $names) {
+            $src = Join-Path $source $name
+            $dst = Join-Path $destination $name
+
+            Copy-Item `
+              -LiteralPath $src `
+              -Destination $dst `
+              -ErrorAction Stop
+
+            $sourceHash = (
+              Get-FileHash `
+                -LiteralPath $src `
+                -Algorithm SHA256
+            ).Hash
+
+            $targetHash = (
+              Get-FileHash `
+                -LiteralPath $dst `
+                -Algorithm SHA256
+            ).Hash
+
+            if ($sourceHash -ne $targetHash) {
+              throw "Staging SHA256 mismatch: $name"
+            }
+
+            Write-Host "[STAGED] $name"
+          }
+
+      - name: Upload reports
+        id: upload
+        if: steps.stage.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-h1-stability-gate
+          path: stability_gate_artifact/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Final status gate
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $checks = @(
+            "${{ steps.environment.outcome }}",
+            "${{ steps.audit.outcome }}",
+            "${{ steps.integrity.outcome }}",
+            "${{ steps.stage.outcome }}",
+            "${{ steps.upload.outcome }}"
+          )
+
+          foreach ($status in $checks) {
+            if ($status -ne "success") {
+              throw "Workflow stage failed: $status"
+            }
+          }
+
+          Write-Host "[PASS] All verification stages"
+          Write-Host "Research decision: HOLD"
