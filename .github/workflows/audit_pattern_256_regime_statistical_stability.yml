@@ -7,9 +7,14 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: pattern-256-regime-statistical-stability
+  cancel-in-progress: false
+
 jobs:
   statistical-stability:
     name: statistical-stability
+
     runs-on:
       - self-hosted
       - Windows
@@ -18,7 +23,12 @@ jobs:
 
     defaults:
       run:
-        shell: pwsh
+        shell: powershell
+
+    env:
+      PROJECT_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+      AUDIT_SCRIPT: audit_pattern_256_regime_statistical_stability.py
+      REPORT_FOLDER: data\reports\pattern_256_regime_statistical_stability
 
     steps:
       - name: Checkout repository
@@ -26,38 +36,69 @@ jobs:
 
       - name: Verify Python
         run: |
-          py --version
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "=== Python verification ==="
+
+          & py --version
+
           if ($LASTEXITCODE -ne 0) {
             throw "Python unavailable"
           }
 
+          Write-Host "[PASS] Python available"
+
       - name: Verify audit script
         run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "=== Audit script verification ==="
+
           $script = Join-Path `
             $env:GITHUB_WORKSPACE `
-            "audit_pattern_256_regime_statistical_stability.py"
+            $env:AUDIT_SCRIPT
 
           if (-not (Test-Path -LiteralPath $script)) {
-            throw "Audit script missing"
+            throw "Audit script missing: $script"
           }
 
-          py -m py_compile $script
+          & py -m py_compile $script
 
           if ($LASTEXITCODE -ne 0) {
             throw "Python syntax validation failed"
           }
 
+          Write-Host "[PASS] Audit script verified"
+
       - name: Verify persistent research data
         run: |
-          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "=== Persistent research data ==="
+
+          Write-Host "Runner identity:"
+          whoami
+
+          Write-Host "Project root:"
+          Write-Host $env:PROJECT_ROOT
+
+          if (-not (
+            Test-Path -LiteralPath $env:PROJECT_ROOT
+          )) {
+            throw "Project root missing"
+          }
+
+          $sourceFolder = Join-Path `
+            $env:PROJECT_ROOT `
+            "data\reports\pattern_256_market_regime"
 
           $required = @(
-            "data\reports\pattern_256_market_regime\result.json",
-            "data\reports\pattern_256_market_regime\manifest.json"
+            "result.json",
+            "manifest.json"
           )
 
-          foreach ($relative in $required) {
-            $path = Join-Path $root $relative
+          foreach ($name in $required) {
+            $path = Join-Path $sourceFolder $name
 
             if (-not (Test-Path -LiteralPath $path)) {
               throw "Required file missing: $path"
@@ -66,31 +107,124 @@ jobs:
             Write-Host "[OK] $path"
           }
 
-      - name: Run statistical stability audit
+          Write-Host "[PASS] Input files available"
+
+      - name: Verify input SHA256
         run: |
-          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "=== Input SHA256 verification ==="
+
+          $sourceFolder = Join-Path `
+            $env:PROJECT_ROOT `
+            "data\reports\pattern_256_market_regime"
+
+          $resultPath = Join-Path `
+            $sourceFolder `
+            "result.json"
+
+          $manifestPath = Join-Path `
+            $sourceFolder `
+            "manifest.json"
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw `
+            -Encoding UTF8 | ConvertFrom-Json
+
+          $expected = $manifest.sha256.'result.json'
+
+          if ([string]::IsNullOrWhiteSpace($expected)) {
+            throw "Input SHA256 missing"
+          }
+
+          $actual = (
+            Get-FileHash `
+              -LiteralPath $resultPath `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if (
+            $actual -ne $expected.ToLowerInvariant()
+          ) {
+            throw "Input SHA256 mismatch"
+          }
+
+          Write-Host "[PASS] Input SHA256 verified"
+
+      - name: Execute statistical stability audit
+        id: audit
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "=== Statistical stability audit ==="
 
           $script = Join-Path `
             $env:GITHUB_WORKSPACE `
-            "audit_pattern_256_regime_statistical_stability.py"
+            $env:AUDIT_SCRIPT
 
-          py -u $script --root $root
+          $outputFolder = Join-Path `
+            $env:PROJECT_ROOT `
+            $env:REPORT_FOLDER
+
+          # 기존 보고서는 보존한다.
+          # 실행 전 시각을 기록하여 오래된 결과의
+          # 재사용을 방지한다.
+
+          $startUtc = [DateTime]::UtcNow
+
+          Write-Host "Audit start UTC:"
+          Write-Host $startUtc.ToString("o")
+
+          & py -u $script `
+            --root $env:PROJECT_ROOT
 
           if ($LASTEXITCODE -ne 0) {
             throw "Statistical stability audit failed"
           }
 
-      - name: Verify output and SHA256
+          $resultPath = Join-Path `
+            $outputFolder `
+            "result.json"
+
+          if (-not (Test-Path -LiteralPath $resultPath)) {
+            throw "Audit result missing"
+          }
+
+          $resultFile = Get-Item `
+            -LiteralPath $resultPath
+
+          if (
+            $resultFile.LastWriteTimeUtc -lt `
+            $startUtc.AddSeconds(-2)
+          ) {
+            throw "Audit result is stale"
+          }
+
+          Write-Host "[PASS] Audit executed"
+
+      - name: Verify output integrity
+        id: integrity
         run: |
-          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "=== Output integrity verification ==="
 
           $folder = Join-Path `
-            $root `
-            "data\reports\pattern_256_regime_statistical_stability"
+            $env:PROJECT_ROOT `
+            $env:REPORT_FOLDER
 
-          $resultPath = Join-Path $folder "result.json"
-          $reportPath = Join-Path $folder "report.md"
-          $manifestPath = Join-Path $folder "manifest.json"
+          $resultPath = Join-Path `
+            $folder `
+            "result.json"
+
+          $reportPath = Join-Path `
+            $folder `
+            "report.md"
+
+          $manifestPath = Join-Path `
+            $folder `
+            "manifest.json"
 
           foreach ($path in @(
             $resultPath,
@@ -104,97 +238,296 @@ jobs:
 
           $result = Get-Content `
             -LiteralPath $resultPath `
-            -Raw | ConvertFrom-Json
+            -Raw `
+            -Encoding UTF8 | ConvertFrom-Json
 
           $manifest = Get-Content `
             -LiteralPath $manifestPath `
-            -Raw | ConvertFrom-Json
+            -Raw `
+            -Encoding UTF8 | ConvertFrom-Json
+
+          if ($result.version -ne "Clean V003") {
+            throw "Unexpected audit version"
+          }
 
           if ($result.execution -ne "PASS") {
             throw "Execution is not PASS"
+          }
+
+          if ($result.source_version -ne "Clean V002") {
+            throw "Unexpected source version"
+          }
+
+          if ($result.verified_seed_count -ne 30) {
+            throw "Seed count mismatch"
+          }
+
+          if ($result.verified_strata_count -ne 24) {
+            throw "Strata count mismatch"
+          }
+
+          if ($result.verified_signal_events -ne 41311) {
+            throw "Signal event count mismatch"
           }
 
           if ($result.research_decision -ne "HOLD") {
             throw "Unexpected research decision"
           }
 
-          if ($result.verified_signal_events -le 0) {
-            throw "Zero verified signal events"
+          if (
+            $result.formal_significance_proven -ne $false
+          ) {
+            throw "Unexpected significance approval"
           }
 
-          if ($result.formal_significance_proven -ne $false) {
-            throw "Unexpected significance approval"
+          if (
+            $result.multiple_testing_adjusted -ne $false
+          ) {
+            throw "Unexpected multiple testing approval"
+          }
+
+          if (
+            $result.independent_oos_proven -ne $false
+          ) {
+            throw "Unexpected OOS approval"
+          }
+
+          if (
+            $result.point_in_time_regime_proven -ne $false
+          ) {
+            throw "Unexpected point-in-time approval"
+          }
+
+          if ($result.profitability_proven -ne $false) {
+            throw "Unexpected profitability approval"
+          }
+
+          if ($result.train_approved -ne $false) {
+            throw "Unexpected training approval"
           }
 
           if ($result.live_trading_approved -ne $false) {
             throw "Unexpected trading approval"
           }
 
-          $actualResult = (
-            Get-FileHash `
-              -LiteralPath $resultPath `
-              -Algorithm SHA256
-          ).Hash.ToLowerInvariant()
+          foreach ($name in @(
+            "result.json",
+            "report.md"
+          )) {
+            $path = Join-Path $folder $name
 
-          $actualReport = (
-            Get-FileHash `
-              -LiteralPath $reportPath `
-              -Algorithm SHA256
-          ).Hash.ToLowerInvariant()
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
 
-          if ($actualResult -ne $manifest.sha256.'result.json') {
-            throw "Result SHA256 mismatch"
+            $expected = $manifest.sha256.$name
+
+            if (
+              [string]::IsNullOrWhiteSpace($expected)
+            ) {
+              throw "Manifest hash missing: $name"
+            }
+
+            if (
+              $actual -ne $expected.ToLowerInvariant()
+            ) {
+              throw "SHA256 mismatch: $name"
+            }
+
+            Write-Host "[OK] SHA256 $name"
           }
 
-          if ($actualReport -ne $manifest.sha256.'report.md') {
-            throw "Report SHA256 mismatch"
+          $sourceFolder = Join-Path `
+            $env:PROJECT_ROOT `
+            "data\reports\pattern_256_market_regime"
+
+          $sourcePath = Join-Path `
+            $sourceFolder `
+            "result.json"
+
+          $sourceHash = (
+            Get-FileHash `
+              -LiteralPath $sourcePath `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if (
+            $result.source_result_sha256 -ne $sourceHash
+          ) {
+            throw "Source result SHA256 mismatch"
+          }
+
+          if (
+            $manifest.source_result_sha256 -ne $sourceHash
+          ) {
+            throw "Manifest source SHA256 mismatch"
           }
 
           Write-Host "[PASS] Output integrity verified"
 
-          $stage = Join-Path `
-            $env:GITHUB_WORKSPACE `
-            "stability-artifact"
+      - name: Publish GitHub summary
+        if: steps.integrity.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $folder = Join-Path `
+            $env:PROJECT_ROOT `
+            $env:REPORT_FOLDER
+
+          $resultPath = Join-Path `
+            $folder `
+            "result.json"
+
+          $r = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw `
+            -Encoding UTF8 | ConvertFrom-Json
+
+          $lines = @(
+            "# Pattern 256 Statistical Stability Audit",
+            "",
+            "| Metric | Result |",
+            "|---|---|",
+            "| Version | $($r.version) |",
+            "| Execution | $($r.execution) |",
+            "| Verified seeds | $($r.verified_seed_count) |",
+            "| Verified strata | $($r.verified_strata_count) |",
+            "| Verified signals | $($r.verified_signal_events) |",
+            "| Descriptive candidates | $($r.descriptive_candidate_count) |",
+            "| Formal significance | NOT PROVEN |",
+            "| Independent OOS | NOT PROVEN |",
+            "| Research decision | $($r.research_decision) |",
+            "",
+            "## Train / Test comparison",
+            "",
+            "| TF | Regime | Vol | Train lift pp | Test lift pp | Positive seeds | Candidate |",
+            "|---|---|---|---:|---:|---:|---|"
+          )
+
+          foreach ($item in $r.period_comparisons) {
+            $lines += (
+              "| $($item.timeframe) " +
+              "| $($item.regime) " +
+              "| $($item.volatility) " +
+              "| $($item.train_lift_pp) " +
+              "| $($item.test_lift_pp) " +
+              "| $($item.test_positive_seeds)/30 " +
+              "| $($item.descriptive_stability_candidate) |"
+            )
+          }
+
+          $lines += @(
+            "",
+            "## Research limitations",
+            "",
+            "- Seed samples are not independent experiments",
+            "- Formal statistical significance is not proven",
+            "- Multiple testing correction is not established",
+            "- Retrospective volatility grouping remains",
+            "- No realized profitability proof",
+            "- Training and live trading remain unapproved",
+            "- Research decision remains HOLD"
+          )
+
+          $lines | Out-File `
+            -LiteralPath $env:GITHUB_STEP_SUMMARY `
+            -Encoding UTF8 `
+            -Append
+
+          Write-Host "[PASS] GitHub summary published"
+
+      - name: Stage verified reports
+        id: stage
+        if: steps.integrity.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "=== Stage verified reports ==="
+
+          $source = Join-Path `
+            $env:PROJECT_ROOT `
+            $env:REPORT_FOLDER
+
+          $destination = Join-Path `
+            $env:RUNNER_TEMP `
+            "stability_$env:GITHUB_RUN_ID`_$env:GITHUB_RUN_ATTEMPT"
 
           New-Item `
             -ItemType Directory `
-            -Force `
-            -Path $stage | Out-Null
+            -Path $destination `
+            -Force | Out-Null
 
-          Copy-Item `
-            -LiteralPath $resultPath `
-            -Destination $stage
+          foreach ($name in @(
+            "result.json",
+            "report.md",
+            "manifest.json"
+          )) {
+            $src = Join-Path $source $name
+            $dst = Join-Path $destination $name
 
-          Copy-Item `
-            -LiteralPath $reportPath `
-            -Destination $stage
+            Copy-Item `
+              -LiteralPath $src `
+              -Destination $dst `
+              -ErrorAction Stop
 
-          Copy-Item `
-            -LiteralPath $manifestPath `
-            -Destination $stage
+            $originalHash = (
+              Get-FileHash `
+                -LiteralPath $src `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
 
-          @"
-          ## Pattern 256 Statistical Stability Audit
+            $stagedHash = (
+              Get-FileHash `
+                -LiteralPath $dst `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
 
-          | Metric | Result |
-          |---|---|
-          | Version | $($result.version) |
-          | Execution | $($result.execution) |
-          | Verified signals | $($result.verified_signal_events) |
-          | Verified strata | $($result.verified_strata_count) |
-          | Descriptive candidates | $($result.descriptive_candidate_count) |
-          | Formal significance | NOT PROVEN |
-          | Research decision | HOLD |
-          "@ | Out-File `
-            -FilePath $env:GITHUB_STEP_SUMMARY `
-            -Append `
-            -Encoding utf8
+            if ($originalHash -ne $stagedHash) {
+              throw "Staging SHA256 mismatch: $name"
+            }
+
+            Write-Host "[OK] Staged $name"
+          }
+
+          "STAGED_REPORT_DIR=$destination" |
+            Out-File `
+              -LiteralPath $env:GITHUB_ENV `
+              -Encoding UTF8 `
+              -Append
+
+          Write-Host "[PASS] Reports staged"
 
       - name: Upload audit reports
-        if: success()
+        id: upload
+        if: steps.stage.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: pattern-256-regime-statistical-stability
-          path: stability-artifact/
+          path: ${{ env.STAGED_REPORT_DIR }}
           if-no-files-found: error
           retention-days: 30
+
+      - name: Final gate
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "=== Final verification ==="
+
+          $statuses = @(
+            "${{ steps.audit.outcome }}",
+            "${{ steps.integrity.outcome }}",
+            "${{ steps.stage.outcome }}",
+            "${{ steps.upload.outcome }}"
+          )
+
+          foreach ($status in $statuses) {
+            if ($status -ne "success") {
+              throw "Workflow stage failed: $status"
+            }
+          }
+
+          Write-Host "[PASS] Statistical stability audit"
+          Write-Host "Research decision: HOLD"
