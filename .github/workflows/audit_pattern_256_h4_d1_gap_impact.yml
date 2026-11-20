@@ -1,0 +1,323 @@
+
+name: audit_pattern_256_h4_d1_gap_impact.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern-256-h4-d1-gap-impact
+  cancel-in-progress: false
+
+jobs:
+  gap-impact:
+    name: gap-impact
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    defaults:
+      run:
+        shell: powershell
+
+    timeout-minutes: 180
+
+    env:
+      PROJECT_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify environment
+        id: environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_h4_d1_gap_impact.py"
+
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            throw "Audit script missing: $script"
+          }
+
+          foreach ($tf in @("h4", "d1")) {
+            foreach ($relative in @(
+              "data\ohlcv\$tf",
+              "data\signals\256\$tf"
+            )) {
+              $folder = Join-Path `
+                $env:PROJECT_ROOT `
+                $relative
+
+              if (-not (Test-Path -LiteralPath $folder -PathType Container)) {
+                throw "Input directory missing: $folder"
+              }
+
+              Write-Host "[FOUND] $folder"
+            }
+          }
+
+          & py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          Write-Host "[PASS] Environment"
+
+      - name: Execute gap impact audit
+        id: audit
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_h4_d1_gap_impact.py"
+
+          & py -u $script `
+            --root $env:PROJECT_ROOT `
+            --radius 3
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Gap impact audit failed"
+          }
+
+          Write-Host "[PASS] Audit execution"
+
+      - name: Verify output SHA256
+        id: integrity
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $folder = Join-Path `
+            $env:PROJECT_ROOT `
+            "data\reports\pattern_256_h4_d1_gap_impact"
+
+          $manifestPath = Join-Path `
+            $folder `
+            "gap_impact_manifest.json"
+
+          $resultPath = Join-Path `
+            $folder `
+            "gap_impact_result.json"
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          foreach ($name in @(
+            "gap_impact_result.json",
+            "gap_impact_report.md"
+          )) {
+            $path = Join-Path $folder $name
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Output missing: $name"
+            }
+
+            $expected = $manifest.output_sha256.$name
+
+            if ([string]::IsNullOrWhiteSpace($expected)) {
+              throw "Missing SHA256: $name"
+            }
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($actual -ne $expected.ToLowerInvariant()) {
+              throw "SHA256 mismatch: $name"
+            }
+
+            Write-Host "[SHA256 PASS] $name"
+          }
+
+          $r = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          if ($r.execution -ne "PASS") {
+            throw "Audit execution not PASS"
+          }
+
+          if ($r.research_decision -ne "HOLD") {
+            throw "Unexpected research decision"
+          }
+
+          if ($r.gap_cause_proven -ne $false) {
+            throw "Unexpected gap cause approval"
+          }
+
+          if ($r.independent_oos_proven -ne $false) {
+            throw "Unexpected OOS approval"
+          }
+
+          if ($r.train_approved -ne $false) {
+            throw "Unexpected training approval"
+          }
+
+          if ($r.live_trading_approved -ne $false) {
+            throw "Unexpected trading approval"
+          }
+
+          Write-Host "[PASS] Integrity"
+
+      - name: Publish summary
+        if: steps.integrity.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $path = Join-Path `
+            $env:PROJECT_ROOT `
+            "data\reports\pattern_256_h4_d1_gap_impact\gap_impact_result.json"
+
+          $r = Get-Content `
+            -LiteralPath $path `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          $lines = @(
+            "# Pattern 256 H4/D1 Gap Impact Audit",
+            "",
+            "| Metric | Result |",
+            "|---|---|",
+            "| Version | $($r.version) |",
+            "| Execution | $($r.execution) |",
+            "| Classification | $($r.classification) |",
+            "| Research decision | $($r.research_decision) |",
+            "",
+            "## Timeframe summary",
+            "",
+            "| TF | Markets | Gap review | Errors | Gap events | Missing slots | Max gap | Near-gap signals |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|"
+          )
+
+          foreach ($tf in @("h4", "d1")) {
+            $s = $r.summary.$tf
+
+            $lines += (
+              "| $tf " +
+              "| $($s.markets) " +
+              "| $($s.gap_review_markets) " +
+              "| $($s.error_markets) " +
+              "| $($s.gap_events) " +
+              "| $($s.missing_slots) " +
+              "| $($s.max_missing_slots) " +
+              "| $($s.signals_near_gaps_sum) |"
+            )
+          }
+
+          $lines += @(
+            "",
+            "## Research limits",
+            "",
+            "Gap causes: NOT PROVEN.",
+            "",
+            "Future outcome safety: NOT PROVEN.",
+            "",
+            "Independent OOS: NOT PROVEN.",
+            "",
+            "Profitability: NOT PROVEN.",
+            "",
+            "Training and live trading remain unapproved."
+          )
+
+          $lines | Out-File `
+            -LiteralPath $env:GITHUB_STEP_SUMMARY `
+            -Encoding UTF8 `
+            -Append
+
+      - name: Stage verified reports
+        id: stage
+        if: steps.integrity.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $source = Join-Path `
+            $env:PROJECT_ROOT `
+            "data\reports\pattern_256_h4_d1_gap_impact"
+
+          $destination = Join-Path `
+            $env:RUNNER_TEMP `
+            "gap_impact_$env:GITHUB_RUN_ID`_$env:GITHUB_RUN_ATTEMPT"
+
+          New-Item `
+            -ItemType Directory `
+            -Path $destination `
+            -Force | Out-Null
+
+          foreach ($name in @(
+            "gap_impact_result.json",
+            "gap_impact_report.md",
+            "gap_impact_manifest.json"
+          )) {
+            $src = Join-Path $source $name
+            $dst = Join-Path $destination $name
+
+            Copy-Item `
+              -LiteralPath $src `
+              -Destination $dst `
+              -ErrorAction Stop
+
+            $sourceHash = (
+              Get-FileHash `
+                -LiteralPath $src `
+                -Algorithm SHA256
+            ).Hash
+
+            $stagedHash = (
+              Get-FileHash `
+                -LiteralPath $dst `
+                -Algorithm SHA256
+            ).Hash
+
+            if ($sourceHash -ne $stagedHash) {
+              throw "Staging SHA256 mismatch: $name"
+            }
+          }
+
+          "STAGED_REPORT_DIR=$destination" |
+            Out-File `
+              -LiteralPath $env:GITHUB_ENV `
+              -Encoding UTF8 `
+              -Append
+
+          Write-Host "[PASS] Reports staged"
+
+      - name: Upload reports
+        id: upload
+        if: steps.stage.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-h4-d1-gap-impact
+          path: ${{ env.STAGED_REPORT_DIR }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Final status gate
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $statuses = @(
+            "${{ steps.environment.outcome }}",
+            "${{ steps.audit.outcome }}",
+            "${{ steps.integrity.outcome }}",
+            "${{ steps.stage.outcome }}",
+            "${{ steps.upload.outcome }}"
+          )
+
+          foreach ($status in $statuses) {
+            if ($status -ne "success") {
+              throw "Workflow stage failed: $status"
+            }
+          }
+
+          Write-Host "[PASS] Gap impact audit completed"
+          Write-Host "Research decision: HOLD"
