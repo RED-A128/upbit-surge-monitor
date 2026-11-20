@@ -1,0 +1,200 @@
+
+name: audit_pattern_256_regime_statistical_stability.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  statistical-stability:
+    name: statistical-stability
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 60
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Python
+        run: |
+          py --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+      - name: Verify audit script
+        run: |
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_regime_statistical_stability.py"
+
+          if (-not (Test-Path -LiteralPath $script)) {
+            throw "Audit script missing"
+          }
+
+          py -m py_compile $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax validation failed"
+          }
+
+      - name: Verify persistent research data
+        run: |
+          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
+
+          $required = @(
+            "data\reports\pattern_256_market_regime\result.json",
+            "data\reports\pattern_256_market_regime\manifest.json"
+          )
+
+          foreach ($relative in $required) {
+            $path = Join-Path $root $relative
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Required file missing: $path"
+            }
+
+            Write-Host "[OK] $path"
+          }
+
+      - name: Run statistical stability audit
+        run: |
+          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "audit_pattern_256_regime_statistical_stability.py"
+
+          py -u $script --root $root
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Statistical stability audit failed"
+          }
+
+      - name: Verify output and SHA256
+        run: |
+          $root = "C:\Users\USER\Documents\upbit-surge-monitor"
+
+          $folder = Join-Path `
+            $root `
+            "data\reports\pattern_256_regime_statistical_stability"
+
+          $resultPath = Join-Path $folder "result.json"
+          $reportPath = Join-Path $folder "report.md"
+          $manifestPath = Join-Path $folder "manifest.json"
+
+          foreach ($path in @(
+            $resultPath,
+            $reportPath,
+            $manifestPath
+          )) {
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Output missing: $path"
+            }
+          }
+
+          $result = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw | ConvertFrom-Json
+
+          $manifest = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw | ConvertFrom-Json
+
+          if ($result.execution -ne "PASS") {
+            throw "Execution is not PASS"
+          }
+
+          if ($result.research_decision -ne "HOLD") {
+            throw "Unexpected research decision"
+          }
+
+          if ($result.verified_signal_events -le 0) {
+            throw "Zero verified signal events"
+          }
+
+          if ($result.formal_significance_proven -ne $false) {
+            throw "Unexpected significance approval"
+          }
+
+          if ($result.live_trading_approved -ne $false) {
+            throw "Unexpected trading approval"
+          }
+
+          $actualResult = (
+            Get-FileHash `
+              -LiteralPath $resultPath `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          $actualReport = (
+            Get-FileHash `
+              -LiteralPath $reportPath `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if ($actualResult -ne $manifest.sha256.'result.json') {
+            throw "Result SHA256 mismatch"
+          }
+
+          if ($actualReport -ne $manifest.sha256.'report.md') {
+            throw "Report SHA256 mismatch"
+          }
+
+          Write-Host "[PASS] Output integrity verified"
+
+          $stage = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "stability-artifact"
+
+          New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path $stage | Out-Null
+
+          Copy-Item `
+            -LiteralPath $resultPath `
+            -Destination $stage
+
+          Copy-Item `
+            -LiteralPath $reportPath `
+            -Destination $stage
+
+          Copy-Item `
+            -LiteralPath $manifestPath `
+            -Destination $stage
+
+          @"
+          ## Pattern 256 Statistical Stability Audit
+
+          | Metric | Result |
+          |---|---|
+          | Version | $($result.version) |
+          | Execution | $($result.execution) |
+          | Verified signals | $($result.verified_signal_events) |
+          | Verified strata | $($result.verified_strata_count) |
+          | Descriptive candidates | $($result.descriptive_candidate_count) |
+          | Formal significance | NOT PROVEN |
+          | Research decision | HOLD |
+          "@ | Out-File `
+            -FilePath $env:GITHUB_STEP_SUMMARY `
+            -Append `
+            -Encoding utf8
+
+      - name: Upload audit reports
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-regime-statistical-stability
+          path: stability-artifact/
+          if-no-files-found: error
+          retention-days: 30
