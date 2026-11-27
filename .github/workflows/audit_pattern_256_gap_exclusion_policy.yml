@@ -1,0 +1,894 @@
+
+name: audit_pattern_256_gap_exclusion_policy.yml
+
+on:
+  workflow_dispatch:
+    inputs:
+      refresh:
+        description: "Ignore completed market checkpoints"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern-256-gap-exclusion-policy
+  cancel-in-progress: false
+
+jobs:
+  gap-policy:
+    name: gap-policy
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 120
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PROJECT_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+      SCRIPT_NAME: audit_pattern_256_gap_exclusion_policy.py
+      SOURCE_FOLDER: data\reports\pattern_256_exchange_source
+      REPORT_FOLDER: data\reports\pattern_256_gap_exclusion_policy
+      REFRESH_CHECKPOINTS: ${{ inputs.refresh }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Python and script
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          & py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
+
+          if (-not (
+            Test-Path `
+              -LiteralPath $script `
+              -PathType Leaf
+          )) {
+            throw "Missing script: $script"
+          }
+
+          & py -m py_compile $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax verification failed"
+          }
+
+          Write-Host "[PASS] Python and script"
+
+      - name: Verify persistent research data
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          whoami
+
+          $folders = @(
+            "data\ohlcv\d1",
+            "data\features\d1",
+            "data\signals\256\d1",
+            $env:SOURCE_FOLDER,
+            "$env:SOURCE_FOLDER\raw_api"
+          )
+
+          foreach ($relative in $folders) {
+            $path = Join-Path `
+              $env:PROJECT_ROOT `
+              $relative
+
+            if (-not (
+              Test-Path `
+                -LiteralPath $path `
+                -PathType Container
+            )) {
+              throw "Missing directory: $path"
+            }
+
+            Write-Host "[OK] $path"
+          }
+
+          foreach ($relative in @(
+            "data\ohlcv\d1",
+            "data\features\d1",
+            "data\signals\256\d1"
+          )) {
+            $path = Join-Path `
+              $env:PROJECT_ROOT `
+              $relative
+
+            $count = @(
+              Get-ChildItem `
+                -LiteralPath $path `
+                -Filter "KRW-*.csv" `
+                -File
+            ).Count
+
+            if ($count -ne 290) {
+              throw "Unexpected market count: $path : $count"
+            }
+
+            Write-Host "[OK] $path : $count markets"
+          }
+
+          $source = Join-Path `
+            $env:PROJECT_ROOT `
+            $env:SOURCE_FOLDER
+
+          foreach ($name in @(
+            "result.json",
+            "report.md",
+            "manifest.json",
+            "gap_verification.csv"
+          )) {
+            $path = Join-Path $source $name
+
+            if (-not (
+              Test-Path `
+                -LiteralPath $path `
+                -PathType Leaf
+            )) {
+              throw "Missing V008 source: $path"
+            }
+
+            Write-Host "[OK] $path"
+          }
+
+      - name: Execute gap exclusion policy audit
+        id: audit
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
+
+          $runId = (
+            "$env:GITHUB_RUN_ID" +
+            "_" +
+            "$env:GITHUB_RUN_ATTEMPT"
+          )
+
+          $arguments = @(
+            "-u",
+            $script,
+            "--root",
+            $env:PROJECT_ROOT,
+            "--run-id",
+            $runId
+          )
+
+          if (
+            $env:REFRESH_CHECKPOINTS -eq "true"
+          ) {
+            $arguments += "--refresh"
+          }
+
+          Write-Host "Run ID: $runId"
+          Write-Host "Refresh: $env:REFRESH_CHECKPOINTS"
+
+          & py @arguments
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Gap exclusion policy audit failed"
+          }
+
+          $folder = Join-Path `
+            $env:PROJECT_ROOT `
+            $env:REPORT_FOLDER
+
+          $resultPath = Join-Path `
+            $folder `
+            "result.json"
+
+          if (-not (
+            Test-Path `
+              -LiteralPath $resultPath `
+              -PathType Leaf
+          )) {
+            throw "Result missing"
+          }
+
+          $r = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw `
+            -Encoding UTF8 |
+            ConvertFrom-Json
+
+          if ($r.run_id -ne $runId) {
+            throw "Stale result detected"
+          }
+
+          Write-Host "[PASS] Audit execution"
+
+      - name: Verify result integrity
+        id: integrity
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $folder = Join-Path `
+            $env:PROJECT_ROOT `
+            $env:REPORT_FOLDER
+
+          $source = Join-Path `
+            $env:PROJECT_ROOT `
+            $env:SOURCE_FOLDER
+
+          $resultPath = Join-Path `
+            $folder `
+            "result.json"
+
+          $manifestPath = Join-Path `
+            $folder `
+            "manifest.json"
+
+          $r = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw `
+            -Encoding UTF8 |
+            ConvertFrom-Json
+
+          $m = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw `
+            -Encoding UTF8 |
+            ConvertFrom-Json
+
+          $runId = (
+            "$env:GITHUB_RUN_ID" +
+            "_" +
+            "$env:GITHUB_RUN_ATTEMPT"
+          )
+
+          if (
+            $r.version -ne "Clean V009" -or
+            $m.version -ne "Clean V009"
+          ) {
+            throw "Version mismatch"
+          }
+
+          if (
+            $r.run_id -ne $runId -or
+            $m.run_id -ne $runId
+          ) {
+            throw "Run ID mismatch"
+          }
+
+          if ($r.execution -ne "PASS") {
+            throw "Execution mismatch"
+          }
+
+          if (
+            $r.classification -ne
+            "POLICY_DEFINED_PENDING_INTEGRATION"
+          ) {
+            throw "Classification mismatch"
+          }
+
+          if ($r.source_version -ne "Clean V008") {
+            throw "Source version mismatch"
+          }
+
+          if ($r.candidate -ne "d1|DOWN|LOW") {
+            throw "Candidate mismatch"
+          }
+
+          $expected = @{
+            markets_checked = 290
+            gap_free_markets = 274
+            affected_markets = 16
+            unique_gaps = 17
+            missing_days = 65
+            continuous_segments = 307
+            raw_api_files_verified = 17
+            layer_alignment_mismatches = 0
+            policy_self_tests_passed = 13
+            policy_self_tests_failed = 0
+          }
+
+          foreach ($field in $expected.Keys) {
+            $property = $r.PSObject.Properties[$field]
+
+            if (
+              $null -eq $property -or
+              $property.Value -ne $expected[$field]
+            ) {
+              throw "Unexpected result: $field"
+            }
+
+            Write-Host "[OK] $field = $($property.Value)"
+          }
+
+          if (@($r.markets).Count -ne 290) {
+            throw "Market detail count mismatch"
+          }
+
+          $totalRows = (
+            [long]$r.existing_post_gap_rows_blocked +
+            [long]$r.pre_gap_or_gap_free_rows
+          )
+
+          if (
+            $totalRows -ne [long]$r.total_daily_rows
+          ) {
+            throw "Daily row accounting mismatch"
+          }
+
+          if ($r.total_daily_rows -le 0) {
+            throw "Invalid total daily rows"
+          }
+
+          foreach ($field in @(
+            "gap_policy_defined",
+            "reference_window_policy_tested",
+            "exclusion_plan_generated"
+          )) {
+            $property = $r.PSObject.Properties[$field]
+
+            if (
+              $null -eq $property -or
+              $property.Value -isnot [bool] -or
+              $property.Value -ne $true
+            ) {
+              throw "Missing policy verification: $field"
+            }
+          }
+
+          foreach ($field in @(
+            "gap_policy_implemented_in_evaluator",
+            "actual_forward_horizon_verified",
+            "actual_feature_warmup_verified",
+            "segment_rebuild_completed",
+            "remaining_rows_approved_for_backtest",
+            "source_csv_modified_by_audit",
+            "historical_no_trade_proven",
+            "point_in_time_proven",
+            "independent_oos_proven",
+            "profitability_proven",
+            "train_approved",
+            "live_trading_approved"
+          )) {
+            $property = $r.PSObject.Properties[$field]
+
+            if (
+              $null -eq $property -or
+              $property.Value -isnot [bool] -or
+              $property.Value -ne $false
+            ) {
+              throw "Unexpected approval: $field"
+            }
+          }
+
+          if ($r.data_readiness -ne "BLOCKED") {
+            throw "Unexpected data readiness"
+          }
+
+          if ($r.research_decision -ne "HOLD") {
+            throw "Unexpected research decision"
+          }
+
+          if (
+            $r.next_action -ne
+            "SEGMENT_REBUILD_AND_EVALUATOR_INTEGRATION_REQUIRED"
+          ) {
+            throw "Unexpected next action"
+          }
+
+          $requiredFiles = @(
+            "result.json",
+            "report.md",
+            "policy.json",
+            "policy_self_tests.json",
+            "market_summary.csv",
+            "gap_inventory.csv",
+            "continuous_segments.csv",
+            "exclusion_plan.csv"
+          )
+
+          if (
+            @($m.sha256.PSObject.Properties).Count -ne
+            $requiredFiles.Count
+          ) {
+            throw "Unexpected manifest entry count"
+          }
+
+          foreach ($name in $requiredFiles) {
+            if (
+              $null -eq
+              $m.sha256.PSObject.Properties[$name]
+            ) {
+              throw "Missing manifest entry: $name"
+            }
+          }
+
+          $basePath = (
+            [System.IO.Path]::GetFullPath($folder)
+          ).TrimEnd('\') + '\'
+
+          foreach (
+            $property in $m.sha256.PSObject.Properties
+          ) {
+            $relative = $property.Name
+            $expectedHash = [string]$property.Value
+
+            $path = [System.IO.Path]::GetFullPath(
+              (Join-Path $folder $relative)
+            )
+
+            if (-not $path.StartsWith(
+              $basePath,
+              [System.StringComparison]::OrdinalIgnoreCase
+            )) {
+              throw "Unsafe manifest path: $relative"
+            }
+
+            if (-not (
+              Test-Path `
+                -LiteralPath $path `
+                -PathType Leaf
+            )) {
+              throw "Missing report: $relative"
+            }
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if (
+              $actual -ne $expectedHash.ToLowerInvariant()
+            ) {
+              throw "SHA256 mismatch: $relative"
+            }
+
+            Write-Host "[OK] SHA256 $relative"
+          }
+
+          $sourceResultHash = (
+            Get-FileHash `
+              -LiteralPath (
+                Join-Path $source "result.json"
+              ) `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          $sourceManifestHash = (
+            Get-FileHash `
+              -LiteralPath (
+                Join-Path $source "manifest.json"
+              ) `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if (
+            $r.source_result_sha256 -ne $sourceResultHash -or
+            $m.source_result_sha256 -ne $sourceResultHash
+          ) {
+            throw "V008 result linkage mismatch"
+          }
+
+          if (
+            $r.source_manifest_sha256 -ne $sourceManifestHash -or
+            $m.source_manifest_sha256 -ne $sourceManifestHash
+          ) {
+            throw "V008 manifest linkage mismatch"
+          }
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
+
+          $scriptHash = (
+            Get-FileHash `
+              -LiteralPath $script `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if (
+            $r.script_sha256 -ne $scriptHash -or
+            $m.script_sha256 -ne $scriptHash
+          ) {
+            throw "Script SHA256 mismatch"
+          }
+
+          $layerFolders = @{
+            ohlcv = "data\ohlcv\d1"
+            features = "data\features\d1"
+            signals = "data\signals\256\d1"
+          }
+
+          $checkedMarkets = @{}
+          $checkedFiles = 0
+
+          foreach ($record in $r.markets) {
+            $market = [string]$record.market
+
+            if ($market -notmatch '^KRW-[A-Z0-9]+$') {
+              throw "Invalid market: $market"
+            }
+
+            if ($checkedMarkets.ContainsKey($market)) {
+              throw "Duplicate market: $market"
+            }
+
+            $checkedMarkets[$market] = $true
+
+            foreach ($layer in $layerFolders.Keys) {
+              $property = (
+                $record.input_sha256.PSObject.Properties[$layer]
+              )
+
+              if ($null -eq $property) {
+                throw "Missing input hash: $market $layer"
+              }
+
+              $relative = (
+                $layerFolders[$layer] +
+                "\" +
+                $market +
+                ".csv"
+              )
+
+              $path = Join-Path `
+                $env:PROJECT_ROOT `
+                $relative
+
+              $actual = (
+                Get-FileHash `
+                  -LiteralPath $path `
+                  -Algorithm SHA256
+              ).Hash.ToLowerInvariant()
+
+              if ($actual -ne $property.Value) {
+                throw "Input changed: $market $layer"
+              }
+
+              $checkedFiles++
+            }
+          }
+
+          if ($checkedMarkets.Count -ne 290) {
+            throw "Input market verification mismatch"
+          }
+
+          if ($checkedFiles -ne 870) {
+            throw "Input file verification mismatch"
+          }
+
+          Write-Host "[PASS] 870 input CSV hashes verified"
+
+          $rawChecked = 0
+
+          foreach ($evidence in $r.raw_api_evidence) {
+            $relative = [string]$evidence.raw_api_file
+
+            if (
+              $relative -notmatch
+              '^raw_api/KRW-[A-Z0-9]+_\d{4}-\d{2}-\d{2}_\d{4}-\d{2}-\d{2}\.json$'
+            ) {
+              throw "Invalid raw evidence path"
+            }
+
+            $path = Join-Path `
+              $source `
+              $relative
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($actual -ne $evidence.sha256) {
+              throw "Raw evidence changed: $relative"
+            }
+
+            $rawChecked++
+          }
+
+          if ($rawChecked -ne 17) {
+            throw "Raw evidence count mismatch"
+          }
+
+          Write-Host "[PASS] Raw API evidence verified"
+
+          $segments = @(
+            Import-Csv `
+              -LiteralPath (
+                Join-Path $folder "continuous_segments.csv"
+              ) `
+              -Encoding UTF8
+          )
+
+          if ($segments.Count -ne 307) {
+            throw "Segment CSV count mismatch"
+          }
+
+          $segmentRows = (
+            $segments |
+            Measure-Object `
+              -Property rows `
+              -Sum
+          ).Sum
+
+          if (
+            [long]$segmentRows -ne
+            [long]$r.total_daily_rows
+          ) {
+            throw "Segment CSV row accounting mismatch"
+          }
+
+          $gaps = @(
+            Import-Csv `
+              -LiteralPath (
+                Join-Path $folder "gap_inventory.csv"
+              ) `
+              -Encoding UTF8
+          )
+
+          if ($gaps.Count -ne 17) {
+            throw "Gap inventory count mismatch"
+          }
+
+          $missingDays = (
+            $gaps |
+            Measure-Object `
+              -Property missing_days `
+              -Sum
+          ).Sum
+
+          if ([long]$missingDays -ne 65) {
+            throw "Gap inventory missing days mismatch"
+          }
+
+          $exclusions = @(
+            Import-Csv `
+              -LiteralPath (
+                Join-Path $folder "exclusion_plan.csv"
+              ) `
+              -Encoding UTF8
+          )
+
+          if ($exclusions.Count -ne 34) {
+            throw "Exclusion plan count mismatch"
+          }
+
+          $tests = Get-Content `
+            -LiteralPath (
+              Join-Path $folder "policy_self_tests.json"
+            ) `
+            -Raw `
+            -Encoding UTF8 |
+            ConvertFrom-Json
+
+          if (
+            $tests.passed -ne 13 -or
+            $tests.failed -ne 0 -or
+            @($tests.tests).Count -ne 13
+          ) {
+            throw "Policy self-test result mismatch"
+          }
+
+          foreach ($test in $tests.tests) {
+            if ($test.status -ne "PASS") {
+              throw "Policy self-test failed"
+            }
+          }
+
+          Write-Host "[PASS] Result integrity"
+
+      - name: Publish summary
+        id: summary
+        if: steps.integrity.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $folder = Join-Path `
+            $env:PROJECT_ROOT `
+            $env:REPORT_FOLDER
+
+          $r = Get-Content `
+            -LiteralPath (
+              Join-Path $folder "result.json"
+            ) `
+            -Raw `
+            -Encoding UTF8 |
+            ConvertFrom-Json
+
+          $blockedPercent = (
+            [double]$r.blocked_row_fraction * 100
+          ).ToString("F4")
+
+          $lines = @(
+            "# Pattern 256 Gap Exclusion Policy",
+            "",
+            "| Metric | Result |",
+            "|---|---|",
+            "| Version | $($r.version) |",
+            "| Execution | $($r.execution) |",
+            "| Classification | $($r.classification) |",
+            "| Markets checked | $($r.markets_checked) |",
+            "| Gap-free markets | $($r.gap_free_markets) |",
+            "| Affected markets | $($r.affected_markets) |",
+            "| Unique gaps | $($r.unique_gaps) |",
+            "| Missing days | $($r.missing_days) |",
+            "| Continuous segments | $($r.continuous_segments) |",
+            "| Raw API files verified | $($r.raw_api_files_verified) |",
+            "| Layer alignment mismatches | $($r.layer_alignment_mismatches) |",
+            "| Total daily rows | $($r.total_daily_rows) |",
+            "| Existing post-gap rows blocked | $($r.existing_post_gap_rows_blocked) |",
+            "| Pre-gap or gap-free rows | $($r.pre_gap_or_gap_free_rows) |",
+            "| Blocked row percentage | $blockedPercent% |",
+            "| Policy self-tests passed | $($r.policy_self_tests_passed) |",
+            "| Policy self-tests failed | $($r.policy_self_tests_failed) |",
+            "| Resumed markets | $($r.resumed_markets) |",
+            "| Data readiness | $($r.data_readiness) |",
+            "| Research decision | $($r.research_decision) |",
+            "| Next action | $($r.next_action) |",
+            "",
+            "## Affected markets",
+            "",
+            "| Market | Gaps | Missing days | Segments | Post-gap rows blocked |",
+            "|---|---:|---:|---:|---:|"
+          )
+
+          foreach ($record in $r.markets) {
+            if ($record.gap_count -gt 0) {
+              $lines += (
+                "| $($record.market) " +
+                "| $($record.gap_count) " +
+                "| $($record.missing_days) " +
+                "| $($record.segment_count) " +
+                "| $($record.existing_post_gap_rows_blocked) |"
+              )
+            }
+          }
+
+          $lines += @(
+            "",
+            "## Policy and limitations",
+            "",
+            "- Original research CSV files remain unchanged",
+            "- Missing candles are not fabricated",
+            "- Existing post-gap indicators are blocked by the exclusion plan",
+            "- Segment-level feature rebuild is pending",
+            "- Actual evaluator integration is pending",
+            "- Actual horizon and warmup verification are pending",
+            "- Remaining rows are not approved backtest rows",
+            "- Training and trading remain unapproved"
+          )
+
+          $lines | Out-File `
+            -LiteralPath $env:GITHUB_STEP_SUMMARY `
+            -Encoding UTF8 `
+            -Append
+
+      - name: Stage verified reports
+        id: stage
+        if: steps.integrity.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $source = Join-Path `
+            $env:PROJECT_ROOT `
+            $env:REPORT_FOLDER
+
+          $runId = (
+            "$env:GITHUB_RUN_ID" +
+            "_" +
+            "$env:GITHUB_RUN_ATTEMPT"
+          )
+
+          $destination = Join-Path `
+            $env:RUNNER_TEMP `
+            "gap_policy_$runId"
+
+          New-Item `
+            -ItemType Directory `
+            -Path $destination `
+            -Force |
+            Out-Null
+
+          $manifestPath = Join-Path `
+            $source `
+            "manifest.json"
+
+          $m = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw `
+            -Encoding UTF8 |
+            ConvertFrom-Json
+
+          if ($m.run_id -ne $runId) {
+            throw "Stale manifest detected"
+          }
+
+          foreach (
+            $property in $m.sha256.PSObject.Properties
+          ) {
+            $relative = $property.Name
+
+            $src = Join-Path `
+              $source `
+              $relative
+
+            $dst = Join-Path `
+              $destination `
+              $relative
+
+            Copy-Item `
+              -LiteralPath $src `
+              -Destination $dst `
+              -ErrorAction Stop
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $dst `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($actual -ne $property.Value) {
+              throw "Staging SHA256 mismatch: $relative"
+            }
+          }
+
+          Copy-Item `
+            -LiteralPath $manifestPath `
+            -Destination (
+              Join-Path $destination "manifest.json"
+            ) `
+            -ErrorAction Stop
+
+          "STAGED_REPORT_DIR=$destination" |
+            Out-File `
+              -LiteralPath $env:GITHUB_ENV `
+              -Encoding UTF8 `
+              -Append
+
+          Write-Host "[PASS] Verified reports staged"
+
+      - name: Upload verified reports
+        id: upload
+        if: steps.stage.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-gap-exclusion-policy
+          path: ${{ env.STAGED_REPORT_DIR }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Final gate
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          foreach ($status in @(
+            "${{ steps.audit.outcome }}",
+            "${{ steps.integrity.outcome }}",
+            "${{ steps.summary.outcome }}",
+            "${{ steps.stage.outcome }}",
+            "${{ steps.upload.outcome }}"
+          )) {
+            if ($status -ne "success") {
+              throw "Workflow stage failed: $status"
+            }
+          }
+
+          Write-Host "[PASS] Clean V009 completed"
+          Write-Host "Data readiness: BLOCKED"
+          Write-Host "Research decision: HOLD"
