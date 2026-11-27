@@ -1,0 +1,899 @@
+name: rebuild_pattern_256_continuous_segments.yml
+
+on:
+  workflow_dispatch:
+    inputs:
+      refresh:
+        description: "Ignore completed rebuild checkpoints"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern-256-continuous-segments
+  cancel-in-progress: false
+
+jobs:
+  segment-rebuild:
+    name: segment-rebuild
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 360
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PROJECT_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+      SCRIPT_NAME: rebuild_pattern_256_continuous_segments.py
+      SOURCE_FOLDER: data\reports\pattern_256_gap_exclusion_policy
+      REPORT_FOLDER: data\reports\pattern_256_continuous_segments
+      REFRESH_CHECKPOINTS: ${{ inputs.refresh }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Python environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          & py --version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          & py -c "import pandas; import numpy; print('pandas:', pandas.__version__); print('numpy:', numpy.__version__)"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Required Python libraries unavailable"
+          }
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
+
+          if (-not (
+            Test-Path `
+              -LiteralPath $script `
+              -PathType Leaf
+          )) {
+            throw "Missing rebuild script: $script"
+          }
+
+          & py -m py_compile $script
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python syntax verification failed"
+          }
+
+          Write-Host "[PASS] Python environment"
+
+      - name: Verify persistent research inputs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          whoami
+
+          $folders = @(
+            "data\ohlcv\d1",
+            "data\features\d1",
+            "data\signals\256\d1",
+            $env:SOURCE_FOLDER
+          )
+
+          foreach ($relative in $folders) {
+            $path = Join-Path `
+              $env:PROJECT_ROOT `
+              $relative
+
+            if (-not (
+              Test-Path `
+                -LiteralPath $path `
+                -PathType Container
+            )) {
+              throw "Missing directory: $path"
+            }
+
+            Write-Host "[OK] $path"
+          }
+
+          foreach ($name in @(
+            "build_features.py",
+            "detect_256.py"
+          )) {
+            $path = Join-Path `
+              $env:PROJECT_ROOT `
+              $name
+
+            if (-not (
+              Test-Path `
+                -LiteralPath $path `
+                -PathType Leaf
+            )) {
+              throw "Missing implementation: $path"
+            }
+
+            Write-Host "[OK] $path"
+          }
+
+          foreach ($relative in @(
+            "data\ohlcv\d1",
+            "data\features\d1",
+            "data\signals\256\d1"
+          )) {
+            $path = Join-Path `
+              $env:PROJECT_ROOT `
+              $relative
+
+            $count = @(
+              Get-ChildItem `
+                -LiteralPath $path `
+                -Filter "KRW-*.csv" `
+                -File
+            ).Count
+
+            if ($count -ne 290) {
+              throw "Unexpected market count: $path : $count"
+            }
+
+            Write-Host "[OK] $path : $count markets"
+          }
+
+          $source = Join-Path `
+            $env:PROJECT_ROOT `
+            $env:SOURCE_FOLDER
+
+          foreach ($name in @(
+            "result.json",
+            "manifest.json",
+            "report.md",
+            "policy.json",
+            "policy_self_tests.json",
+            "market_summary.csv",
+            "gap_inventory.csv",
+            "continuous_segments.csv",
+            "exclusion_plan.csv"
+          )) {
+            $path = Join-Path $source $name
+
+            if (-not (
+              Test-Path `
+                -LiteralPath $path `
+                -PathType Leaf
+            )) {
+              throw "Missing V009 source: $path"
+            }
+
+            Write-Host "[OK] $path"
+          }
+
+          Write-Host "[PASS] Research inputs"
+
+      - name: Execute continuous segment rebuild
+        id: rebuild
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
+
+          $runId = (
+            "$env:GITHUB_RUN_ID" +
+            "_" +
+            "$env:GITHUB_RUN_ATTEMPT"
+          )
+
+          $arguments = @(
+            "-u",
+            $script,
+            "--root",
+            $env:PROJECT_ROOT,
+            "--run-id",
+            $runId
+          )
+
+          if (
+            $env:REFRESH_CHECKPOINTS -eq "true"
+          ) {
+            $arguments += "--refresh"
+          }
+
+          Write-Host "Run ID: $runId"
+          Write-Host "Refresh: $env:REFRESH_CHECKPOINTS"
+
+          & py @arguments
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Continuous segment rebuild failed"
+          }
+
+          $folder = Join-Path `
+            $env:PROJECT_ROOT `
+            $env:REPORT_FOLDER
+
+          $resultPath = Join-Path `
+            $folder `
+            "result.json"
+
+          if (-not (
+            Test-Path `
+              -LiteralPath $resultPath `
+              -PathType Leaf
+          )) {
+            throw "Result missing"
+          }
+
+          $r = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw `
+            -Encoding UTF8 |
+            ConvertFrom-Json
+
+          if ($r.run_id -ne $runId) {
+            throw "Stale result detected"
+          }
+
+          Write-Host "[PASS] Rebuild execution"
+
+      - name: Verify result integrity
+        id: integrity
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $folder = Join-Path `
+            $env:PROJECT_ROOT `
+            $env:REPORT_FOLDER
+
+          $source = Join-Path `
+            $env:PROJECT_ROOT `
+            $env:SOURCE_FOLDER
+
+          $r = Get-Content `
+            -LiteralPath (
+              Join-Path $folder "result.json"
+            ) `
+            -Raw `
+            -Encoding UTF8 |
+            ConvertFrom-Json
+
+          $m = Get-Content `
+            -LiteralPath (
+              Join-Path $folder "manifest.json"
+            ) `
+            -Raw `
+            -Encoding UTF8 |
+            ConvertFrom-Json
+
+          $runId = (
+            "$env:GITHUB_RUN_ID" +
+            "_" +
+            "$env:GITHUB_RUN_ATTEMPT"
+          )
+
+          if (
+            $r.version -ne "Clean V010" -or
+            $m.version -ne "Clean V010"
+          ) {
+            throw "Version mismatch"
+          }
+
+          if (
+            $r.run_id -ne $runId -or
+            $m.run_id -ne $runId
+          ) {
+            throw "Run ID mismatch"
+          }
+
+          if ($r.execution -ne "PASS") {
+            throw "Execution mismatch"
+          }
+
+          if (
+            $r.classification -ne
+            "SEGMENT_REBUILT_PENDING_EVALUATOR_INTEGRATION"
+          ) {
+            throw "Classification mismatch"
+          }
+
+          if ($r.source_version -ne "Clean V009") {
+            throw "Source version mismatch"
+          }
+
+          if ($r.candidate -ne "d1|DOWN|LOW") {
+            throw "Candidate mismatch"
+          }
+
+          $expected = @{
+            markets_rebuilt = 290
+            segments_rebuilt = 307
+            total_rows_rebuilt = 321481
+            original_input_files_verified = 870
+            rebuilt_output_files = 870
+            post_gap_rows_rebuilt = 52175
+            provisional_warmup_bars = 300
+            prefix_checks_failed = 0
+            synthetic_candles_created = 0
+          }
+
+          foreach ($field in $expected.Keys) {
+            $property = $r.PSObject.Properties[$field]
+
+            if (
+              $null -eq $property -or
+              $property.Value -ne $expected[$field]
+            ) {
+              throw "Unexpected result: $field"
+            }
+
+            Write-Host "[OK] $field = $($property.Value)"
+          }
+
+          if (@($r.markets).Count -ne 290) {
+            throw "Market detail count mismatch"
+          }
+
+          if ($r.prefix_checks_passed -le 0) {
+            throw "No successful prefix checks"
+          }
+
+          if (
+            (
+              [long]$r.provisional_rows +
+              [long]$r.provisional_blocked_rows
+            ) -ne [long]$r.total_rows_rebuilt
+          ) {
+            throw "Provisional row accounting mismatch"
+          }
+
+          if (
+            (
+              [long]$r.post_gap_provisional_rows +
+              [long]$r.post_gap_provisional_blocked
+            ) -ne [long]$r.post_gap_rows_rebuilt
+          ) {
+            throw "Post-gap accounting mismatch"
+          }
+
+          foreach ($field in @(
+            "segment_rebuild_completed",
+            "sampled_segment_prefix_replay_passed"
+          )) {
+            $property = $r.PSObject.Properties[$field]
+
+            if (
+              $null -eq $property -or
+              $property.Value -isnot [bool] -or
+              $property.Value -ne $true
+            ) {
+              throw "Missing verification: $field"
+            }
+          }
+
+          foreach ($field in @(
+            "actual_feature_warmup_verified",
+            "actual_forward_horizon_verified",
+            "gap_policy_implemented_in_evaluator",
+            "source_csv_modified_by_rebuild",
+            "remaining_rows_approved_for_backtest",
+            "historical_no_trade_proven",
+            "point_in_time_proven",
+            "independent_oos_proven",
+            "profitability_proven",
+            "train_approved",
+            "live_trading_approved"
+          )) {
+            $property = $r.PSObject.Properties[$field]
+
+            if (
+              $null -eq $property -or
+              $property.Value -isnot [bool] -or
+              $property.Value -ne $false
+            ) {
+              throw "Unexpected approval: $field"
+            }
+          }
+
+          if ($r.data_readiness -ne "BLOCKED") {
+            throw "Unexpected data readiness"
+          }
+
+          if ($r.research_decision -ne "HOLD") {
+            throw "Unexpected research decision"
+          }
+
+          if (
+            $r.next_action -ne
+            "ACTUAL_WARMUP_HORIZON_AND_EVALUATOR_INTEGRATION_REQUIRED"
+          ) {
+            throw "Unexpected next action"
+          }
+
+          $requiredFiles = @(
+            "result.json",
+            "report.md",
+            "market_summary.csv",
+            "segment_summary.csv",
+            "post_gap_recovery.csv"
+          )
+
+          if (
+            @($m.sha256.PSObject.Properties).Count -ne
+            $requiredFiles.Count
+          ) {
+            throw "Unexpected report manifest count"
+          }
+
+          foreach ($name in $requiredFiles) {
+            $property = $m.sha256.PSObject.Properties[$name]
+
+            if ($null -eq $property) {
+              throw "Missing manifest entry: $name"
+            }
+
+            $path = Join-Path $folder $name
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($actual -ne $property.Value) {
+              throw "Report SHA256 mismatch: $name"
+            }
+
+            Write-Host "[OK] SHA256 $name"
+          }
+
+          $sourceResultHash = (
+            Get-FileHash `
+              -LiteralPath (
+                Join-Path $source "result.json"
+              ) `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          $sourceManifestHash = (
+            Get-FileHash `
+              -LiteralPath (
+                Join-Path $source "manifest.json"
+              ) `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if (
+            $r.source_result_sha256 -ne $sourceResultHash -or
+            $m.source_result_sha256 -ne $sourceResultHash
+          ) {
+            throw "V009 result linkage mismatch"
+          }
+
+          if (
+            $r.source_manifest_sha256 -ne $sourceManifestHash -or
+            $m.source_manifest_sha256 -ne $sourceManifestHash
+          ) {
+            throw "V009 manifest linkage mismatch"
+          }
+
+          $implementationPaths = @{
+            "rebuild_script" = (
+              Join-Path `
+                $env:GITHUB_WORKSPACE `
+                $env:SCRIPT_NAME
+            )
+            "build_features.py" = (
+              Join-Path `
+                $env:PROJECT_ROOT `
+                "build_features.py"
+            )
+            "detect_256.py" = (
+              Join-Path `
+                $env:PROJECT_ROOT `
+                "detect_256.py"
+            )
+          }
+
+          foreach ($name in $implementationPaths.Keys) {
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $implementationPaths[$name] `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            $resultHash = (
+              $r.implementation_sha256.PSObject.Properties[$name]
+            ).Value
+
+            $manifestHash = (
+              $m.implementation_sha256.PSObject.Properties[$name]
+            ).Value
+
+            if (
+              $actual -ne $resultHash -or
+              $actual -ne $manifestHash
+            ) {
+              throw "Implementation SHA256 mismatch: $name"
+            }
+
+            Write-Host "[OK] Implementation $name"
+          }
+
+          $inputFolders = @{
+            ohlcv = "data\ohlcv\d1"
+            features = "data\features\d1"
+            signals = "data\signals\256\d1"
+          }
+
+          $outputFolders = @{
+            features = "rebuilt_features/d1"
+            signals = "rebuilt_signals/d1"
+            policy_mask = "policy_masks/d1"
+          }
+
+          $checkedMarkets = @{}
+          $checkedInputs = 0
+          $checkedOutputs = 0
+
+          foreach ($record in $r.markets) {
+            $market = [string]$record.market
+
+            if ($market -notmatch '^KRW-[A-Z0-9]+$') {
+              throw "Invalid market: $market"
+            }
+
+            if ($checkedMarkets.ContainsKey($market)) {
+              throw "Duplicate market: $market"
+            }
+
+            $checkedMarkets[$market] = $true
+
+            if ($record.status -ne "PASS") {
+              throw "Market rebuild failed: $market"
+            }
+
+            foreach ($layer in $inputFolders.Keys) {
+              $relative = (
+                $inputFolders[$layer] +
+                "\" +
+                $market +
+                ".csv"
+              )
+
+              $path = Join-Path `
+                $env:PROJECT_ROOT `
+                $relative
+
+              $actual = (
+                Get-FileHash `
+                  -LiteralPath $path `
+                  -Algorithm SHA256
+              ).Hash.ToLowerInvariant()
+
+              $expectedHash = (
+                $record.input_sha256.PSObject.Properties[$layer]
+              ).Value
+
+              if ($actual -ne $expectedHash) {
+                throw "Original input changed: $market $layer"
+              }
+
+              $checkedInputs++
+            }
+
+            foreach ($layer in $outputFolders.Keys) {
+              $relative = (
+                $outputFolders[$layer] +
+                "/" +
+                $market +
+                ".csv"
+              )
+
+              $path = Join-Path $folder $relative
+
+              $actual = (
+                Get-FileHash `
+                  -LiteralPath $path `
+                  -Algorithm SHA256
+              ).Hash.ToLowerInvariant()
+
+              $expectedHash = (
+                $record.output_sha256.PSObject.Properties[$layer]
+              ).Value
+
+              $manifestHash = (
+                $m.rebuilt_sha256.PSObject.Properties[$relative]
+              ).Value
+
+              if (
+                $actual -ne $expectedHash -or
+                $actual -ne $manifestHash
+              ) {
+                throw "Rebuilt output mismatch: $market $layer"
+              }
+
+              $checkedOutputs++
+            }
+          }
+
+          if ($checkedMarkets.Count -ne 290) {
+            throw "Market verification count mismatch"
+          }
+
+          if ($checkedInputs -ne 870) {
+            throw "Original input count mismatch"
+          }
+
+          if ($checkedOutputs -ne 870) {
+            throw "Rebuilt output count mismatch"
+          }
+
+          if (
+            @($m.rebuilt_sha256.PSObject.Properties).Count -ne 870
+          ) {
+            throw "Rebuilt manifest count mismatch"
+          }
+
+          Write-Host "[PASS] 870 original input hashes"
+          Write-Host "[PASS] 870 rebuilt output hashes"
+
+          $segments = @(
+            Import-Csv `
+              -LiteralPath (
+                Join-Path $folder "segment_summary.csv"
+              ) `
+              -Encoding UTF8
+          )
+
+          if ($segments.Count -ne 307) {
+            throw "Segment CSV count mismatch"
+          }
+
+          $segmentRows = (
+            $segments |
+            Measure-Object `
+              -Property rows `
+              -Sum
+          ).Sum
+
+          if ([long]$segmentRows -ne 321481) {
+            throw "Segment CSV row accounting mismatch"
+          }
+
+          $recovery = @(
+            Import-Csv `
+              -LiteralPath (
+                Join-Path $folder "post_gap_recovery.csv"
+              ) `
+              -Encoding UTF8
+          )
+
+          if ($recovery.Count -ne 16) {
+            throw "Recovery market count mismatch"
+          }
+
+          $recoveryRows = (
+            $recovery |
+            Measure-Object `
+              -Property post_gap_rows_rebuilt `
+              -Sum
+          ).Sum
+
+          if ([long]$recoveryRows -ne 52175) {
+            throw "Post-gap recovery count mismatch"
+          }
+
+          Write-Host "[PASS] Result integrity"
+
+      - name: Publish summary
+        id: summary
+        if: steps.integrity.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $folder = Join-Path `
+            $env:PROJECT_ROOT `
+            $env:REPORT_FOLDER
+
+          $r = Get-Content `
+            -LiteralPath (
+              Join-Path $folder "result.json"
+            ) `
+            -Raw `
+            -Encoding UTF8 |
+            ConvertFrom-Json
+
+          $recoveryPercent = (
+            [double]$r.post_gap_provisional_rows /
+            [double]$r.post_gap_rows_rebuilt *
+            100
+          ).ToString("F4")
+
+          $lines = @(
+            "# Pattern 256 Continuous Segment Rebuild",
+            "",
+            "| Metric | Result |",
+            "|---|---|",
+            "| Version | $($r.version) |",
+            "| Execution | $($r.execution) |",
+            "| Classification | $($r.classification) |",
+            "| Markets rebuilt | $($r.markets_rebuilt) |",
+            "| Segments rebuilt | $($r.segments_rebuilt) |",
+            "| Total rows rebuilt | $($r.total_rows_rebuilt) |",
+            "| Original input files verified | $($r.original_input_files_verified) |",
+            "| Rebuilt output files | $($r.rebuilt_output_files) |",
+            "| Post-gap rows rebuilt | $($r.post_gap_rows_rebuilt) |",
+            "| Post-gap provisional rows | $($r.post_gap_provisional_rows) |",
+            "| Post-gap provisional blocked | $($r.post_gap_provisional_blocked) |",
+            "| Provisional post-gap recovery | $recoveryPercent% |",
+            "| Provisional warmup bars | $($r.provisional_warmup_bars) |",
+            "| Provisional rows | $($r.provisional_rows) |",
+            "| Provisional blocked rows | $($r.provisional_blocked_rows) |",
+            "| Prefix checks passed | $($r.prefix_checks_passed) |",
+            "| Prefix checks failed | $($r.prefix_checks_failed) |",
+            "| Segments without prefix check | $($r.segments_without_prefix_check) |",
+            "| Resumed markets | $($r.resumed_markets) |",
+            "| Data readiness | $($r.data_readiness) |",
+            "| Research decision | $($r.research_decision) |",
+            "| Next action | $($r.next_action) |",
+            "",
+            "## Post-gap recovery",
+            "",
+            "| Market | Rebuilt rows | Provisional rows | Provisional blocked |",
+            "|---|---:|---:|---:|"
+          )
+
+          foreach ($record in $r.markets) {
+            if ($record.post_gap_rows_rebuilt -gt 0) {
+              $blocked = (
+                [long]$record.post_gap_rows_rebuilt -
+                [long]$record.post_gap_provisional_rows
+              )
+
+              $lines += (
+                "| $($record.market) " +
+                "| $($record.post_gap_rows_rebuilt) " +
+                "| $($record.post_gap_provisional_rows) " +
+                "| $blocked |"
+              )
+            }
+          }
+
+          $lines += @(
+            "",
+            "## Limitations",
+            "",
+            "- Original research CSV files remain unchanged",
+            "- All segment calculations restart independently",
+            "- Missing candles are not fabricated",
+            "- The 300-bar warmup is provisional",
+            "- Sampled prefix replay is not exhaustive PIT proof",
+            "- Actual evaluator integration is pending",
+            "- No rows are approved for backtesting",
+            "- Training and live trading remain unapproved"
+          )
+
+          $lines | Out-File `
+            -LiteralPath $env:GITHUB_STEP_SUMMARY `
+            -Encoding UTF8 `
+            -Append
+
+      - name: Stage verified reports
+        id: stage
+        if: steps.integrity.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $source = Join-Path `
+            $env:PROJECT_ROOT `
+            $env:REPORT_FOLDER
+
+          $runId = (
+            "$env:GITHUB_RUN_ID" +
+            "_" +
+            "$env:GITHUB_RUN_ATTEMPT"
+          )
+
+          $destination = Join-Path `
+            $env:RUNNER_TEMP `
+            "segment_rebuild_$runId"
+
+          New-Item `
+            -ItemType Directory `
+            -Path $destination `
+            -Force |
+            Out-Null
+
+          $manifestPath = Join-Path `
+            $source `
+            "manifest.json"
+
+          $m = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw `
+            -Encoding UTF8 |
+            ConvertFrom-Json
+
+          if ($m.run_id -ne $runId) {
+            throw "Stale manifest detected"
+          }
+
+          foreach (
+            $property in $m.sha256.PSObject.Properties
+          ) {
+            $relative = $property.Name
+
+            $src = Join-Path $source $relative
+            $dst = Join-Path $destination $relative
+
+            Copy-Item `
+              -LiteralPath $src `
+              -Destination $dst `
+              -ErrorAction Stop
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $dst `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            if ($actual -ne $property.Value) {
+              throw "Staging SHA256 mismatch: $relative"
+            }
+          }
+
+          Copy-Item `
+            -LiteralPath $manifestPath `
+            -Destination (
+              Join-Path $destination "manifest.json"
+            ) `
+            -ErrorAction Stop
+
+          "STAGED_REPORT_DIR=$destination" |
+            Out-File `
+              -LiteralPath $env:GITHUB_ENV `
+              -Encoding UTF8 `
+              -Append
+
+          Write-Host "[PASS] Reports staged"
+          Write-Host "Rebuilt CSV files remain on local PC"
+
+      - name: Upload verified reports
+        id: upload
+        if: steps.stage.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-continuous-segments
+          path: ${{ env.STAGED_REPORT_DIR }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Final gate
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          foreach ($status in @(
+            "${{ steps.rebuild.outcome }}",
+            "${{ steps.integrity.outcome }}",
+            "${{ steps.summary.outcome }}",
+            "${{ steps.stage.outcome }}",
+            "${{ steps.upload.outcome }}"
+          )) {
+            if ($status -ne "success") {
+              throw "Workflow stage failed: $status"
+            }
+          }
+
+          Write-Host "[PASS] Clean V010 completed"
+          Write-Host "Data readiness: BLOCKED"
+          Write-Host "Research decision: HOLD"
