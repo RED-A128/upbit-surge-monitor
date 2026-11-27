@@ -1,0 +1,352 @@
+
+name: audit_pattern_256_daily_gaps.yml
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern-256-daily-gaps
+  cancel-in-progress: false
+
+jobs:
+  daily-gaps:
+    name: daily-gaps
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 120
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PROJECT_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+      SCRIPT_NAME: audit_pattern_256_daily_gaps.py
+      REPORT_FOLDER: data\reports\pattern_256_daily_gaps
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Python and script
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          & py --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python unavailable"
+          }
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
+
+          if (-not (Test-Path -LiteralPath $script)) {
+            throw "Audit script missing: $script"
+          }
+
+          & py -m py_compile $script
+          if ($LASTEXITCODE -ne 0) {
+            throw "Syntax verification failed"
+          }
+
+      - name: Verify persistent data
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          whoami
+
+          $folders = @(
+            "data\ohlcv\d1",
+            "data\features\d1",
+            "data\signals\256\d1",
+            "data\reports\pattern_256_pit_alignment"
+          )
+
+          foreach ($relative in $folders) {
+            $path = Join-Path `
+              $env:PROJECT_ROOT `
+              $relative
+
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Missing directory: $path"
+            }
+
+            Write-Host "[OK] $relative"
+          }
+
+      - name: Execute gap triage
+        id: audit
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            $env:SCRIPT_NAME
+
+          $startUtc = [DateTime]::UtcNow
+
+          & py -u $script `
+            --root $env:PROJECT_ROOT
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Gap triage failed"
+          }
+
+          $resultPath = Join-Path `
+            (Join-Path `
+              $env:PROJECT_ROOT `
+              $env:REPORT_FOLDER) `
+            "result.json"
+
+          if (-not (Test-Path -LiteralPath $resultPath)) {
+            throw "Result missing"
+          }
+
+          $modified = (
+            Get-Item -LiteralPath $resultPath
+          ).LastWriteTimeUtc
+
+          if ($modified -lt $startUtc.AddSeconds(-2)) {
+            throw "Stale result detected"
+          }
+
+      - name: Verify result integrity
+        id: integrity
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $folder = Join-Path `
+            $env:PROJECT_ROOT `
+            $env:REPORT_FOLDER
+
+          $resultPath = Join-Path $folder "result.json"
+          $manifestPath = Join-Path $folder "manifest.json"
+
+          $r = Get-Content `
+            -LiteralPath $resultPath `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          $m = Get-Content `
+            -LiteralPath $manifestPath `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          if ($r.version -ne "Clean V007") {
+            throw "Version mismatch"
+          }
+
+          if ($r.execution -ne "PASS") {
+            throw "Execution mismatch"
+          }
+
+          if ($r.candidate -ne "d1|DOWN|LOW") {
+            throw "Candidate mismatch"
+          }
+
+          if ($r.common_markets -ne 290) {
+            throw "Market count mismatch"
+          }
+
+          if ($r.data_readiness -ne "BLOCKED") {
+            throw "Unexpected readiness"
+          }
+
+          if ($r.research_decision -ne "HOLD") {
+            throw "Research decision mismatch"
+          }
+
+          foreach ($field in @(
+            "exchange_source_verified",
+            "point_in_time_proven",
+            "independent_oos_proven",
+            "train_approved",
+            "live_trading_approved"
+          )) {
+            if ($r.$field -ne $false) {
+              throw "Unexpected approval: $field"
+            }
+          }
+
+          foreach ($name in @(
+            "result.json",
+            "report.md"
+          )) {
+            $path = Join-Path $folder $name
+
+            $actual = (
+              Get-FileHash `
+                -LiteralPath $path `
+                -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            $expected = $m.sha256.$name
+
+            if (
+              [string]::IsNullOrWhiteSpace($expected)
+            ) {
+              throw "Missing SHA256: $name"
+            }
+
+            if (
+              $actual -ne $expected.ToLowerInvariant()
+            ) {
+              throw "SHA256 mismatch: $name"
+            }
+
+            Write-Host "[OK] SHA256 $name"
+          }
+
+          $source = Join-Path `
+            $env:PROJECT_ROOT `
+            "data\reports\pattern_256_pit_alignment\result.json"
+
+          $sourceHash = (
+            Get-FileHash `
+              -LiteralPath $source `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if (
+            $r.source_result_sha256 -ne $sourceHash
+          ) {
+            throw "Source SHA256 mismatch"
+          }
+
+          if (
+            $m.source_result_sha256 -ne $sourceHash
+          ) {
+            throw "Manifest source mismatch"
+          }
+
+          Write-Host "[PASS] Integrity verified"
+
+      - name: Publish summary
+        if: steps.integrity.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $folder = Join-Path `
+            $env:PROJECT_ROOT `
+            $env:REPORT_FOLDER
+
+          $r = Get-Content `
+            -LiteralPath (
+              Join-Path $folder "result.json"
+            ) `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          $lines = @(
+            "# Pattern 256 Daily Gap Triage",
+            "",
+            "| Metric | Result |",
+            "|---|---|",
+            "| Version | $($r.version) |",
+            "| Execution | $($r.execution) |",
+            "| Classification | $($r.classification) |",
+            "| Markets checked | $($r.common_markets) |",
+            "| Affected markets | $($r.affected_markets) |",
+            "| Unique gaps | $($r.unique_gaps) |",
+            "| Data readiness | $($r.data_readiness) |",
+            "| Research decision | $($r.research_decision) |",
+            "",
+            "## Interpretation",
+            "",
+            "- Exchange source verification pending",
+            "- No missing candles have been filled",
+            "- Original input CSVs remain unchanged",
+            "- Training and trading remain unapproved"
+          )
+
+          $lines | Out-File `
+            -LiteralPath $env:GITHUB_STEP_SUMMARY `
+            -Encoding UTF8 `
+            -Append
+
+      - name: Stage reports
+        id: stage
+        if: steps.integrity.outcome == 'success'
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $source = Join-Path `
+            $env:PROJECT_ROOT `
+            $env:REPORT_FOLDER
+
+          $destination = Join-Path `
+            $env:RUNNER_TEMP `
+            "daily_gaps_$env:GITHUB_RUN_ID`_$env:GITHUB_RUN_ATTEMPT"
+
+          New-Item `
+            -ItemType Directory `
+            -Path $destination `
+            -Force | Out-Null
+
+          foreach ($name in @(
+            "result.json",
+            "report.md",
+            "manifest.json"
+          )) {
+            $src = Join-Path $source $name
+            $dst = Join-Path $destination $name
+
+            Copy-Item `
+              -LiteralPath $src `
+              -Destination $dst `
+              -ErrorAction Stop
+
+            $hashA = (
+              Get-FileHash `
+                -LiteralPath $src `
+                -Algorithm SHA256
+            ).Hash
+
+            $hashB = (
+              Get-FileHash `
+                -LiteralPath $dst `
+                -Algorithm SHA256
+            ).Hash
+
+            if ($hashA -ne $hashB) {
+              throw "Staging hash mismatch: $name"
+            }
+          }
+
+          "STAGED_REPORT_DIR=$destination" |
+            Out-File `
+              -LiteralPath $env:GITHUB_ENV `
+              -Encoding UTF8 `
+              -Append
+
+      - name: Upload reports
+        id: upload
+        if: steps.stage.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pattern-256-daily-gaps
+          path: ${{ env.STAGED_REPORT_DIR }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Final gate
+        if: always()
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          foreach ($status in @(
+            "${{ steps.audit.outcome }}",
+            "${{ steps.integrity.outcome }}",
+            "${{ steps.stage.outcome }}",
+            "${{ steps.upload.outcome }}"
+          )) {
+            if ($status -ne "success") {
+              throw "Workflow stage failed: $status"
+            }
+          }
+
+          Write-Host "[PASS] Clean V007 completed"
+          Write-Host "Research decision: HOLD"
