@@ -1,0 +1,340 @@
+name: verify_pattern_256_actual_warmup_horizon.yml
+
+on:
+  workflow_dispatch:
+    inputs:
+      refresh:
+        description: "Ignore existing V011 checkpoints"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern-256-actual-warmup-horizon
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Clean V011 Actual Warmup and Horizon
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 360
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      PROJECT_ROOT: 'C:\Users\USER\Documents\upbit-surge-monitor'
+      PYTHONUTF8: "1"
+      PYTHONUNBUFFERED: "1"
+      REFRESH: "${{ inputs.refresh }}"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify project paths
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = $env:PROJECT_ROOT
+
+          Write-Host "Project root: $root"
+          Write-Host "GitHub workspace: $env:GITHUB_WORKSPACE"
+
+          if (-not (Test-Path -LiteralPath $root)) {
+              throw "Project root not found"
+          }
+
+          $requiredFiles = @(
+              "build_features.py",
+              "detect_256.py",
+              "rebuild_pattern_256_continuous_segments.py",
+              "backtest_pattern_256_accumulation_candidate_independent.py",
+              "evaluate_pattern_256_accumulation_candidate_independent_backtest.py",
+              "data\reports\pattern_256_continuous_segments\result.json",
+              "data\reports\pattern_256_continuous_segments\manifest.json",
+              "data\reports\pattern_256_gap_exclusion_policy\result.json",
+              "data\reports\pattern_256_gap_exclusion_policy\manifest.json"
+          )
+
+          foreach ($relative in $requiredFiles) {
+              $path = Join-Path $root $relative
+
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                  throw "Missing required file: $path"
+              }
+
+              Write-Host "[PASS] $relative"
+          }
+
+      - name: Verify Python environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          py --version
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Python unavailable"
+          }
+
+          py -c "import pandas, numpy; print('pandas:', pandas.__version__); print('numpy:', numpy.__version__)"
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Required Python dependencies unavailable"
+          }
+
+      - name: Prepare V011 script
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $filename = "verify_pattern_256_actual_warmup_horizon.py"
+
+          $source = Join-Path $env:GITHUB_WORKSPACE $filename
+          $destination = Join-Path $env:PROJECT_ROOT $filename
+
+          if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+              throw "V011 script not found in repository"
+          }
+
+          if ($source -ne $destination) {
+              Copy-Item `
+                  -LiteralPath $source `
+                  -Destination $destination `
+                  -Force
+          }
+
+          $sourceHash = (
+              Get-FileHash `
+                  -LiteralPath $source `
+                  -Algorithm SHA256
+          ).Hash
+
+          $destinationHash = (
+              Get-FileHash `
+                  -LiteralPath $destination `
+                  -Algorithm SHA256
+          ).Hash
+
+          if ($sourceHash -ne $destinationHash) {
+              throw "V011 script copy SHA256 mismatch"
+          }
+
+          Write-Host "[PASS] V011 script SHA256"
+          Write-Host $destinationHash
+
+      - name: Python syntax verification
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Set-Location -LiteralPath $env:PROJECT_ROOT
+
+          py -m py_compile verify_pattern_256_actual_warmup_horizon.py
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Python syntax verification failed"
+          }
+
+      - name: Run V011 policy self-tests
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Set-Location -LiteralPath $env:PROJECT_ROOT
+
+          py -u verify_pattern_256_actual_warmup_horizon.py `
+              --root "$env:PROJECT_ROOT" `
+              --self-test-only
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "V011 self-tests failed"
+          }
+
+      - name: Run Clean V011 verification
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Set-Location -LiteralPath $env:PROJECT_ROOT
+
+          $runId = "$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+
+          $arguments = @(
+              "-u",
+              "verify_pattern_256_actual_warmup_horizon.py",
+              "--root",
+              $env:PROJECT_ROOT,
+              "--run-id",
+              $runId
+          )
+
+          if ($env:REFRESH -eq "true") {
+              $arguments += "--refresh"
+          }
+
+          & py @arguments
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Clean V011 verification failed"
+          }
+
+      - name: Validate final reports
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $folder = Join-Path `
+              $env:PROJECT_ROOT `
+              "data\reports\pattern_256_actual_warmup_horizon"
+
+          $resultPath = Join-Path $folder "result.json"
+          $manifestPath = Join-Path $folder "manifest.json"
+          $statePath = Join-Path $folder "run_state.json"
+
+          foreach ($path in @(
+              $resultPath,
+              $manifestPath,
+              $statePath
+          )) {
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                  throw "Missing final evidence: $path"
+              }
+          }
+
+          $result = Get-Content `
+              -LiteralPath $resultPath `
+              -Raw `
+              -Encoding UTF8 |
+              ConvertFrom-Json
+
+          $manifest = Get-Content `
+              -LiteralPath $manifestPath `
+              -Raw `
+              -Encoding UTF8 |
+              ConvertFrom-Json
+
+          $state = Get-Content `
+              -LiteralPath $statePath `
+              -Raw `
+              -Encoding UTF8 |
+              ConvertFrom-Json
+
+          $expectedRunId = "$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+
+          if ($result.version -ne "Clean V011") {
+              throw "Unexpected result version"
+          }
+
+          if ($result.execution -ne "PASS") {
+              throw "V011 execution did not pass"
+          }
+
+          if ($result.run_id -ne $expectedRunId) {
+              throw "Stale result detected"
+          }
+
+          if ($manifest.run_id -ne $expectedRunId) {
+              throw "Stale manifest detected"
+          }
+
+          if ($state.run_id -ne $expectedRunId) {
+              throw "Stale run state detected"
+          }
+
+          if ($state.status -ne "COMPLETED") {
+              throw "V011 run not completed"
+          }
+
+          $manifestHash = (
+              Get-FileHash `
+                  -LiteralPath $manifestPath `
+                  -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if ($manifestHash -ne $state.manifest_sha256) {
+              throw "Final manifest SHA256 mismatch"
+          }
+
+          if ($result.markets_checked -ne 290) {
+              throw "Market count mismatch"
+          }
+
+          if ($result.segments_checked -ne 307) {
+              throw "Segment count mismatch"
+          }
+
+          if ($result.rows_checked -ne 321481) {
+              throw "Row count mismatch"
+          }
+
+          if ($result.research_decision -ne "HOLD") {
+              throw "Unexpected research approval"
+          }
+
+          if ($result.data_readiness -ne "BLOCKED") {
+              throw "Unexpected data approval"
+          }
+
+          if ($result.train_approved -ne $false) {
+              throw "Unexpected training approval"
+          }
+
+          if ($result.live_trading_approved -ne $false) {
+              throw "Unexpected trading approval"
+          }
+
+          foreach ($property in $manifest.sha256.PSObject.Properties) {
+              $path = Join-Path $folder $property.Name
+
+              $actual = (
+                  Get-FileHash `
+                      -LiteralPath $path `
+                      -Algorithm SHA256
+              ).Hash.ToLowerInvariant()
+
+              if ($actual -ne $property.Value) {
+                  throw "Report SHA256 mismatch: $path"
+              }
+          }
+
+          foreach ($property in $manifest.output_sha256.PSObject.Properties) {
+              $path = Join-Path $folder $property.Name
+
+              $actual = (
+                  Get-FileHash `
+                      -LiteralPath $path `
+                      -Algorithm SHA256
+              ).Hash.ToLowerInvariant()
+
+              if ($actual -ne $property.Value) {
+                  throw "Output SHA256 mismatch: $path"
+              }
+          }
+
+          Write-Host "[PASS] Final report integrity"
+          Write-Host "[PASS] Final output integrity"
+
+          Get-Content `
+              -LiteralPath (Join-Path $folder "report.md") `
+              -Encoding UTF8
+
+      - name: Upload V011 audit reports
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clean-v011-warmup-horizon-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_actual_warmup_horizon/result.json
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_actual_warmup_horizon/manifest.json
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_actual_warmup_horizon/run_state.json
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_actual_warmup_horizon/report.md
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_actual_warmup_horizon/warmup_summary.csv
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_actual_warmup_horizon/warmup_detail.csv
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_actual_warmup_horizon/horizon_summary.csv
+            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_actual_warmup_horizon/market_summary.csv
+          if-no-files-found: error
+          retention-days: 14
