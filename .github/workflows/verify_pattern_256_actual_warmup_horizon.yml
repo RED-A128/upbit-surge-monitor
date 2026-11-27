@@ -37,21 +37,219 @@ jobs:
       REFRESH: "${{ inputs.refresh }}"
 
     steps:
+
+      # ============================================================
+      # STEP 01
+      # Checkout GitHub repository
+      # ============================================================
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Verify project paths
+      # ============================================================
+      # STEP 02
+      # Verify root directories
+      # ============================================================
+
+      - name: Verify root directories
         run: |
           $ErrorActionPreference = "Stop"
 
           $root = $env:PROJECT_ROOT
+          $workspace = $env:GITHUB_WORKSPACE
+
+          Write-Host "========================================"
+          Write-Host "Clean V011 - Root Directory Verification"
+          Write-Host "========================================"
 
           Write-Host "Project root: $root"
-          Write-Host "GitHub workspace: $env:GITHUB_WORKSPACE"
+          Write-Host "GitHub workspace: $workspace"
 
-          if (-not (Test-Path -LiteralPath $root)) {
-              throw "Project root not found"
+          if ([string]::IsNullOrWhiteSpace($root)) {
+              throw "PROJECT_ROOT is empty"
           }
+
+          if ([string]::IsNullOrWhiteSpace($workspace)) {
+              throw "GITHUB_WORKSPACE is empty"
+          }
+
+          if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+              throw "Project root not found: $root"
+          }
+
+          if (-not (Test-Path -LiteralPath $workspace -PathType Container)) {
+              throw "GitHub workspace not found: $workspace"
+          }
+
+          Write-Host "[PASS] Project root"
+          Write-Host "[PASS] GitHub workspace"
+
+      # ============================================================
+      # STEP 03
+      # Prepare required Python dependencies
+      #
+      # Existing local files are preserved.
+      # Missing local files are copied from GitHub checkout.
+      # ============================================================
+
+      - name: Prepare required Python dependencies
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = $env:PROJECT_ROOT
+          $workspace = $env:GITHUB_WORKSPACE
+
+          $requiredScripts = @(
+              "build_features.py",
+              "detect_256.py",
+              "rebuild_pattern_256_continuous_segments.py",
+              "backtest_pattern_256_accumulation_candidate_independent.py",
+              "evaluate_pattern_256_accumulation_candidate_independent_backtest.py"
+          )
+
+          $preserved = 0
+          $copied = 0
+          $different = 0
+
+          Write-Host "========================================"
+          Write-Host "Preparing Python dependencies"
+          Write-Host "========================================"
+
+          foreach ($filename in $requiredScripts) {
+
+              $source = Join-Path $workspace $filename
+              $destination = Join-Path $root $filename
+
+              Write-Host ""
+              Write-Host "Checking: $filename"
+
+              $sourceExists = Test-Path `
+                  -LiteralPath $source `
+                  -PathType Leaf
+
+              $destinationExists = Test-Path `
+                  -LiteralPath $destination `
+                  -PathType Leaf
+
+              if ($destinationExists) {
+
+                  $localHash = (
+                      Get-FileHash `
+                          -LiteralPath $destination `
+                          -Algorithm SHA256
+                  ).Hash.ToLowerInvariant()
+
+                  Write-Host "[PRESERVE] Existing local file"
+                  Write-Host "Local SHA256: $localHash"
+
+                  $preserved++
+
+                  if ($sourceExists) {
+
+                      $githubHash = (
+                          Get-FileHash `
+                              -LiteralPath $source `
+                              -Algorithm SHA256
+                      ).Hash.ToLowerInvariant()
+
+                      Write-Host "GitHub SHA256: $githubHash"
+
+                      if ($localHash -eq $githubHash) {
+                          Write-Host "[PASS] Local and GitHub files match"
+                      }
+                      else {
+                          Write-Warning "Local and GitHub versions differ: $filename"
+                          Write-Warning "Existing local file will not be overwritten"
+
+                          $different++
+                      }
+                  }
+                  else {
+                      Write-Host "[INFO] GitHub copy not present"
+                      Write-Host "[INFO] Using existing local file"
+                  }
+
+                  continue
+              }
+
+              if (-not $sourceExists) {
+                  throw "Required script missing from both locations: $filename"
+              }
+
+              $sourceHashBefore = (
+                  Get-FileHash `
+                      -LiteralPath $source `
+                      -Algorithm SHA256
+              ).Hash.ToLowerInvariant()
+
+              Write-Host "[COPY] Missing local dependency"
+              Write-Host "Source: $source"
+              Write-Host "Destination: $destination"
+
+              Copy-Item `
+                  -LiteralPath $source `
+                  -Destination $destination `
+                  -ErrorAction Stop
+
+              if (-not (
+                  Test-Path `
+                      -LiteralPath $destination `
+                      -PathType Leaf
+              )) {
+                  throw "Dependency copy failed: $filename"
+              }
+
+              $destinationHash = (
+                  Get-FileHash `
+                      -LiteralPath $destination `
+                      -Algorithm SHA256
+              ).Hash.ToLowerInvariant()
+
+              $sourceHashAfter = (
+                  Get-FileHash `
+                      -LiteralPath $source `
+                      -Algorithm SHA256
+              ).Hash.ToLowerInvariant()
+
+              if ($sourceHashBefore -ne $sourceHashAfter) {
+                  throw "GitHub source changed during copy: $filename"
+              }
+
+              if ($sourceHashBefore -ne $destinationHash) {
+                  throw "Dependency SHA256 mismatch: $filename"
+              }
+
+              Write-Host "[PASS] Dependency copied and verified"
+              Write-Host "SHA256: $destinationHash"
+
+              $copied++
+          }
+
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "Dependency preparation summary"
+          Write-Host "========================================"
+          Write-Host "Required scripts: $($requiredScripts.Count)"
+          Write-Host "Preserved local files: $preserved"
+          Write-Host "Copied missing files: $copied"
+          Write-Host "Different local versions: $different"
+
+          if (($preserved + $copied) -ne $requiredScripts.Count) {
+              throw "Dependency inventory mismatch"
+          }
+
+          Write-Host "[PASS] All required Python dependencies available"
+
+      # ============================================================
+      # STEP 04
+      # Verify V009 and V010 input reports
+      # ============================================================
+
+      - name: Verify source report paths
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = $env:PROJECT_ROOT
 
           $requiredFiles = @(
               "build_features.py",
@@ -66,14 +264,177 @@ jobs:
           )
 
           foreach ($relative in $requiredFiles) {
+
               $path = Join-Path $root $relative
 
-              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              if (-not (
+                  Test-Path `
+                      -LiteralPath $path `
+                      -PathType Leaf
+              )) {
                   throw "Missing required file: $path"
               }
 
               Write-Host "[PASS] $relative"
           }
+
+          $requiredDirectories = @(
+              "data\ohlcv\d1",
+              "data\features\d1",
+              "data\signals\256\d1",
+              "data\reports\pattern_256_continuous_segments\rebuilt_features\d1",
+              "data\reports\pattern_256_continuous_segments\rebuilt_signals\d1",
+              "data\reports\pattern_256_continuous_segments\policy_masks\d1"
+          )
+
+          foreach ($relative in $requiredDirectories) {
+
+              $path = Join-Path $root $relative
+
+              if (-not (
+                  Test-Path `
+                      -LiteralPath $path `
+                      -PathType Container
+              )) {
+                  throw "Missing required directory: $path"
+              }
+
+              Write-Host "[PASS] $relative"
+          }
+
+          Write-Host "[PASS] Required source paths"
+
+      # ============================================================
+      # STEP 05
+      # Verify V010 source implementation hashes
+      # ============================================================
+
+      - name: Verify V010 implementation integrity
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $root = $env:PROJECT_ROOT
+
+          $folder = Join-Path `
+              $root `
+              "data\reports\pattern_256_continuous_segments"
+
+          $resultPath = Join-Path $folder "result.json"
+          $manifestPath = Join-Path $folder "manifest.json"
+
+          $result = Get-Content `
+              -LiteralPath $resultPath `
+              -Raw `
+              -Encoding UTF8 |
+              ConvertFrom-Json
+
+          $manifest = Get-Content `
+              -LiteralPath $manifestPath `
+              -Raw `
+              -Encoding UTF8 |
+              ConvertFrom-Json
+
+          if ($result.version -ne "Clean V010") {
+              throw "Unexpected V010 result version"
+          }
+
+          if ($manifest.version -ne "Clean V010") {
+              throw "Unexpected V010 manifest version"
+          }
+
+          if ($result.execution -ne "PASS") {
+              throw "V010 execution is not PASS"
+          }
+
+          if ($result.run_id -ne $manifest.run_id) {
+              throw "V010 run ID mismatch"
+          }
+
+          if ($null -eq $result.implementation_sha256) {
+              throw "Missing V010 implementation hash inventory"
+          }
+
+          if ($null -eq $manifest.implementation_sha256) {
+              throw "Missing V010 manifest implementation hash inventory"
+          }
+
+          $implementations = @(
+              @{
+                  Key = "rebuild_script"
+                  File = "rebuild_pattern_256_continuous_segments.py"
+              },
+              @{
+                  Key = "build_features.py"
+                  File = "build_features.py"
+              },
+              @{
+                  Key = "detect_256.py"
+                  File = "detect_256.py"
+              }
+          )
+
+          foreach ($item in $implementations) {
+
+              $key = $item.Key
+              $filename = $item.File
+
+              $path = Join-Path $root $filename
+
+              $resultProperty = `
+                  $result.implementation_sha256.PSObject.Properties[$key]
+
+              $manifestProperty = `
+                  $manifest.implementation_sha256.PSObject.Properties[$key]
+
+              if ($null -eq $resultProperty) {
+                  throw "Missing V010 result implementation hash: $key"
+              }
+
+              if ($null -eq $manifestProperty) {
+                  throw "Missing V010 manifest implementation hash: $key"
+              }
+
+              $expectedResult = (
+                  [string]$resultProperty.Value
+              ).ToLowerInvariant()
+
+              $expectedManifest = (
+                  [string]$manifestProperty.Value
+              ).ToLowerInvariant()
+
+              if ($expectedResult -notmatch '^[a-f0-9]{64}$') {
+                  throw "Invalid V010 implementation hash: $key"
+              }
+
+              if ($expectedResult -ne $expectedManifest) {
+                  throw "V010 implementation inventory mismatch: $key"
+              }
+
+              $actual = (
+                  Get-FileHash `
+                      -LiteralPath $path `
+                      -Algorithm SHA256
+              ).Hash.ToLowerInvariant()
+
+              Write-Host ""
+              Write-Host "Implementation: $filename"
+              Write-Host "Expected: $expectedResult"
+              Write-Host "Actual:   $actual"
+
+              if ($actual -ne $expectedResult) {
+                  throw "V010 implementation SHA256 mismatch: $filename"
+              }
+
+              Write-Host "[PASS] $filename"
+          }
+
+          Write-Host ""
+          Write-Host "[PASS] V010 implementation integrity"
+
+      # ============================================================
+      # STEP 06
+      # Verify Python environment
+      # ============================================================
 
       - name: Verify Python environment
         run: |
@@ -91,37 +452,103 @@ jobs:
               throw "Required Python dependencies unavailable"
           }
 
+          Write-Host "[PASS] Python environment"
+
+      # ============================================================
+      # STEP 07
+      # Prepare current V011 script
+      #
+      # Only the V011 script is synchronized to the local root.
+      # V009/V010 source data and implementations are preserved.
+      # ============================================================
+
       - name: Prepare V011 script
         run: |
           $ErrorActionPreference = "Stop"
 
           $filename = "verify_pattern_256_actual_warmup_horizon.py"
 
-          $source = Join-Path $env:GITHUB_WORKSPACE $filename
-          $destination = Join-Path $env:PROJECT_ROOT $filename
+          $source = Join-Path `
+              $env:GITHUB_WORKSPACE `
+              $filename
 
-          if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
-              throw "V011 script not found in repository"
-          }
+          $destination = Join-Path `
+              $env:PROJECT_ROOT `
+              $filename
 
-          if ($source -ne $destination) {
-              Copy-Item `
+          if (-not (
+              Test-Path `
                   -LiteralPath $source `
-                  -Destination $destination `
-                  -Force
+                  -PathType Leaf
+          )) {
+              throw "V011 script not found in GitHub repository"
           }
 
           $sourceHash = (
               Get-FileHash `
                   -LiteralPath $source `
                   -Algorithm SHA256
-          ).Hash
+          ).Hash.ToLowerInvariant()
+
+          $copyRequired = $true
+
+          if (
+              Test-Path `
+                  -LiteralPath $destination `
+                  -PathType Leaf
+          ) {
+
+              $existingHash = (
+                  Get-FileHash `
+                      -LiteralPath $destination `
+                      -Algorithm SHA256
+              ).Hash.ToLowerInvariant()
+
+              if ($existingHash -eq $sourceHash) {
+
+                  Write-Host "[SKIP] V011 script already synchronized"
+
+                  $copyRequired = $false
+              }
+          }
+
+          if ($copyRequired) {
+
+              $sourceFullPath = [System.IO.Path]::GetFullPath(
+                  $source
+              )
+
+              $destinationFullPath = [System.IO.Path]::GetFullPath(
+                  $destination
+              )
+
+              if ($sourceFullPath -ne $destinationFullPath) {
+
+                  Copy-Item `
+                      -LiteralPath $source `
+                      -Destination $destination `
+                      -Force `
+                      -ErrorAction Stop
+
+                  Write-Host "[COPY] Current V011 script"
+              }
+          }
 
           $destinationHash = (
               Get-FileHash `
                   -LiteralPath $destination `
                   -Algorithm SHA256
-          ).Hash
+          ).Hash.ToLowerInvariant()
+
+          $sourceHashAfter = (
+              Get-FileHash `
+                  -LiteralPath $source `
+                  -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if ($sourceHash -ne $sourceHashAfter) {
+              throw "V011 GitHub source changed during copy"
+          }
 
           if ($sourceHash -ne $destinationHash) {
               throw "V011 script copy SHA256 mismatch"
@@ -130,17 +557,45 @@ jobs:
           Write-Host "[PASS] V011 script SHA256"
           Write-Host $destinationHash
 
+      # ============================================================
+      # STEP 08
+      # Python syntax verification
+      # ============================================================
+
       - name: Python syntax verification
         run: |
           $ErrorActionPreference = "Stop"
 
           Set-Location -LiteralPath $env:PROJECT_ROOT
 
-          py -m py_compile verify_pattern_256_actual_warmup_horizon.py
+          $scripts = @(
+              "verify_pattern_256_actual_warmup_horizon.py",
+              "rebuild_pattern_256_continuous_segments.py",
+              "build_features.py",
+              "detect_256.py",
+              "backtest_pattern_256_accumulation_candidate_independent.py",
+              "evaluate_pattern_256_accumulation_candidate_independent_backtest.py"
+          )
 
-          if ($LASTEXITCODE -ne 0) {
-              throw "Python syntax verification failed"
+          foreach ($script in $scripts) {
+
+              Write-Host "Checking syntax: $script"
+
+              py -m py_compile $script
+
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Python syntax verification failed: $script"
+              }
+
+              Write-Host "[PASS] $script"
           }
+
+          Write-Host "[PASS] All Python syntax checks"
+
+      # ============================================================
+      # STEP 09
+      # V011 policy self-tests
+      # ============================================================
 
       - name: Run V011 policy self-tests
         run: |
@@ -155,6 +610,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
               throw "V011 self-tests failed"
           }
+
+          Write-Host "[PASS] V011 policy self-tests"
+
+      # ============================================================
+      # STEP 10
+      # Execute Clean V011
+      # ============================================================
 
       - name: Run Clean V011 verification
         run: |
@@ -174,14 +636,30 @@ jobs:
           )
 
           if ($env:REFRESH -eq "true") {
+
               $arguments += "--refresh"
+
+              Write-Host "[MODE] Full refresh"
           }
+          else {
+
+              Write-Host "[MODE] Safe resume"
+          }
+
+          Write-Host "Run ID: $runId"
 
           & py @arguments
 
           if ($LASTEXITCODE -ne 0) {
               throw "Clean V011 verification failed"
           }
+
+          Write-Host "[PASS] Clean V011 execution"
+
+      # ============================================================
+      # STEP 11
+      # Validate final reports
+      # ============================================================
 
       - name: Validate final reports
         run: |
@@ -200,7 +678,12 @@ jobs:
               $manifestPath,
               $statePath
           )) {
-              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+
+              if (-not (
+                  Test-Path `
+                      -LiteralPath $path `
+                      -PathType Leaf
+              )) {
                   throw "Missing final evidence: $path"
               }
           }
@@ -227,6 +710,14 @@ jobs:
 
           if ($result.version -ne "Clean V011") {
               throw "Unexpected result version"
+          }
+
+          if ($manifest.version -ne "Clean V011") {
+              throw "Unexpected manifest version"
+          }
+
+          if ($state.version -ne "Clean V011") {
+              throw "Unexpected run state version"
           }
 
           if ($result.execution -ne "PASS") {
@@ -271,6 +762,18 @@ jobs:
               throw "Row count mismatch"
           }
 
+          if ($result.original_input_files_verified -ne 870) {
+              throw "Original input file count mismatch"
+          }
+
+          if ($result.rebuilt_input_files_verified -ne 870) {
+              throw "Rebuilt input file count mismatch"
+          }
+
+          if ($result.output_files_verified -ne 580) {
+              throw "Output file count mismatch"
+          }
+
           if ($result.research_decision -ne "HOLD") {
               throw "Unexpected research approval"
           }
@@ -279,16 +782,116 @@ jobs:
               throw "Unexpected data approval"
           }
 
-          if ($result.train_approved -ne $false) {
-              throw "Unexpected training approval"
+          $falseFlags = @(
+              "source_csv_modified",
+              "actual_feature_warmup_verified",
+              "actual_forward_horizon_verified",
+              "gap_policy_implemented_in_evaluator",
+              "remaining_rows_approved_for_backtest",
+              "point_in_time_proven",
+              "independent_oos_proven",
+              "profitability_proven",
+              "train_approved",
+              "live_trading_approved"
+          )
+
+          foreach ($flag in $falseFlags) {
+
+              $property = $result.PSObject.Properties[$flag]
+
+              if ($null -eq $property) {
+                  throw "Missing required research flag: $flag"
+              }
+
+              if (
+                  ($property.Value -isnot [bool]) -or
+                  ($property.Value -ne $false)
+              ) {
+                  throw "Unexpected research flag: $flag"
+              }
+
+              Write-Host "[PASS] $flag = false"
           }
 
-          if ($result.live_trading_approved -ne $false) {
-              throw "Unexpected trading approval"
+          if ($result.synthetic_candles_created -ne 0) {
+              throw "Unexpected synthetic candles"
           }
 
-          foreach ($property in $manifest.sha256.PSObject.Properties) {
-              $path = Join-Path $folder $property.Name
+          if ($result.sampled_warmup_audit_completed -ne $true) {
+              throw "Warmup audit not completed"
+          }
+
+          if ($result.horizon_capacity_audit_completed -ne $true) {
+              throw "Horizon audit not completed"
+          }
+
+          if ($null -eq $manifest.sha256) {
+              throw "Missing report hash inventory"
+          }
+
+          if ($null -eq $manifest.output_sha256) {
+              throw "Missing output hash inventory"
+          }
+
+          $reportProperties = @(
+              $manifest.sha256.PSObject.Properties
+          )
+
+          $outputProperties = @(
+              $manifest.output_sha256.PSObject.Properties
+          )
+
+          $expectedReports = @(
+              "result.json",
+              "report.md",
+              "warmup_detail.csv",
+              "warmup_summary.csv",
+              "horizon_summary.csv",
+              "market_summary.csv"
+          )
+
+          if ($reportProperties.Count -ne $expectedReports.Count) {
+              throw "Report hash inventory count mismatch"
+          }
+
+          foreach ($name in $expectedReports) {
+
+              if ($null -eq $manifest.sha256.PSObject.Properties[$name]) {
+                  throw "Missing report hash: $name"
+              }
+          }
+
+          if ($outputProperties.Count -ne 580) {
+              throw "Output hash inventory count mismatch"
+          }
+
+          $folderPrefix = (
+              [System.IO.Path]::GetFullPath($folder)
+          ).TrimEnd('\') + '\'
+
+          $reportCount = 0
+          $outputCount = 0
+
+          foreach ($property in $reportProperties) {
+
+              $path = [System.IO.Path]::GetFullPath(
+                  (Join-Path $folder $property.Name)
+              )
+
+              if (-not $path.StartsWith(
+                  $folderPrefix,
+                  [System.StringComparison]::OrdinalIgnoreCase
+              )) {
+                  throw "Unsafe report path: $path"
+              }
+
+              if (-not (
+                  Test-Path `
+                      -LiteralPath $path `
+                      -PathType Leaf
+              )) {
+                  throw "Missing report: $path"
+              }
 
               $actual = (
                   Get-FileHash `
@@ -299,10 +902,30 @@ jobs:
               if ($actual -ne $property.Value) {
                   throw "Report SHA256 mismatch: $path"
               }
+
+              $reportCount++
           }
 
-          foreach ($property in $manifest.output_sha256.PSObject.Properties) {
-              $path = Join-Path $folder $property.Name
+          foreach ($property in $outputProperties) {
+
+              $path = [System.IO.Path]::GetFullPath(
+                  (Join-Path $folder $property.Name)
+              )
+
+              if (-not $path.StartsWith(
+                  $folderPrefix,
+                  [System.StringComparison]::OrdinalIgnoreCase
+              )) {
+                  throw "Unsafe output path: $path"
+              }
+
+              if (-not (
+                  Test-Path `
+                      -LiteralPath $path `
+                      -PathType Leaf
+              )) {
+                  throw "Missing output: $path"
+              }
 
               $actual = (
                   Get-FileHash `
@@ -313,7 +936,24 @@ jobs:
               if ($actual -ne $property.Value) {
                   throw "Output SHA256 mismatch: $path"
               }
+
+              $outputCount++
           }
+
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "Final verification summary"
+          Write-Host "========================================"
+
+          Write-Host "Reports verified: $reportCount"
+          Write-Host "Outputs verified: $outputCount"
+          Write-Host "Markets: $($result.markets_checked)"
+          Write-Host "Segments: $($result.segments_checked)"
+          Write-Host "Rows: $($result.rows_checked)"
+          Write-Host "Warmup checks: $($result.warmup_checks)"
+          Write-Host "Resumed markets: $($result.resumed_markets)"
+          Write-Host "Data readiness: $($result.data_readiness)"
+          Write-Host "Research decision: $($result.research_decision)"
 
           Write-Host "[PASS] Final report integrity"
           Write-Host "[PASS] Final output integrity"
@@ -322,19 +962,188 @@ jobs:
               -LiteralPath (Join-Path $folder "report.md") `
               -Encoding UTF8
 
+      # ============================================================
+      # STEP 12
+      # Stage verified reports for artifact upload
+      # ============================================================
+
+      - name: Stage V011 audit reports
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $folder = Join-Path `
+              $env:PROJECT_ROOT `
+              "data\reports\pattern_256_actual_warmup_horizon"
+
+          $stageName = "clean-v011-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+
+          $stage = Join-Path `
+              $env:RUNNER_TEMP `
+              $stageName
+
+          New-Item `
+              -ItemType Directory `
+              -Path $stage `
+              -Force |
+              Out-Null
+
+          $files = @(
+              "result.json",
+              "manifest.json",
+              "run_state.json",
+              "report.md",
+              "warmup_summary.csv",
+              "warmup_detail.csv",
+              "horizon_summary.csv",
+              "market_summary.csv"
+          )
+
+          foreach ($filename in $files) {
+
+              $source = Join-Path $folder $filename
+              $destination = Join-Path $stage $filename
+
+              if (-not (
+                  Test-Path `
+                      -LiteralPath $source `
+                      -PathType Leaf
+              )) {
+                  throw "Missing artifact source: $filename"
+              }
+
+              $sourceHash = (
+                  Get-FileHash `
+                      -LiteralPath $source `
+                      -Algorithm SHA256
+              ).Hash.ToLowerInvariant()
+
+              Copy-Item `
+                  -LiteralPath $source `
+                  -Destination $destination `
+                  -Force
+
+              $destinationHash = (
+                  Get-FileHash `
+                      -LiteralPath $destination `
+                      -Algorithm SHA256
+              ).Hash.ToLowerInvariant()
+
+              $sourceHashAfter = (
+                  Get-FileHash `
+                      -LiteralPath $source `
+                      -Algorithm SHA256
+              ).Hash.ToLowerInvariant()
+
+              if ($sourceHash -ne $sourceHashAfter) {
+                  throw "Artifact source changed: $filename"
+              }
+
+              if ($sourceHash -ne $destinationHash) {
+                  throw "Artifact copy SHA256 mismatch: $filename"
+              }
+
+              Write-Host "[PASS] Staged $filename"
+          }
+
+          $stagedManifestPath = Join-Path $stage "manifest.json"
+          $stagedStatePath = Join-Path $stage "run_state.json"
+
+          $stagedManifest = Get-Content `
+              -LiteralPath $stagedManifestPath `
+              -Raw `
+              -Encoding UTF8 |
+              ConvertFrom-Json
+
+          $stagedState = Get-Content `
+              -LiteralPath $stagedStatePath `
+              -Raw `
+              -Encoding UTF8 |
+              ConvertFrom-Json
+
+          $stagedManifestHash = (
+              Get-FileHash `
+                  -LiteralPath $stagedManifestPath `
+                  -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if ($stagedManifestHash -ne $stagedState.manifest_sha256) {
+              throw "Staged manifest integrity mismatch"
+          }
+
+          foreach ($property in $stagedManifest.sha256.PSObject.Properties) {
+
+              if ($files -notcontains $property.Name) {
+                  throw "Unexpected staged report: $($property.Name)"
+              }
+
+              $path = Join-Path $stage $property.Name
+
+              $actual = (
+                  Get-FileHash `
+                      -LiteralPath $path `
+                      -Algorithm SHA256
+              ).Hash.ToLowerInvariant()
+
+              if ($actual -ne $property.Value) {
+                  throw "Staged report SHA256 mismatch: $path"
+              }
+          }
+
+          "V011_ARTIFACT_DIR=$stage" |
+              Out-File `
+                  -FilePath $env:GITHUB_ENV `
+                  -Encoding utf8 `
+                  -Append
+
+          Write-Host "[PASS] Artifact staging completed"
+          Write-Host "Artifact directory: $stage"
+
+      # ============================================================
+      # STEP 13
+      # Upload reports
+      # ============================================================
+
       - name: Upload V011 audit reports
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: clean-v011-warmup-horizon-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_actual_warmup_horizon/result.json
-            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_actual_warmup_horizon/manifest.json
-            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_actual_warmup_horizon/run_state.json
-            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_actual_warmup_horizon/report.md
-            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_actual_warmup_horizon/warmup_summary.csv
-            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_actual_warmup_horizon/warmup_detail.csv
-            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_actual_warmup_horizon/horizon_summary.csv
-            ${{ env.PROJECT_ROOT }}/data/reports/pattern_256_actual_warmup_horizon/market_summary.csv
+          path: ${{ env.V011_ARTIFACT_DIR }}
           if-no-files-found: error
           retention-days: 14
+
+      # ============================================================
+      # STEP 14
+      # Final workflow gate
+      # ============================================================
+
+      - name: Final V011 workflow gate
+        if: always()
+        env:
+          FINAL_JOB_STATUS: "${{ job.status }}"
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "Clean V011 Final Workflow Gate"
+          Write-Host "========================================"
+
+          Write-Host "Job status: $env:FINAL_JOB_STATUS"
+
+          if ($env:FINAL_JOB_STATUS -ne "success") {
+
+              Write-Host "[FAIL] Clean V011 workflow"
+              Write-Host "Existing source data must be preserved"
+              Write-Host "Completed checkpoints remain available"
+              Write-Host "Research decision: HOLD"
+
+              throw "Clean V011 workflow did not complete successfully"
+          }
+
+          Write-Host "[PASS] Clean V011 workflow"
+          Write-Host "Data readiness: BLOCKED"
+          Write-Host "Research decision: HOLD"
+          Write-Host "Training approved: FALSE"
+          Write-Host "Live trading approved: FALSE"
+          Write-Host "========================================"
